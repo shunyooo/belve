@@ -330,7 +330,7 @@ async function installServerOnRemote(
 
 		cp.execSync(
 			`tar -czf "${tarPath}" -C "${path.dirname(buildDir)}" "${path.basename(buildDir)}"`,
-			{ encoding: 'utf8' }
+			{ encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
 		);
 
 		// Create installation directory on remote
@@ -343,13 +343,28 @@ async function installServerOnRemote(
 
 		// Extract on remote
 		outputChannel.appendLine('Extracting server on remote...');
-		await sshExec(host, `tar -xzf /tmp/dock-code-reh.tar.gz -C ${remoteInstallDir} --strip-components=1 && rm /tmp/dock-code-reh.tar.gz`);
+		await sshExec(host, `tar --warning=no-unknown-keyword -xzf /tmp/dock-code-reh.tar.gz -C ${remoteInstallDir} --strip-components=1; rm -f /tmp/dock-code-reh.tar.gz`);
 
 		// Make server executable
 		await sshExec(host, `chmod +x ${remoteInstallDir}/bin/${product.serverApplicationName}`);
 
+		// Rebuild native modules for the remote platform (node-pty etc.)
+		// The REH build contains macOS binaries; we need Linux ones on the remote
+		progress.report({ message: 'Rebuilding native modules on remote...' });
+		outputChannel.appendLine('Rebuilding native modules for remote platform...');
+		try {
+			const nodeVersion = await sshExec(host, `${remoteInstallDir}/node --version`);
+			outputChannel.appendLine(`Remote node version: ${nodeVersion.trim()}`);
+			// Use the REH's own Node.js to rebuild node-pty with npm
+			await sshExec(host, `cd ${remoteInstallDir} && PATH="${remoteInstallDir}:$PATH" npm rebuild node-pty 2>&1`);
+			outputChannel.appendLine('Native modules rebuilt successfully');
+		} catch (err: any) {
+			outputChannel.appendLine(`Warning: native module rebuild failed: ${err.message}`);
+			outputChannel.appendLine('Terminal may not work. Ensure build-essential is installed on the remote.');
+		}
+
 		// Clean up local tarball
-		fs.unlinkSync(tarPath);
+		try { fs.unlinkSync(tarPath); } catch { /* ignore */ }
 
 		outputChannel.appendLine('Server installed successfully');
 	} else {
