@@ -53,4 +53,5 @@ export interface IProjectMainService {
 
 	getProjectByWebContentsId(webContentsId: number): Promise<IProject | undefined>;
 	openFolderInProject(projectId: string, folderUri: string): Promise<void>;
+	reloadProject(projectId: string): Promise<void>;
 }

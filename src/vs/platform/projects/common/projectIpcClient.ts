@@ -78,6 +78,10 @@ export class ProjectMainServiceClient implements IProjectMainService {
 		return this.channel.call('openFolderInProject', [projectId, folderUri]);
 	}
 
+	reloadProject(projectId: string): Promise<void> {
+		return this.channel.call('reloadProject', projectId);
+	}
+
 	dispose(): void {
 		this.disposables.dispose();
 	}

@@ -28,6 +28,7 @@ import { getSingleFolderWorkspaceIdentifier } from '../../workspaces/node/worksp
 import * as fs from 'fs';
 import * as path from 'path';
 import { Schemas } from '../../../base/common/network.js';
+import type { ISingleFolderWorkspaceIdentifier } from '../../workspace/common/workspace.js';
 
 interface IProjectView {
 	readonly view: WebContentsView;
@@ -341,77 +342,102 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			}
 		} else {
 			// For WebContentsView projects, reload the view with the new workspace
-			const pv = this.projectViews.get(projectId);
-			if (pv) {
-				const configuration: INativeWindowConfiguration = {
-					...this.environmentMainService.args,
-
-					windowId: pv.view.webContents.id,
-					machineId: '',
-					sqmId: '',
-					devDeviceId: '',
-
-					mainPid: process.pid,
-
-					appRoot: this.environmentMainService.appRoot,
-					execPath: process.execPath,
-					codeCachePath: this.environmentMainService.codeCachePath,
-
-					profiles: {
-						home: this.userDataProfilesMainService.profilesHome,
-						all: this.userDataProfilesMainService.profiles,
-						profile: this.userDataProfilesMainService.defaultProfile,
-					},
-
-					homeDir: this.environmentMainService.userHome.fsPath,
-					tmpDir: this.environmentMainService.tmpDir.fsPath,
-					userDataDir: this.environmentMainService.userDataPath,
-
-					workspace: this.getWorkspaceIdentifier(URI.parse(folderUri)),
-					userEnv: {},
-
-					nls: {
-						messages: getNLSMessages(),
-						language: getNLSLanguage()
-					},
-
-					logLevel: this.loggerService.getLogLevel(),
-					loggers: this.loggerService.getGlobalLoggers(),
-					logsPath: this.environmentMainService.logsHome.fsPath,
-
-					product,
-					isInitialStartup: false,
-					perfMarks: getMarks(),
-					os: { release: release(), hostname: hostname(), arch: arch() },
-
-					autoDetectHighContrast: true,
-					autoDetectColorScheme: false,
-					colorScheme: { dark: true, highContrast: false },
-					policiesData: this.policyService.serialize(),
-
-					isPortable: this.environmentMainService.isPortable,
-
-					cssModules: this.cssDevelopmentService.isEnabled ? await this.cssDevelopmentService.getCssModules() : undefined,
-				};
-
-				pv.configUrl.update(configuration);
-
-				const workbenchUrl = FileAccess.asBrowserUri(
-					`vs/code/electron-browser/workbench/workbench${this.environmentMainService.isBuilt ? '' : '-dev'}.html`
-				).toString(true);
-				console.log(`[ProjectView:${project.name}] Reloading with folder: ${folderUri}, workspace: ${JSON.stringify(configuration.workspace)}`);
-				pv.view.webContents.once('did-finish-load', () => {
-					console.log(`[ProjectView:${project.name}] did-finish-load after folder change, visible=${pv.view.getVisible()}, bounds=${JSON.stringify(pv.view.getBounds())}`);
-					// Ensure the view is visible and focused after reload
-					pv.view.setVisible(true);
-					pv.view.webContents.focus();
-				});
-				pv.view.webContents.once('did-fail-load', (_event: any, errorCode: number, errorDescription: string) => {
-					console.log(`[ProjectView:${project.name}] did-fail-load: ${errorCode} ${errorDescription}`);
-				});
-				pv.view.webContents.loadURL(workbenchUrl);
-			}
+			await this.reloadProjectView(project, { workspace: this.getWorkspaceIdentifier(URI.parse(folderUri)) });
 		}
+	}
+
+	async reloadProject(projectId: string): Promise<void> {
+		const project = this.projects.find(p => p.id === projectId);
+		if (!project) {
+			return;
+		}
+
+		if (projectId === this.mainWindowProjectId) {
+			// For the main window, delegate to WindowsMainService reload via lifecycle
+			const mainWindow = this.windowsMainService.getWindows()[0];
+			if (mainWindow) {
+				mainWindow.reload();
+			}
+		} else {
+			// For WebContentsView projects, reload with current configuration
+			const workspaceId = project.folderUri ? this.getWorkspaceIdentifier(URI.parse(project.folderUri)) : this.getEmptyProjectWorkspace(project.id);
+			await this.reloadProjectView(project, { workspace: workspaceId });
+		}
+	}
+
+	private async reloadProjectView(project: IProject, overrides: { workspace?: ISingleFolderWorkspaceIdentifier; remoteAuthority?: string }): Promise<void> {
+		const pv = this.projectViews.get(project.id);
+		if (!pv) {
+			return;
+		}
+
+		const configuration: INativeWindowConfiguration = {
+			...this.environmentMainService.args,
+
+			windowId: pv.view.webContents.id,
+			machineId: '',
+			sqmId: '',
+			devDeviceId: '',
+
+			mainPid: process.pid,
+
+			appRoot: this.environmentMainService.appRoot,
+			execPath: process.execPath,
+			codeCachePath: this.environmentMainService.codeCachePath,
+
+			profiles: {
+				home: this.userDataProfilesMainService.profilesHome,
+				all: this.userDataProfilesMainService.profiles,
+				profile: this.userDataProfilesMainService.defaultProfile,
+			},
+
+			homeDir: this.environmentMainService.userHome.fsPath,
+			tmpDir: this.environmentMainService.tmpDir.fsPath,
+			userDataDir: this.environmentMainService.userDataPath,
+
+			workspace: overrides.workspace,
+			remoteAuthority: overrides.remoteAuthority,
+			userEnv: {},
+
+			nls: {
+				messages: getNLSMessages(),
+				language: getNLSLanguage()
+			},
+
+			logLevel: this.loggerService.getLogLevel(),
+			loggers: this.loggerService.getGlobalLoggers(),
+			logsPath: this.environmentMainService.logsHome.fsPath,
+
+			product,
+			isInitialStartup: false,
+			perfMarks: getMarks(),
+			os: { release: release(), hostname: hostname(), arch: arch() },
+
+			autoDetectHighContrast: true,
+			autoDetectColorScheme: false,
+			colorScheme: { dark: true, highContrast: false },
+			policiesData: this.policyService.serialize(),
+
+			isPortable: this.environmentMainService.isPortable,
+
+			cssModules: this.cssDevelopmentService.isEnabled ? await this.cssDevelopmentService.getCssModules() : undefined,
+		};
+
+		pv.configUrl.update(configuration);
+
+		const workbenchUrl = FileAccess.asBrowserUri(
+			`vs/code/electron-browser/workbench/workbench${this.environmentMainService.isBuilt ? '' : '-dev'}.html`
+		).toString(true);
+		console.log(`[ProjectView:${project.name}] Reloading, workspace: ${JSON.stringify(configuration.workspace)}, remoteAuthority: ${configuration.remoteAuthority ?? 'none'}`);
+		pv.view.webContents.once('did-finish-load', () => {
+			console.log(`[ProjectView:${project.name}] did-finish-load after reload`);
+			pv.view.setVisible(true);
+			pv.view.webContents.focus();
+		});
+		pv.view.webContents.once('did-fail-load', (_event: any, errorCode: number, errorDescription: string) => {
+			console.log(`[ProjectView:${project.name}] did-fail-load: ${errorCode} ${errorDescription}`);
+		});
+		pv.view.webContents.loadURL(workbenchUrl);
 	}
 
 	/**
@@ -471,6 +497,15 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 		return getSingleFolderWorkspaceIdentifier(folderUri);
 	}
 
+	private getEmptyProjectWorkspace(projectId: string): ISingleFolderWorkspaceIdentifier | undefined {
+		// Create a unique folder per project so each gets independent workspaceStorage
+		const projectDir = path.join(this.environmentMainService.userDataPath, 'project-workspaces', projectId);
+		fs.mkdirSync(projectDir, { recursive: true });
+		const folderUri = URI.file(projectDir);
+		const stat = fs.statSync(projectDir);
+		return getSingleFolderWorkspaceIdentifier(folderUri, stat);
+	}
+
 	private async createViewForProject(project: IProject, browserWindow: Electron.BrowserWindow): Promise<void> {
 		const disposables = new DisposableStore();
 
@@ -520,7 +555,7 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			tmpDir: this.environmentMainService.tmpDir.fsPath,
 			userDataDir: this.environmentMainService.userDataPath,
 
-			workspace: project.folderUri ? this.getWorkspaceIdentifier(URI.parse(project.folderUri)) : undefined,
+			workspace: project.folderUri ? this.getWorkspaceIdentifier(URI.parse(project.folderUri)) : this.getEmptyProjectWorkspace(project.id),
 			userEnv: {},
 
 			nls: {

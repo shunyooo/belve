@@ -1029,6 +1029,15 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 			// Proceed normally to reload the window
 			return this.lifecycleMainService.reload(window, options?.disableExtensions !== undefined ? { _: [], 'disable-extensions': options.disableExtensions } : undefined);
 		}
+
+		// Intercept reload for WebContentsView projects
+		if (windowId !== undefined) {
+			const project = await this.projectMainService.getProjectByWebContentsId(windowId);
+			if (project) {
+				console.log(`[NativeHostMainService] reload intercepted for WebContentsView project: ${project.name}`);
+				return this.projectMainService.reloadProject(project.id);
+			}
+		}
 	}
 
 	async closeWindow(windowId: number | undefined, options?: INativeHostOptions): Promise<void> {

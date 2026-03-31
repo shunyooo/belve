@@ -23,7 +23,6 @@ import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import type { IProject } from '../../../../platform/projects/common/projects.js';
 import { IProjectMainService } from '../../../../platform/projects/common/projects.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { localize } from '../../../../nls.js';
 
 const HOVER_GROUP_ID = 'projectbar';
@@ -59,7 +58,6 @@ export class ProjectBarPart extends Part {
 		@IHoverService private readonly hoverService: IHoverService,
 		@IContextMenuService private readonly contextMenuService: IContextMenuService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
-		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
 	) {
 		super(Parts.PROJECTBAR_PART, { hasTitle: false }, themeService, storageService2, layoutService);
 		this._expanded = this.storageService2.getBoolean(PROJECTBAR_EXPANDED_KEY, StorageScope.APPLICATION, false);
@@ -178,9 +176,7 @@ export class ProjectBarPart extends Part {
 			title: localize('projectbar.newProjectTitle', "New Project"),
 		});
 		if (name) {
-			const currentFolders = this.contextService.getWorkspace().folders;
-			const folderUri = currentFolders.length > 0 ? currentFolders[0].uri.toString() : undefined;
-			await this.projectService.createProject(name, folderUri);
+			await this.projectService.createProject(name);
 		}
 	}
 
