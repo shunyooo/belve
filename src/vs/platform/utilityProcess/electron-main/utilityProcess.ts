@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { BrowserWindow, Details, MessageChannelMain, app, utilityProcess, UtilityProcess as ElectronUtilityProcess } from 'electron';
+import { BrowserWindow, Details, MessageChannelMain, WebContents, app, utilityProcess, UtilityProcess as ElectronUtilityProcess } from 'electron';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { ILogService } from '../../log/common/log.js';
@@ -473,11 +473,22 @@ export class WindowUtilityProcess extends UtilityProcess {
 		super(logService, telemetryService, lifecycleMainService);
 	}
 
-	override start(configuration: IWindowUtilityProcessConfiguration): boolean {
-		const responseWindow = this.windowsMainService.getWindowById(configuration.responseWindowId);
-		if (!responseWindow?.win || responseWindow.win.isDestroyed() || responseWindow.win.webContents.isDestroyed()) {
-			this.log('Refusing to start utility process because requesting window cannot be found or is destroyed...', Severity.Error);
+	override start(configuration: IWindowUtilityProcessConfiguration, fallbackWebContents?: WebContents, fallbackWindow?: BrowserWindow): boolean {
+		let responseWebContents: WebContents | undefined;
+		let parentWindow: BrowserWindow | undefined;
 
+		const responseWindow = this.windowsMainService.getWindowById(configuration.responseWindowId);
+		if (responseWindow?.win && !responseWindow.win.isDestroyed() && !responseWindow.win.webContents.isDestroyed()) {
+			responseWebContents = responseWindow.win.webContents;
+			parentWindow = responseWindow.win;
+		} else if (fallbackWebContents && fallbackWindow && !fallbackWindow.isDestroyed() && !fallbackWebContents.isDestroyed()) {
+			// WebContentsView project: use the view's webContents for IPC, parent BrowserWindow for lifecycle
+			responseWebContents = fallbackWebContents;
+			parentWindow = fallbackWindow;
+		}
+
+		if (!responseWebContents || !parentWindow) {
+			this.log('Refusing to start utility process because requesting window cannot be found or is destroyed...', Severity.Error);
 			return true;
 		}
 
@@ -488,11 +499,11 @@ export class WindowUtilityProcess extends UtilityProcess {
 		}
 
 		// Register to window events
-		this.registerWindowListeners(responseWindow.win, configuration);
+		this.registerWindowListeners(parentWindow, configuration);
 
 		// Establish & exchange message ports
 		const windowPort = this.connect(configuration.payload);
-		responseWindow.win.webContents.postMessage(configuration.responseChannel, configuration.responseNonce, [windowPort]);
+		responseWebContents.postMessage(configuration.responseChannel, configuration.responseNonce, [windowPort]);
 
 		return true;
 	}

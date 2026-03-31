@@ -10,7 +10,7 @@ import { FileAccess } from '../../../base/common/network.js';
 import { generateUuid } from '../../../base/common/uuid.js';
 import { IEnvironmentMainService } from '../../environment/electron-main/environmentMainService.js';
 import { ILogService } from '../../log/common/log.js';
-import { IWindowsMainService } from '../../windows/electron-main/windows.js';
+import { IWindowsMainService, OpenContext } from '../../windows/electron-main/windows.js';
 import type { IProject, IProjectData, IProjectsChangeEvent } from '../common/projects.js';
 import { IProjectMainService, ProjectStatus } from '../common/projects.js';
 import { IProtocolMainService } from '../../protocol/electron-main/protocol.js';
@@ -27,6 +27,7 @@ import { URI } from '../../../base/common/uri.js';
 import { getSingleFolderWorkspaceIdentifier } from '../../workspaces/node/workspaces.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Schemas } from '../../../base/common/network.js';
 
 interface IProjectView {
 	readonly view: WebContentsView;
@@ -84,12 +85,16 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 	}
 
 	private loadFromDisk(): void {
+		console.log(`[ProjectMainService] loadFromDisk: ${this.dataFilePath}`);
 		try {
 			if (fs.existsSync(this.dataFilePath)) {
 				const raw = fs.readFileSync(this.dataFilePath, 'utf-8');
 				const data = JSON.parse(raw) as { projects: IProjectData[]; activeProjectId?: string };
 				this.projects = data.projects.map(d => ({ ...d }));
 				this.activeProjectId = data.activeProjectId;
+				console.log(`[ProjectMainService] Loaded ${this.projects.length} project(s) from disk`);
+			} else {
+				console.log(`[ProjectMainService] No projects.json found at ${this.dataFilePath}`);
 			}
 		} catch (e) {
 			this.logService.error('[ProjectMainService] Failed to load projects:', e);
@@ -288,12 +293,182 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 	}
 
 	/**
+	 * Synchronously resolves a WebContentsView's webContents and parent BrowserWindow
+	 * for a given webContentsId. Used by UtilityProcess to route IPC to the correct renderer.
+	 */
+	getProjectViewInfo(webContentsId: number): { webContents: Electron.WebContents; parentWindow: Electron.BrowserWindow } | undefined {
+		for (const [, pv] of this.projectViews) {
+			if (pv.view.webContents.id === webContentsId) {
+				const mainWindow = this.windowsMainService.getWindows()[0];
+				if (mainWindow?.win) {
+					return { webContents: pv.view.webContents, parentWindow: mainWindow.win };
+				}
+			}
+		}
+		return undefined;
+	}
+
+	async getProjectByWebContentsId(webContentsId: number): Promise<IProject | undefined> {
+		console.log(`[ProjectMainService] getProjectByWebContentsId(${webContentsId}), projectViews has ${this.projectViews.size} entries: [${[...this.projectViews.entries()].map(([id, pv]) => `${id.substring(0, 8)}:wc=${pv.view.webContents.id}`).join(', ')}]`);
+		for (const [projectId, pv] of this.projectViews) {
+			if (pv.view.webContents.id === webContentsId) {
+				return this.projects.find(p => p.id === projectId);
+			}
+		}
+		return undefined;
+	}
+
+	async openFolderInProject(projectId: string, folderUri: string): Promise<void> {
+		const project = this.projects.find(p => p.id === projectId);
+		if (!project) {
+			return;
+		}
+
+		// Update the stored folder
+		(project as { folderUri?: string }).folderUri = folderUri;
+		this.saveToDisk();
+
+		if (projectId === this.mainWindowProjectId) {
+			// For the main window project, delegate to WindowsMainService
+			const mainWindow = this.windowsMainService.getWindows()[0];
+			if (mainWindow) {
+				await this.windowsMainService.open({
+					context: OpenContext.API,
+					contextWindowId: mainWindow.id,
+					cli: this.environmentMainService.args,
+					urisToOpen: [{ folderUri: URI.parse(folderUri) }],
+				});
+			}
+		} else {
+			// For WebContentsView projects, reload the view with the new workspace
+			const pv = this.projectViews.get(projectId);
+			if (pv) {
+				const configuration: INativeWindowConfiguration = {
+					...this.environmentMainService.args,
+
+					windowId: pv.view.webContents.id,
+					machineId: '',
+					sqmId: '',
+					devDeviceId: '',
+
+					mainPid: process.pid,
+
+					appRoot: this.environmentMainService.appRoot,
+					execPath: process.execPath,
+					codeCachePath: this.environmentMainService.codeCachePath,
+
+					profiles: {
+						home: this.userDataProfilesMainService.profilesHome,
+						all: this.userDataProfilesMainService.profiles,
+						profile: this.userDataProfilesMainService.defaultProfile,
+					},
+
+					homeDir: this.environmentMainService.userHome.fsPath,
+					tmpDir: this.environmentMainService.tmpDir.fsPath,
+					userDataDir: this.environmentMainService.userDataPath,
+
+					workspace: this.getWorkspaceIdentifier(URI.parse(folderUri)),
+					userEnv: {},
+
+					nls: {
+						messages: getNLSMessages(),
+						language: getNLSLanguage()
+					},
+
+					logLevel: this.loggerService.getLogLevel(),
+					loggers: this.loggerService.getGlobalLoggers(),
+					logsPath: this.environmentMainService.logsHome.fsPath,
+
+					product,
+					isInitialStartup: false,
+					perfMarks: getMarks(),
+					os: { release: release(), hostname: hostname(), arch: arch() },
+
+					autoDetectHighContrast: true,
+					autoDetectColorScheme: false,
+					colorScheme: { dark: true, highContrast: false },
+					policiesData: this.policyService.serialize(),
+
+					isPortable: this.environmentMainService.isPortable,
+
+					cssModules: this.cssDevelopmentService.isEnabled ? await this.cssDevelopmentService.getCssModules() : undefined,
+				};
+
+				pv.configUrl.update(configuration);
+
+				const workbenchUrl = FileAccess.asBrowserUri(
+					`vs/code/electron-browser/workbench/workbench${this.environmentMainService.isBuilt ? '' : '-dev'}.html`
+				).toString(true);
+				console.log(`[ProjectView:${project.name}] Reloading with folder: ${folderUri}, workspace: ${JSON.stringify(configuration.workspace)}`);
+				pv.view.webContents.once('did-finish-load', () => {
+					console.log(`[ProjectView:${project.name}] did-finish-load after folder change, visible=${pv.view.getVisible()}, bounds=${JSON.stringify(pv.view.getBounds())}`);
+					// Ensure the view is visible and focused after reload
+					pv.view.setVisible(true);
+					pv.view.webContents.focus();
+				});
+				pv.view.webContents.once('did-fail-load', (_event: any, errorCode: number, errorDescription: string) => {
+					console.log(`[ProjectView:${project.name}] did-fail-load: ${errorCode} ${errorDescription}`);
+				});
+				pv.view.webContents.loadURL(workbenchUrl);
+			}
+		}
+	}
+
+	/**
+	 * Restores projects from disk after the first window has opened.
+	 * Called from app.ts afterWindowOpen().
+	 */
+	async restoreProjects(): Promise<void> {
+		console.log(`[ProjectMainService] restoreProjects() called, ${this.projects.length} project(s)`);
+		if (this.projects.length === 0) {
+			return;
+		}
+
+		const mainWindow = this.windowsMainService.getWindows()[0];
+		if (!mainWindow?.win) {
+			console.log('[ProjectMainService] No main window available for project restoration');
+			return;
+		}
+
+		// First project adopts the main window
+		this.mainWindowProjectId = this.projects[0].id;
+		console.log(`[ProjectMainService] Restoring ${this.projects.length} project(s), main window → "${this.projects[0].name}"`);
+
+		// Create WebContentsViews for additional projects
+		for (let i = 1; i < this.projects.length; i++) {
+			await this.createViewForProject(this.projects[i], mainWindow.win);
+		}
+
+		// Set active project
+		if (!this.activeProjectId) {
+			this.activeProjectId = this.projects[0].id;
+		}
+
+		// Show the active project's view
+		if (this.activeProjectId !== this.mainWindowProjectId) {
+			await this.switchToProject(this.activeProjectId);
+		}
+	}
+
+	/**
 	 * Associates the main window with the first project (used during startup).
 	 */
 	registerWindowForProject(projectId: string, _windowId: number): void {
 		if (!this.mainWindowProjectId) {
 			this.mainWindowProjectId = projectId;
 		}
+	}
+
+	private getWorkspaceIdentifier(folderUri: URI) {
+		if (folderUri.scheme === Schemas.file) {
+			try {
+				const stat = fs.statSync(folderUri.fsPath);
+				return getSingleFolderWorkspaceIdentifier(folderUri, stat);
+			} catch {
+				return undefined;
+			}
+		}
+		return getSingleFolderWorkspaceIdentifier(folderUri);
 	}
 
 	private async createViewForProject(project: IProject, browserWindow: Electron.BrowserWindow): Promise<void> {
@@ -345,7 +520,7 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			tmpDir: this.environmentMainService.tmpDir.fsPath,
 			userDataDir: this.environmentMainService.userDataPath,
 
-			workspace: project.folderUri ? getSingleFolderWorkspaceIdentifier(URI.parse(project.folderUri)) : undefined,
+			workspace: project.folderUri ? this.getWorkspaceIdentifier(URI.parse(project.folderUri)) : undefined,
 			userEnv: {},
 
 			nls: {
@@ -417,8 +592,15 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 	}
 
 	override dispose(): void {
-		// Clean up all project views
+		// Save state before shutdown
+		this.saveToDisk();
+
+		// Remove and dispose all project views
+		const mainWindow = this.windowsMainService.getWindows()[0];
 		for (const [, pv] of this.projectViews) {
+			if (mainWindow?.win) {
+				mainWindow.win.contentView.removeChildView(pv.view);
+			}
 			pv.configUrl.dispose();
 			pv.disposables.dispose();
 		}

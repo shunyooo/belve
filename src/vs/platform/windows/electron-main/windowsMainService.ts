@@ -318,6 +318,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	}
 
 	async open(openConfig: IOpenConfiguration): Promise<ICodeWindow[]> {
+		console.log(`[WindowsMainService] open() context=${openConfig.context}, contextWindowId=${openConfig.contextWindowId}, uris=${JSON.stringify(openConfig.urisToOpen?.map(o => Object.keys(o)))}`);
 		this.logService.trace('windowsManager#open');
 
 		// Make sure addMode/removeMode is only enabled if we have an active window

@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { BrowserWindow, WebContents } from 'electron';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { createDecorator } from '../../instantiation/common/instantiation.js';
 import { ILogService } from '../../log/common/log.js';
@@ -14,6 +15,8 @@ import { hash } from '../../../base/common/hash.js';
 import { Event, Emitter } from '../../../base/common/event.js';
 import { DeferredPromise } from '../../../base/common/async.js';
 import { ILifecycleMainService } from '../../lifecycle/electron-main/lifecycleMainService.js';
+import { IProjectMainService } from '../../projects/common/projects.js';
+import { ProjectMainService } from '../../projects/electron-main/projectMainService.js';
 
 export const IUtilityProcessWorkerMainService = createDecorator<IUtilityProcessWorkerMainService>('utilityProcessWorker');
 
@@ -32,7 +35,8 @@ export class UtilityProcessWorkerMainService extends Disposable implements IUtil
 		@ILogService private readonly logService: ILogService,
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
-		@ILifecycleMainService private readonly lifecycleMainService: ILifecycleMainService
+		@ILifecycleMainService private readonly lifecycleMainService: ILifecycleMainService,
+		@IProjectMainService private readonly projectMainService: IProjectMainService
 	) {
 		super();
 	}
@@ -50,7 +54,7 @@ export class UtilityProcessWorkerMainService extends Disposable implements IUtil
 		}
 
 		// Create new worker
-		const worker = new UtilityProcessWorker(this.logService, this.windowsMainService, this.telemetryService, this.lifecycleMainService, configuration);
+		const worker = new UtilityProcessWorker(this.logService, this.windowsMainService, this.telemetryService, this.lifecycleMainService, this.projectMainService, configuration);
 		if (!worker.spawn()) {
 			return { reason: { code: 1, signal: 'EINVALID' } };
 		}
@@ -106,6 +110,7 @@ class UtilityProcessWorker extends Disposable {
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@ILifecycleMainService lifecycleMainService: ILifecycleMainService,
+		private readonly projectMainService: IProjectMainService,
 		private readonly configuration: IUtilityProcessWorkerCreateConfiguration
 	) {
 		super();
@@ -121,8 +126,22 @@ class UtilityProcessWorker extends Disposable {
 	}
 
 	spawn(): boolean {
+		let windowPid: number | undefined;
+		let fallbackWebContents: WebContents | undefined;
+		let fallbackWindow: BrowserWindow | undefined;
+
 		const window = this.windowsMainService.getWindowById(this.configuration.reply.windowId);
-		const windowPid = window?.win?.webContents.getOSProcessId();
+		if (window?.win) {
+			windowPid = window.win.webContents.getOSProcessId();
+		} else {
+			// WebContentsView project fallback
+			const projectInfo = (this.projectMainService as ProjectMainService).getProjectViewInfo(this.configuration.reply.windowId);
+			if (projectInfo) {
+				windowPid = projectInfo.webContents.getOSProcessId();
+				fallbackWebContents = projectInfo.webContents;
+				fallbackWindow = projectInfo.parentWindow;
+			}
+		}
 
 		return this.utilityProcess.start({
 			type: this.configuration.process.type,
@@ -134,7 +153,7 @@ class UtilityProcessWorker extends Disposable {
 			responseWindowId: this.configuration.reply.windowId,
 			responseChannel: this.configuration.reply.channel,
 			responseNonce: this.configuration.reply.nonce
-		});
+		}, fallbackWebContents, fallbackWindow);
 	}
 
 	kill() {

@@ -14,6 +14,8 @@ import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { WindowUtilityProcess } from '../../utilityProcess/electron-main/utilityProcess.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
+import { IProjectMainService } from '../../projects/common/projects.js';
+import { ProjectMainService } from '../../projects/electron-main/projectMainService.js';
 
 export class ExtensionHostStarter extends Disposable implements IDisposable, IExtensionHostStarter {
 
@@ -30,6 +32,7 @@ export class ExtensionHostStarter extends Disposable implements IDisposable, IEx
 		@IWindowsMainService private readonly _windowsMainService: IWindowsMainService,
 		@ITelemetryService private readonly _telemetryService: ITelemetryService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IProjectMainService private readonly _projectMainService: IProjectMainService,
 	) {
 		super();
 
@@ -111,6 +114,18 @@ export class ExtensionHostStarter extends Disposable implements IDisposable, IEx
 		if (this._configurationService.getValue<boolean>('extensions.supportNodeGlobalNavigator')) {
 			args.push('--supportGlobalNavigator');
 		}
+
+		// Resolve fallback for WebContentsView projects
+		let fallbackWebContents: Electron.WebContents | undefined;
+		let fallbackWindow: Electron.BrowserWindow | undefined;
+		if (!this._windowsMainService.getWindowById(opts.responseWindowId)) {
+			const projectInfo = (this._projectMainService as ProjectMainService).getProjectViewInfo(opts.responseWindowId);
+			if (projectInfo) {
+				fallbackWebContents = projectInfo.webContents;
+				fallbackWindow = projectInfo.parentWindow;
+			}
+		}
+
 		extHost.start({
 			...opts,
 			type: 'extensionHost',
@@ -123,7 +138,7 @@ export class ExtensionHostStarter extends Disposable implements IDisposable, IEx
 			windowLifecycleBound: true,
 			windowLifecycleGraceTime: extensionHostGraceTimeMs,
 			correlationId: id
-		});
+		}, fallbackWebContents, fallbackWindow);
 		const pid = await Event.toPromise(extHost.onSpawn);
 		return { pid };
 	}

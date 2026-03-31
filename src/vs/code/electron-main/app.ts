@@ -1499,6 +1499,9 @@ export class CodeApplication extends Disposable {
 
 	private afterWindowOpen(instantiationService: IInstantiationService): void {
 
+		// Restore projects from previous session
+		this.projectMainService?.restoreProjects();
+
 		// Accurate Windows version info
 		if (isWindows) {
 			initWindowsVersionInfo();

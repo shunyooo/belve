@@ -50,4 +50,7 @@ export interface IProjectMainService {
 
 	getProjectForWindow(windowId: number): Promise<IProject | undefined>;
 	getWindowForProject(projectId: string): Promise<number | undefined>;
+
+	getProjectByWebContentsId(webContentsId: number): Promise<IProject | undefined>;
+	openFolderInProject(projectId: string, folderUri: string): Promise<void>;
 }

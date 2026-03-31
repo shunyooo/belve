@@ -48,6 +48,7 @@ import { IConfigurationService } from '../../configuration/common/configuration.
 import { IProxyAuthService } from './auth.js';
 import { AuthInfo, Credentials, IRequestService } from '../../request/common/request.js';
 import { randomPath } from '../../../base/common/extpath.js';
+import { IProjectMainService } from '../../projects/common/projects.js';
 import { CancellationTokenSource } from '../../../base/common/cancellation.js';
 
 export interface INativeHostMainService extends AddFirstParameterToFunctions<ICommonNativeHostService, Promise<unknown> /* only methods, not events */, number | undefined /* window ID */> { }
@@ -71,7 +72,8 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IRequestService private readonly requestService: IRequestService,
 		@IProxyAuthService private readonly proxyAuthService: IProxyAuthService,
-		@IInstantiationService private readonly instantiationService: IInstantiationService
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IProjectMainService private readonly projectMainService: IProjectMainService
 	) {
 		super();
 
@@ -274,7 +276,20 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 	}
 
 	private async doOpenWindow(windowId: number | undefined, toOpen: IWindowOpenable[], options: IOpenWindowOptions = Object.create(null)): Promise<void> {
+		console.log(`[NativeHostMainService] doOpenWindow windowId=${windowId}, toOpen=${JSON.stringify(toOpen.map(o => Object.keys(o)))}`);
 		if (toOpen.length > 0) {
+			// Intercept folder opens from WebContentsView projects
+			if (windowId !== undefined && !options.forceNewWindow) {
+				const project = await this.projectMainService.getProjectByWebContentsId(windowId);
+				if (project) {
+					const folderOpenable = toOpen.find(o => 'folderUri' in o);
+					if (folderOpenable && 'folderUri' in folderOpenable) {
+						await this.projectMainService.openFolderInProject(project.id, folderOpenable.folderUri.toString());
+						return;
+					}
+				}
+			}
+
 			await this.windowsMainService.open({
 				context: OpenContext.API,
 				contextWindowId: windowId,
@@ -604,6 +619,21 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 	}
 
 	private async doOpenPicked(openable: IWindowOpenable[], options: INativeOpenDialogOptions, windowId: number | undefined): Promise<void> {
+		// Intercept folder opens from WebContentsView projects
+		console.log(`[NativeHostMainService] doOpenPicked windowId=${windowId}, openable=${JSON.stringify(openable.map(o => Object.keys(o)))}`);
+		if (windowId !== undefined) {
+			const project = await this.projectMainService.getProjectByWebContentsId(windowId);
+			console.log(`[NativeHostMainService] getProjectByWebContentsId(${windowId}) => ${project?.name ?? 'null'}`);
+			if (project) {
+				const folderOpenable = openable.find(o => 'folderUri' in o);
+				if (folderOpenable && 'folderUri' in folderOpenable) {
+					console.log(`[NativeHostMainService] Routing folder open to project "${project.name}"`);
+					await this.projectMainService.openFolderInProject(project.id, folderOpenable.folderUri.toString());
+					return;
+				}
+			}
+		}
+
 		await this.windowsMainService.open({
 			context: OpenContext.DIALOG,
 			contextWindowId: windowId,

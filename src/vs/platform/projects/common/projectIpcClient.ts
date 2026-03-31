@@ -70,6 +70,14 @@ export class ProjectMainServiceClient implements IProjectMainService {
 		return this.channel.call('getWindowForProject', projectId);
 	}
 
+	getProjectByWebContentsId(webContentsId: number): Promise<IProject | undefined> {
+		return this.channel.call('getProjectByWebContentsId', webContentsId);
+	}
+
+	openFolderInProject(projectId: string, folderUri: string): Promise<void> {
+		return this.channel.call('openFolderInProject', [projectId, folderUri]);
+	}
+
 	dispose(): void {
 		this.disposables.dispose();
 	}
