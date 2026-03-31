@@ -1,0 +1,82 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.monaco-workbench .pane-container-part {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+}
+
+.monaco-workbench .pane-container-part.bordered {
+	box-sizing: border-box;
+	border-right-width: 1px;
+	border-right-style: solid;
+}
+
+.monaco-workbench .pane-container-grid {
+	flex: 1;
+	overflow: hidden;
+	position: relative;
+}
+
+/* PaneView */
+.pane-view {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	height: 100%;
+}
+
+.pane-view-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	height: 24px;
+	min-height: 24px;
+	padding: 0 8px;
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	background-color: var(--vscode-sideBarSectionHeader-background);
+	color: var(--vscode-sideBarSectionHeader-foreground);
+	border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.pane-view-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pane-view-actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.pane-view-actions .action-label {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	cursor: pointer;
+	border-radius: 3px;
+	opacity: 0.7;
+}
+
+.pane-view-actions .action-label:hover {
+	opacity: 1;
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.pane-view-content {
+	flex: 1;
+	overflow: hidden;
+	position: relative;
+}
