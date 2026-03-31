@@ -20,7 +20,9 @@
 		"onResolveRemoteAuthority:dev-container",
 		"onCommand:dock-code-remote-containers.openInContainer",
 		"onCommand:dock-code-remote-containers.rebuildContainer",
-		"onCommand:dock-code-remote-containers.showLog"
+		"onCommand:dock-code-remote-containers.showLog",
+		"workspaceContains:**/.devcontainer/devcontainer.json",
+		"workspaceContains:**/.devcontainer.json"
 	],
 	"main": "./out/extension",
 	"devDependencies": {
@@ -48,7 +50,7 @@
 		],
 		"commands": [
 			{
-				"title": "Open Folder in Container...",
+				"title": "Open Remote Folder in Container...",
 				"category": "Dev Containers",
 				"command": "dock-code-remote-containers.openInContainer"
 			},

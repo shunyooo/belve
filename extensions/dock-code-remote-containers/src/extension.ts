@@ -1,24 +1,25 @@
 /*---------------------------------------------------------------------------------------------
  *  dock-code Remote - Containers Extension
- *  Opens folders in Dev Containers using @devcontainers/cli and dock-code REH server.
+ *  Opens folders in Dev Containers on SSH remote hosts.
+ *  Flow: local → SSH → remote host → Docker container (REH server)
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as crypto from 'crypto';
 import * as net from 'net';
 
 let outputChannel: vscode.OutputChannel;
 
-/** Active container processes per authority */
-const activeProcesses = new Map<string, cp.ChildProcess>();
+/** Active processes per authority, for cleanup */
+const activeProcesses = new Map<string, cp.ChildProcess[]>();
 
 export function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel('Remote - Containers');
 
-	// Register the remote authority resolver for 'dev-container'
 	const resolverDisposable = vscode.workspace.registerRemoteAuthorityResolver('dev-container', {
 		async getCanonicalURI(uri: vscode.Uri): Promise<vscode.Uri> {
 			return vscode.Uri.file(uri.path);
@@ -33,54 +34,51 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(resolverDisposable);
 
-	// Command: Open Folder in Container
+	// Command: Open Folder in Container on SSH Host
 	context.subscriptions.push(vscode.commands.registerCommand('dock-code-remote-containers.openInContainer', async () => {
-		const folderUri = await vscode.window.showOpenDialog({
-			canSelectFolders: true,
-			canSelectFiles: false,
-			canSelectMany: false,
-			openLabel: 'Open in Container',
-			title: 'Select a folder with devcontainer.json'
+		// Step 1: Pick SSH host
+		const hosts = parseSSHConfigHosts();
+		const hostItems: vscode.QuickPickItem[] = hosts.map(h => ({ label: h }));
+		hostItems.push({ label: '$(plus) Enter host manually...', description: 'user@hostname' });
+
+		const selectedHost = await vscode.window.showQuickPick(hostItems, {
+			placeHolder: 'Select SSH host where containers run',
+			title: 'Dev Containers: Select SSH Host'
 		});
-
-		if (folderUri && folderUri[0]) {
-			const folderPath = folderUri[0].fsPath;
-			// Check for devcontainer.json
-			const hasConfig = findDevcontainerConfig(folderPath);
-			if (!hasConfig) {
-				const create = await vscode.window.showWarningMessage(
-					'No devcontainer.json found. Create a default one?',
-					'Create', 'Cancel'
-				);
-				if (create === 'Create') {
-					createDefaultDevcontainerConfig(folderPath);
-				} else {
-					return;
-				}
-			}
-
-			// Encode folder path as hex for the authority
-			const authorityId = Buffer.from(folderPath).toString('hex');
-			await vscode.commands.executeCommand('vscode.newWindow', {
-				remoteAuthority: `dev-container+${authorityId}`,
-				reuseWindow: true
-			});
+		if (!selectedHost) {
+			return;
 		}
+
+		let host: string;
+		if (selectedHost.label.includes('Enter host manually')) {
+			const input = await vscode.window.showInputBox({
+				prompt: 'Enter SSH host (e.g., user@hostname)',
+				placeHolder: 'user@hostname'
+			});
+			if (!input) {
+				return;
+			}
+			host = input;
+		} else {
+			host = selectedHost.label;
+		}
+
+		// Step 2: Browse remote folders
+		const folderPath = await browseRemoteFolders(host);
+		if (!folderPath) {
+			return;
+		}
+
+		// Encode as: host:folderPath in hex
+		const authorityId = Buffer.from(`${host}:${folderPath}`).toString('hex');
+		await vscode.commands.executeCommand('vscode.newWindow', {
+			remoteAuthority: `dev-container+${authorityId}`,
+			reuseWindow: true
+		});
 	}));
 
 	// Command: Rebuild Container
 	context.subscriptions.push(vscode.commands.registerCommand('dock-code-remote-containers.rebuildContainer', async () => {
-		const authority = vscode.env.remoteName;
-		if (!authority) {
-			return;
-		}
-		// Kill existing processes
-		const proc = activeProcesses.get(authority);
-		if (proc) {
-			proc.kill();
-			activeProcesses.delete(authority);
-		}
-		// Reload to trigger re-resolve
 		await vscode.commands.executeCommand('workbench.action.reloadWindow');
 	}));
 
@@ -91,46 +89,187 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push({
 		dispose: () => {
-			for (const [, proc] of activeProcesses) {
-				proc.kill();
+			for (const [, procs] of activeProcesses) {
+				procs.forEach(p => p.kill());
 			}
 			activeProcesses.clear();
 		}
 	});
-}
 
-/**
- * Check if a devcontainer.json exists in the folder.
- */
-function findDevcontainerConfig(folderPath: string): boolean {
-	const candidates = [
-		path.join(folderPath, '.devcontainer', 'devcontainer.json'),
-		path.join(folderPath, '.devcontainer.json'),
-	];
-	return candidates.some(p => fs.existsSync(p));
-}
-
-/**
- * Create a default devcontainer.json.
- */
-function createDefaultDevcontainerConfig(folderPath: string): void {
-	const devcontainerDir = path.join(folderPath, '.devcontainer');
-	if (!fs.existsSync(devcontainerDir)) {
-		fs.mkdirSync(devcontainerDir, { recursive: true });
+	// Auto-detect devcontainer.json in current workspace
+	if (!vscode.env.remoteName) {
+		detectDevcontainerInWorkspace();
 	}
-	const config = {
-		name: path.basename(folderPath),
-		image: 'mcr.microsoft.com/devcontainers/base:ubuntu'
-	};
-	fs.writeFileSync(
-		path.join(devcontainerDir, 'devcontainer.json'),
-		JSON.stringify(config, null, '\t') + '\n'
-	);
-	outputChannel.appendLine(`Created default devcontainer.json at ${devcontainerDir}`);
 }
 
 /**
- * Get product configuration from the local product.json.
+ * Browse remote directories via SSH and let the user pick a folder.
+ * Shows directories with devcontainer.json highlighted.
+ */
+async function browseRemoteFolders(host: string): Promise<string | undefined> {
+	let currentPath = '~';
+
+	// Resolve ~ to absolute path
+	try {
+		currentPath = (await sshExec(host, 'echo $HOME')).trim();
+	} catch {
+		currentPath = '/home';
+	}
+
+	while (true) {
+		// List directories and check for devcontainer.json
+		let listing: string;
+		try {
+			listing = await sshExec(host,
+				`cd "${currentPath}" && for d in */ .; do ` +
+				`if [ -d "$d" ] && [ "$d" != "./" ]; then ` +
+				`  if [ -f "$d/.devcontainer/devcontainer.json" ] || [ -f "$d/.devcontainer.json" ]; then ` +
+				`    echo "DEVCONTAINER:$d"; ` +
+				`  else echo "DIR:$d"; fi; ` +
+				`fi; done 2>/dev/null`
+			);
+		} catch {
+			listing = '';
+		}
+
+		const items: vscode.QuickPickItem[] = [];
+
+		// Parent directory
+		items.push({
+			label: '$(arrow-up) ..',
+			description: path.dirname(currentPath),
+			alwaysShow: true
+		});
+
+		// Current directory (select this)
+		items.push({
+			label: '$(check) Open this folder',
+			description: currentPath,
+			alwaysShow: true
+		});
+
+		// Subdirectories
+		const lines = listing.trim().split('\n').filter(l => l.length > 0);
+		for (const line of lines) {
+			const isDevcontainer = line.startsWith('DEVCONTAINER:');
+			const dirName = line.replace(/^(DEVCONTAINER|DIR):/, '').replace(/\/$/, '');
+			if (!dirName || dirName === '.' || dirName === '..') {
+				continue;
+			}
+			items.push({
+				label: isDevcontainer ? `$(container) ${dirName}` : `$(folder) ${dirName}`,
+				description: isDevcontainer ? 'devcontainer.json' : '',
+			});
+		}
+
+		const selected = await vscode.window.showQuickPick(items, {
+			placeHolder: currentPath,
+			title: `Browse: ${currentPath}`
+		});
+
+		if (!selected) {
+			return undefined;
+		}
+
+		if (selected.label.includes('Open this folder')) {
+			return currentPath;
+		} else if (selected.label.includes('..')) {
+			currentPath = path.dirname(currentPath);
+		} else {
+			// Extract folder name (remove icon prefix)
+			const folderName = selected.label.replace(/^\$\([^)]+\)\s*/, '');
+			currentPath = currentPath === '/' ? `/${folderName}` : `${currentPath}/${folderName}`;
+		}
+	}
+}
+
+/**
+ * Check if the current workspace has a devcontainer.json and offer to open in container.
+ */
+async function detectDevcontainerInWorkspace(): Promise<void> {
+	const folders = vscode.workspace.workspaceFolders;
+	if (!folders || folders.length === 0) {
+		return;
+	}
+
+	for (const folder of folders) {
+		const candidates = [
+			vscode.Uri.joinPath(folder.uri, '.devcontainer', 'devcontainer.json'),
+			vscode.Uri.joinPath(folder.uri, '.devcontainer.json'),
+		];
+
+		for (const candidate of candidates) {
+			try {
+				await vscode.workspace.fs.stat(candidate);
+				// Found devcontainer.json — show notification
+				const result = await vscode.window.showInformationMessage(
+					`Folder "${folder.name}" contains a Dev Container configuration. Reopen in container?`,
+					'Open in Container',
+					'Not Now'
+				);
+				if (result === 'Open in Container') {
+					await vscode.commands.executeCommand('dock-code-remote-containers.openInContainer');
+				}
+				return; // Only show once
+			} catch {
+				// File doesn't exist, continue
+			}
+		}
+	}
+}
+
+/**
+ * Parse SSH config to get host names.
+ */
+function parseSSHConfigHosts(): string[] {
+	const configPath = path.join(os.homedir(), '.ssh', 'config');
+	if (!fs.existsSync(configPath)) {
+		return [];
+	}
+	const content = fs.readFileSync(configPath, 'utf8');
+	const hosts: string[] = [];
+	for (const line of content.split('\n')) {
+		const match = line.match(/^\s*Host\s+(.+)/i);
+		if (match) {
+			for (const pattern of match[1].trim().split(/\s+/)) {
+				if (!pattern.includes('*') && !pattern.includes('?')) {
+					hosts.push(pattern);
+				}
+			}
+		}
+	}
+	return hosts;
+}
+
+/**
+ * Execute a command on the remote via SSH.
+ */
+function sshExec(host: string, command: string): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const proc = cp.spawn('ssh', [
+			'-o', 'StrictHostKeyChecking=accept-new',
+			'-o', 'ConnectTimeout=15',
+			host, command
+		], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+		let stdout = '';
+		let stderr = '';
+		proc.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+		proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+		proc.on('close', (code) => {
+			if (code === 0) {
+				resolve(stdout);
+			} else {
+				reject(new Error(`SSH command failed (code ${code}): ${stderr.substring(0, 500)}`));
+			}
+		});
+		proc.on('error', (err) => reject(new Error(`SSH failed: ${err.message}`)));
+	});
+}
+
+/**
+ * Get product configuration.
  */
 function getProductConfig(): { commit?: string; serverApplicationName: string; serverDataFolderName: string } {
 	const productPath = path.join(vscode.env.appRoot, 'product.json');
@@ -144,209 +283,191 @@ function getProductConfig(): { commit?: string; serverApplicationName: string; s
 
 /**
  * Main resolve function.
+ * Authority format: dev-container+<hex(host:folderPath)>
  */
 async function doResolve(
 	authority: string,
 	progress: vscode.Progress<{ message?: string }>,
 	context: vscode.ExtensionContext
 ): Promise<vscode.ResolverResult> {
-	// Parse authority: dev-container+<hex-encoded-folder-path>
-	const hexPath = authority.substring(authority.indexOf('+') + 1);
-	const folderPath = Buffer.from(hexPath, 'hex').toString('utf8');
-	outputChannel.appendLine(`[${new Date().toISOString()}] Resolving Dev Container for: ${folderPath}`);
+	const hexPayload = authority.substring(authority.indexOf('+') + 1);
+	const payload = Buffer.from(hexPayload, 'hex').toString('utf8');
+	const colonIdx = payload.indexOf(':');
+	const host = payload.substring(0, colonIdx);
+	const folderPath = payload.substring(colonIdx + 1);
+
+	outputChannel.appendLine(`[${new Date().toISOString()}] Resolving Dev Container`);
+	outputChannel.appendLine(`  SSH host: ${host}`);
+	outputChannel.appendLine(`  Folder: ${folderPath}`);
 
 	const connectionToken = crypto.randomBytes(20).toString('hex');
 	const product = getProductConfig();
 	const commit = product.commit || await getLocalCommit(context);
 
-	// Step 1: Start/build the dev container
+	// Step 1: Test SSH connection
+	progress.report({ message: 'Connecting to SSH host...' });
+	try {
+		await sshExec(host, 'echo ok');
+	} catch (err: any) {
+		throw vscode.RemoteAuthorityResolverError.NotAvailable(
+			`Could not connect to "${host}": ${err.message}`, true
+		);
+	}
+
+	// Step 2: Check devcontainer CLI on remote
+	progress.report({ message: 'Checking devcontainer CLI...' });
+	try {
+		const version = await sshExec(host, 'devcontainer --version');
+		outputChannel.appendLine(`  devcontainer CLI version: ${version.trim()}`);
+	} catch {
+		outputChannel.appendLine('  devcontainer CLI not found, installing...');
+		try {
+			await sshExec(host, 'npm install -g @devcontainers/cli');
+		} catch (err: any) {
+			throw vscode.RemoteAuthorityResolverError.NotAvailable(
+				`Failed to install devcontainer CLI on ${host}: ${err.message}`, true
+			);
+		}
+	}
+
+	// Step 3: Start/build the dev container on remote
 	progress.report({ message: 'Starting Dev Container...' });
-	const containerId = await startDevContainer(folderPath);
-	outputChannel.appendLine(`Container started: ${containerId}`);
+	const containerId = await startRemoteDevContainer(host, folderPath);
+	outputChannel.appendLine(`  Container ID: ${containerId}`);
 
-	// Step 2: Install REH server in the container
-	progress.report({ message: 'Installing dock-code server...' });
-	await installServerInContainer(containerId, commit, product, context);
+	// Step 4: Install REH server in container (via SSH → docker exec)
+	// Download from GitHub Release directly into the container
+	progress.report({ message: 'Installing dock-code server in container...' });
+	const serverInstallDir = `/home/${product.serverDataFolderName}/bin/${commit}`;
+	const serverBinPath = `${serverInstallDir}/bin/${product.serverApplicationName}`;
 
-	// Step 3: Start the server inside the container
+	const serverExists = await checkRemoteContainerFile(host, containerId, serverBinPath);
+	if (!serverExists) {
+		await installServerInRemoteContainer(host, containerId, commit, product, context, progress);
+	} else {
+		outputChannel.appendLine('  Server already installed in container');
+	}
+
+	// Step 5: Start REH server in container
 	progress.report({ message: 'Starting remote server...' });
-	const serverBinPath = `/home/${product.serverDataFolderName}/bin/${commit}/bin/${product.serverApplicationName}`;
-	const { port: containerPort, process: serverProcess } = await startServerInContainer(
-		containerId, serverBinPath, connectionToken
+	const { port: containerPort, process: serverProcess } = await startServerInRemoteContainer(
+		host, containerId, serverBinPath, connectionToken
 	);
 
-	activeProcesses.set(authority, serverProcess);
+	// Step 6: Set up SSH tunnel to container port
+	progress.report({ message: 'Setting up tunnel...' });
+	// First, forward container port to remote host
+	const remoteHostPort = await getRemoteContainerPortMapping(host, containerId, containerPort);
+	// Then, forward remote host port to local
+	const localPort = await findFreePort();
+	const tunnelProcess = await createSSHTunnel(host, localPort, remoteHostPort);
+
+	// Track processes for cleanup
+	const procs = [serverProcess, tunnelProcess];
+	activeProcesses.set(authority, procs);
 	context.subscriptions.push({
 		dispose: () => {
-			serverProcess.kill();
+			procs.forEach(p => p.kill());
 			activeProcesses.delete(authority);
 		}
 	});
 
-	// Step 4: Set up port forwarding from host to container
-	progress.report({ message: 'Setting up connection...' });
-	const localPort = await findFreePort();
-	const portForwardProcess = await createDockerPortForward(containerId, localPort, containerPort);
-
-	context.subscriptions.push({
-		dispose: () => {
-			portForwardProcess.kill();
-		}
-	});
-
-	outputChannel.appendLine(`Connection established: localhost:${localPort} -> container:${containerPort}`);
-
+	outputChannel.appendLine(`  Tunnel: localhost:${localPort} → ${host}:${remoteHostPort} → container:${containerPort}`);
 	return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
 }
 
 /**
- * Start or build the dev container using devcontainer CLI.
+ * Start a dev container on the remote host.
  */
-async function startDevContainer(folderPath: string): Promise<string> {
-	outputChannel.appendLine(`Running: devcontainer up --workspace-folder ${folderPath}`);
+async function startRemoteDevContainer(host: string, folderPath: string): Promise<string> {
+	outputChannel.appendLine(`  Running devcontainer up on ${host}...`);
+	const output = await sshExec(host, `devcontainer up --workspace-folder "${folderPath}" 2>&1`);
 
-	return new Promise((resolve, reject) => {
-		const proc = cp.spawn('devcontainer', [
-			'up',
-			'--workspace-folder', folderPath
-		], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-		let stdout = '';
-		let stderr = '';
-
-		proc.stdout.on('data', (data: Buffer) => {
-			const text = data.toString();
-			stdout += text;
-			outputChannel.append(`[devcontainer] ${text}`);
-		});
-
-		proc.stderr.on('data', (data: Buffer) => {
-			const text = data.toString();
-			stderr += text;
-			outputChannel.append(`[devcontainer:err] ${text}`);
-		});
-
-		proc.on('close', (code) => {
-			if (code === 0) {
-				// Parse the JSON output to get container ID
-				try {
-					const result = JSON.parse(stdout.trim().split('\n').pop() || '{}');
-					if (result.containerId) {
-						resolve(result.containerId);
-					} else {
-						reject(new Error('devcontainer up did not return containerId'));
-					}
-				} catch {
-					reject(new Error(`Failed to parse devcontainer output: ${stdout}`));
-				}
-			} else {
-				reject(new Error(`devcontainer up failed (code ${code}): ${stderr}`));
+	// Parse JSON output (last line)
+	const lines = output.trim().split('\n');
+	for (let i = lines.length - 1; i >= 0; i--) {
+		try {
+			const result = JSON.parse(lines[i]);
+			if (result.containerId) {
+				return result.containerId;
 			}
-		});
+		} catch {
+			continue;
+		}
+	}
 
-		proc.on('error', (err) => {
-			reject(new Error(`Failed to run devcontainer CLI: ${err.message}`));
-		});
-	});
+	throw new Error(`devcontainer up did not return containerId. Output:\n${output.substring(0, 500)}`);
 }
 
 /**
- * Install the REH server inside the container.
+ * Check if a file exists in a container on the remote host.
  */
-async function installServerInContainer(
+async function checkRemoteContainerFile(host: string, containerId: string, filePath: string): Promise<boolean> {
+	try {
+		await sshExec(host, `docker exec ${containerId} test -f ${filePath}`);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** GitHub repository for downloading REH releases */
+const REH_GITHUB_REPO = 'shunyooo/dock-code';
+
+/**
+ * Install REH server in a container on the remote host.
+ * Downloads from GitHub Release directly into the container.
+ */
+async function installServerInRemoteContainer(
+	host: string,
 	containerId: string,
 	commit: string,
 	product: { serverDataFolderName: string; serverApplicationName: string },
-	context: vscode.ExtensionContext
+	_context: vscode.ExtensionContext,
+	progress: vscode.Progress<{ message?: string }>
 ): Promise<void> {
 	const serverInstallDir = `/home/${product.serverDataFolderName}/bin/${commit}`;
-	const serverBinPath = `${serverInstallDir}/bin/${product.serverApplicationName}`;
+	const commitShort = commit.substring(0, 11);
+	const tarballName = 'dock-code-reh-linux-x64.tar.gz';
 
-	// Check if server already exists in container
+	// Try GitHub Release first — download directly inside the container
+	progress.report({ message: 'Downloading server into container...' });
+	const releaseTag = `reh-${commitShort}`;
+	const downloadUrl = `https://github.com/${REH_GITHUB_REPO}/releases/download/${releaseTag}/${tarballName}`;
+
+	outputChannel.appendLine(`  Trying GitHub Release: ${downloadUrl}`);
 	try {
-		await dockerExec(containerId, `test -f ${serverBinPath}`);
-		outputChannel.appendLine('Server already installed in container');
+		await sshExec(host, `docker exec ${containerId} sh -c "mkdir -p ${serverInstallDir} && curl -fSL --retry 3 '${downloadUrl}' | tar -xzf - -C ${serverInstallDir} --strip-components=1"`);
+		await sshExec(host, `docker exec ${containerId} chmod +x ${serverInstallDir}/bin/${product.serverApplicationName}`);
+		outputChannel.appendLine('  Server installed from GitHub Release');
 		return;
 	} catch {
-		// Not installed yet
+		outputChannel.appendLine('  GitHub Release not available for this commit');
 	}
 
-	// Find local REH build
-	const vscodePath = path.resolve(path.join(context.extensionPath, '..', '..'));
-
-	// Detect container architecture
-	const archOutput = await dockerExec(containerId, 'uname -m');
-	const arch = archOutput.trim();
-	let rehArch = 'x64';
-	if (arch.includes('aarch64') || arch.includes('arm64')) {
-		rehArch = 'arm64';
+	// Try latest release
+	const latestUrl = `https://github.com/${REH_GITHUB_REPO}/releases/latest/download/${tarballName}`;
+	outputChannel.appendLine(`  Trying latest release: ${latestUrl}`);
+	try {
+		await sshExec(host, `docker exec ${containerId} sh -c "mkdir -p ${serverInstallDir} && curl -fSL --retry 3 '${latestUrl}' | tar -xzf - -C ${serverInstallDir} --strip-components=1"`);
+		await sshExec(host, `docker exec ${containerId} chmod +x ${serverInstallDir}/bin/${product.serverApplicationName}`);
+		outputChannel.appendLine('  Server installed from latest GitHub Release');
+		return;
+	} catch {
+		outputChannel.appendLine('  Latest release also not available');
 	}
 
-	const buildDir = path.join(path.dirname(vscodePath), `vscode-reh-linux-${rehArch}`);
-
-	if (!fs.existsSync(buildDir)) {
-		throw new Error(
-			`No dock-code REH server build found at ${buildDir}.\n` +
-			`Build it with: npm run gulp vscode-reh-linux-${rehArch}`
-		);
-	}
-
-	outputChannel.appendLine(`Copying REH server from ${buildDir} to container...`);
-
-	// Create target directory in container
-	await dockerExec(containerId, `mkdir -p ${serverInstallDir}`);
-
-	// Copy REH build into container using docker cp
-	await new Promise<void>((resolve, reject) => {
-		const proc = cp.spawn('docker', [
-			'cp', `${buildDir}/.`, `${containerId}:${serverInstallDir}/`
-		]);
-		let stderr = '';
-		proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-		proc.on('close', (code) => {
-			if (code === 0) {
-				resolve();
-			} else {
-				reject(new Error(`docker cp failed: ${stderr}`));
-			}
-		});
-		proc.on('error', reject);
-	});
-
-	// Make server executable
-	await dockerExec(containerId, `chmod +x ${serverBinPath}`);
-	outputChannel.appendLine('Server installed in container');
+	throw new Error(
+		'No REH server available. Push to main to trigger GitHub Actions build.\n' +
+		`Expected release tag: ${releaseTag}`
+	);
 }
 
 /**
- * Execute a command inside a Docker container.
+ * Start REH server inside a container on the remote host.
  */
-function dockerExec(containerId: string, command: string): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const proc = cp.spawn('docker', [
-			'exec', containerId, 'sh', '-c', command
-		], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-		let stdout = '';
-		let stderr = '';
-		proc.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
-		proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-		proc.on('close', (code) => {
-			if (code === 0) {
-				resolve(stdout);
-			} else {
-				reject(new Error(`docker exec failed (code ${code}): ${stderr}`));
-			}
-		});
-		proc.on('error', reject);
-	});
-}
-
-/**
- * Start the REH server inside the container.
- */
-function startServerInContainer(
+function startServerInRemoteContainer(
+	host: string,
 	containerId: string,
 	serverBinPath: string,
 	connectionToken: string
@@ -361,9 +482,12 @@ function startServerInContainer(
 			'--enable-remote-auto-shutdown'
 		].join(' ');
 
-		const proc = cp.spawn('docker', [
-			'exec', '-i', containerId, 'sh', '-c',
-			`${serverBinPath} ${serverArgs}`
+		// SSH → docker exec → server
+		const proc = cp.spawn('ssh', [
+			'-o', 'StrictHostKeyChecking=accept-new',
+			'-o', 'ServerAliveInterval=30',
+			host,
+			`docker exec -i ${containerId} ${serverBinPath} ${serverArgs}`
 		], { stdio: ['ignore', 'pipe', 'pipe'] });
 
 		let isResolved = false;
@@ -378,9 +502,7 @@ function startServerInContainer(
 					const match = lastLine.match(/Extension host agent listening on (\d+)/);
 					if (match && !isResolved) {
 						isResolved = true;
-						const port = parseInt(match[1], 10);
-						outputChannel.appendLine(`Container server listening on port ${port}`);
-						resolve({ port, process: proc });
+						resolve({ port: parseInt(match[1], 10), process: proc });
 					}
 					lastLine = '';
 				} else {
@@ -391,135 +513,119 @@ function startServerInContainer(
 
 		proc.stdout!.on('data', processOutput);
 		proc.stderr!.on('data', processOutput);
-
-		proc.on('error', (err) => {
-			if (!isResolved) {
-				isResolved = true;
-				reject(new Error(`Failed to start container server: ${err.message}`));
-			}
-		});
-
-		proc.on('close', (code) => {
-			if (!isResolved) {
-				isResolved = true;
-				reject(new Error(`Container server exited with code ${code}`));
-			}
-		});
-
-		setTimeout(() => {
-			if (!isResolved) {
-				isResolved = true;
-				proc.kill();
-				reject(new Error('Timeout waiting for container server to start'));
-			}
-		}, 120000); // 2 minutes for container builds
+		proc.on('error', (err) => { if (!isResolved) { isResolved = true; reject(err); } });
+		proc.on('close', (code) => { if (!isResolved) { isResolved = true; reject(new Error(`Server exited (code ${code})`)); } });
+		setTimeout(() => { if (!isResolved) { isResolved = true; proc.kill(); reject(new Error('Timeout')); } }, 120000);
 	});
 }
 
 /**
- * Forward a local port to a container port using docker exec + socat or SSH tunnel.
- * Uses a simple TCP proxy since docker port forwarding is more reliable.
+ * Get the host-side port that maps to a container port.
+ * Uses `docker port` on the remote, or falls back to the same port via docker network.
  */
-function createDockerPortForward(containerId: string, localPort: number, containerPort: number): Promise<cp.ChildProcess> {
+async function getRemoteContainerPortMapping(host: string, containerId: string, containerPort: number): Promise<number> {
+	// The server listens on 0.0.0.0:PORT inside the container.
+	// Since we didn't publish the port, we access it via the container's IP on the docker network.
+	// Get container IP and use that port directly.
+	const containerIp = (await sshExec(host,
+		`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${containerId}`
+	)).trim();
+
+	if (containerIp) {
+		outputChannel.appendLine(`  Container IP: ${containerIp}, port: ${containerPort}`);
+		// Set up a socat relay on the remote host to forward from a host port to the container
+		const relayPort = 30000 + Math.floor(Math.random() * 10000);
+		// Start a background socat on the remote to relay host:relayPort → container:containerPort
+		await sshExec(host,
+			`nohup socat TCP-LISTEN:${relayPort},fork,reuseaddr TCP:${containerIp}:${containerPort} > /dev/null 2>&1 & echo $!`
+		);
+		return relayPort;
+	}
+
+	// Fallback: assume container port is directly accessible
+	return containerPort;
+}
+
+/**
+ * Create an SSH tunnel with verified connectivity.
+ */
+function createSSHTunnel(host: string, localPort: number, remotePort: number): Promise<cp.ChildProcess> {
 	return new Promise((resolve, reject) => {
-		// Use a Node.js TCP proxy to forward from localhost to container
-		const server = net.createServer((clientSocket) => {
-			// For each incoming connection, create a docker exec + socat connection
-			const dockerProc = cp.spawn('docker', [
-				'exec', '-i', containerId, 'sh', '-c',
-				`cat < /dev/tcp/127.0.0.1/${containerPort} & cat > /dev/tcp/127.0.0.1/${containerPort}`
-			], { stdio: ['pipe', 'pipe', 'pipe'] });
-
-			// Actually, /dev/tcp might not work. Use socat or a simpler approach.
-			dockerProc.kill();
-			clientSocket.destroy();
-		});
-
-		// Better approach: use docker exec with socat, or just use docker port mapping
-		// For simplicity, use docker's built-in port publishing via iptables
-		// Since the container is already running, we can use `docker exec` with netcat
-
-		// Simplest reliable approach: use a background `docker exec` with port forwarding
-		server.close();
-
-		// Use SSH-style approach: spawn a process that forwards data
-		const proc = cp.spawn('docker', [
-			'exec', '-i', containerId,
-			'sh', '-c', `socat TCP-LISTEN:${containerPort + 10000},fork TCP:127.0.0.1:${containerPort} &
-			echo ready`
+		const proc = cp.spawn('ssh', [
+			'-o', 'StrictHostKeyChecking=accept-new',
+			'-o', 'ServerAliveInterval=30',
+			'-o', 'ExitOnForwardFailure=yes',
+			'-N',
+			'-L', `${localPort}:127.0.0.1:${remotePort}`,
+			host
 		], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-		// Actually, the simplest approach: since docker networking allows host access,
-		// just expose the port via `docker port` or use docker proxy
-		proc.kill();
-
-		// Most reliable: create a local TCP proxy that connects to container
-		const proxyServer = net.createServer((clientSocket) => {
-			const dockerConn = cp.spawn('docker', [
-				'exec', '-i', containerId, 'socat', '-', `TCP:127.0.0.1:${containerPort}`
-			], { stdio: ['pipe', 'pipe', 'pipe'] });
-
-			clientSocket.pipe(dockerConn.stdin!);
-			dockerConn.stdout!.pipe(clientSocket);
-
-			dockerConn.stderr!.on('data', (d: Buffer) => {
-				outputChannel.append(`[proxy:err] ${d.toString()}`);
-			});
-
-			clientSocket.on('close', () => dockerConn.kill());
-			dockerConn.on('close', () => clientSocket.destroy());
-			clientSocket.on('error', () => dockerConn.kill());
-			dockerConn.on('error', () => clientSocket.destroy());
+		proc.stderr!.on('data', (data: Buffer) => {
+			outputChannel.append(`[tunnel] ${data.toString()}`);
 		});
+		proc.on('error', (err) => reject(new Error(`SSH tunnel failed: ${err.message}`)));
 
-		proxyServer.listen(localPort, '127.0.0.1', () => {
-			outputChannel.appendLine(`Port forward proxy listening on localhost:${localPort} -> container:${containerPort}`);
-			// Return a fake child process that represents the proxy
-			const fakeProc = cp.spawn('sleep', ['infinity']);
-			fakeProc.on('close', () => proxyServer.close());
-			resolve(fakeProc);
-		});
+		// Verify tunnel
+		const verify = async () => {
+			for (let i = 0; i < 20; i++) {
+				if (proc.exitCode !== null) {
+					throw new Error(`SSH tunnel exited (code ${proc.exitCode})`);
+				}
+				try {
+					await new Promise<void>((res, rej) => {
+						const s = net.createConnection(localPort, '127.0.0.1', () => { s.destroy(); res(); });
+						s.on('error', rej);
+						s.setTimeout(500, () => { s.destroy(); rej(new Error('timeout')); });
+					});
+					return;
+				} catch {
+					await new Promise(r => setTimeout(r, 500));
+				}
+			}
+			throw new Error('SSH tunnel not ready');
+		};
 
-		proxyServer.on('error', (err) => {
-			reject(new Error(`Port forward proxy failed: ${err.message}`));
-		});
+		setTimeout(async () => {
+			try {
+				await verify();
+				resolve(proc);
+			} catch (err: any) {
+				proc.kill();
+				reject(err);
+			}
+		}, 200);
 	});
 }
 
-/**
- * Get the local git commit hash.
- */
-async function getLocalCommit(context: vscode.ExtensionContext): Promise<string> {
-	const vscodePath = path.resolve(path.join(context.extensionPath, '..', '..'));
-	try {
-		return cp.execSync('git rev-parse HEAD', { cwd: vscodePath, encoding: 'utf8' }).trim();
-	} catch {
-		return 'dev';
-	}
-}
-
-/**
- * Find a free port on the local machine.
- */
 function findFreePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
 		const server = net.createServer();
 		server.listen(0, '127.0.0.1', () => {
-			const address = server.address();
-			if (address && typeof address !== 'string') {
-				const port = address.port;
-				server.close(() => resolve(port));
+			const addr = server.address();
+			if (addr && typeof addr !== 'string') {
+				server.close(() => resolve(addr.port));
 			} else {
-				server.close(() => reject(new Error('Could not find free port')));
+				server.close(() => reject(new Error('No port')));
 			}
 		});
 		server.on('error', reject);
 	});
 }
 
+async function getLocalCommit(context: vscode.ExtensionContext): Promise<string> {
+	try {
+		return cp.execSync('git rev-parse HEAD', {
+			cwd: path.resolve(path.join(context.extensionPath, '..', '..')),
+			encoding: 'utf8'
+		}).trim();
+	} catch {
+		return 'dev';
+	}
+}
+
 export function deactivate() {
-	for (const [, proc] of activeProcesses) {
-		proc.kill();
+	for (const [, procs] of activeProcesses) {
+		procs.forEach(p => p.kill());
 	}
 	activeProcesses.clear();
 }

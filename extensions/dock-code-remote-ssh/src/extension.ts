@@ -304,116 +304,60 @@ async function checkRemoteFileExists(host: string, remotePath: string): Promise<
 	}
 }
 
+/** GitHub repository for downloading REH releases */
+const REH_GITHUB_REPO = 'shunyooo/dock-code';
+
 /**
  * Install the dock-code server on the remote machine.
- * In dev mode, copies from a local build. In production, downloads from URL.
+ * Downloads pre-built REH from GitHub Releases (built on Linux CI with correct native modules).
  */
 async function installServerOnRemote(
 	host: string,
 	commit: string,
 	remote: { os: string; arch: string },
 	product: { serverDataFolderName: string; serverApplicationName: string },
-	context: vscode.ExtensionContext,
+	_context: vscode.ExtensionContext,
 	progress: vscode.Progress<{ message?: string }>
 ): Promise<void> {
-	const vscodePath = path.resolve(path.join(context.extensionPath, '..', '..'));
-	const buildDir = path.join(path.dirname(vscodePath), `vscode-reh-${remote.os}-${remote.arch}`);
+	const remoteInstallDir = `~/${product.serverDataFolderName}/bin/${commit}`;
+	await sshExec(host, `mkdir -p ${remoteInstallDir}`);
 
-	// Check for local REH build
-	if (fs.existsSync(buildDir)) {
-		outputChannel.appendLine(`Found local REH build at ${buildDir}`);
-		progress.report({ message: 'Uploading server to remote...' });
+	const commitShort = commit.substring(0, 11);
+	const tarballName = `dock-code-reh-${remote.os}-${remote.arch}.tar.gz`;
+	const releaseTag = `reh-${commitShort}`;
+	const downloadUrl = `https://github.com/${REH_GITHUB_REPO}/releases/download/${releaseTag}/${tarballName}`;
 
-		// Create tarball of the REH build
-		const tarPath = path.join(os.tmpdir(), `dock-code-reh-${commit}.tar.gz`);
-		outputChannel.appendLine(`Creating tarball: ${tarPath}`);
+	// Try exact commit release
+	progress.report({ message: 'Downloading server from GitHub...' });
+	outputChannel.appendLine(`Downloading REH from: ${downloadUrl}`);
 
-		cp.execSync(
-			`tar -czf "${tarPath}" -C "${path.dirname(buildDir)}" "${path.basename(buildDir)}"`,
-			{ encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
-		);
-
-		// Create installation directory on remote
-		const remoteInstallDir = `~/${product.serverDataFolderName}/bin/${commit}`;
-		await sshExec(host, `mkdir -p ${remoteInstallDir}`);
-
-		// SCP the tarball to remote
-		outputChannel.appendLine(`Uploading server to ${host}:${remoteInstallDir}...`);
-		await scpFile(host, tarPath, `/tmp/dock-code-reh.tar.gz`);
-
-		// Extract on remote
-		outputChannel.appendLine('Extracting server on remote...');
-		await sshExec(host, `tar --warning=no-unknown-keyword -xzf /tmp/dock-code-reh.tar.gz -C ${remoteInstallDir} --strip-components=1; rm -f /tmp/dock-code-reh.tar.gz`);
-
-		// Make server executable
+	try {
+		await sshExec(host, `curl -fSL --retry 3 "${downloadUrl}" | tar -xzf - -C ${remoteInstallDir} --strip-components=1`);
 		await sshExec(host, `chmod +x ${remoteInstallDir}/bin/${product.serverApplicationName}`);
-
-		// Rebuild native modules for the remote platform (node-pty etc.)
-		// The REH build contains macOS binaries; we need Linux ones on the remote
-		progress.report({ message: 'Rebuilding native modules on remote...' });
-		outputChannel.appendLine('Rebuilding native modules for remote platform...');
-		try {
-			const nodeVersion = await sshExec(host, `${remoteInstallDir}/node --version`);
-			outputChannel.appendLine(`Remote node version: ${nodeVersion.trim()}`);
-			// Use the REH's own Node.js to rebuild node-pty with npm
-			await sshExec(host, `cd ${remoteInstallDir} && PATH="${remoteInstallDir}:$PATH" npm rebuild node-pty 2>&1`);
-			outputChannel.appendLine('Native modules rebuilt successfully');
-		} catch (err: any) {
-			outputChannel.appendLine(`Warning: native module rebuild failed: ${err.message}`);
-			outputChannel.appendLine('Terminal may not work. Ensure build-essential is installed on the remote.');
-		}
-
-		// Clean up local tarball
-		try { fs.unlinkSync(tarPath); } catch { /* ignore */ }
-
-		outputChannel.appendLine('Server installed successfully');
-	} else {
-		// Check for custom download URL
-		const downloadUrl = vscode.workspace.getConfiguration('remote.SSH').get<string>('serverDownloadUrl');
-		if (downloadUrl) {
-			outputChannel.appendLine(`Downloading server from: ${downloadUrl}`);
-			const remoteInstallDir = `~/${product.serverDataFolderName}/bin/${commit}`;
-			const url = downloadUrl
-				.replace('${commit}', commit)
-				.replace('${os}', remote.os)
-				.replace('${arch}', remote.arch);
-			await sshExec(host, `mkdir -p ${remoteInstallDir} && curl -L "${url}" | tar -xzf - -C ${remoteInstallDir} --strip-components=1`);
-			await sshExec(host, `chmod +x ${remoteInstallDir}/bin/${product.serverApplicationName}`);
-		} else {
-			const message = `No dock-code server found for the remote. Please build it first:\n\nnpm run gulp vscode-reh-${remote.os}-${remote.arch}\n\nExpected build at: ${buildDir}`;
-			outputChannel.appendLine(message);
-			throw vscode.RemoteAuthorityResolverError.NotAvailable(message, true);
-		}
+		outputChannel.appendLine('Server installed from GitHub Release');
+		return;
+	} catch {
+		outputChannel.appendLine('Exact commit release not available, trying latest...');
 	}
+
+	// Try latest release
+	const latestUrl = `https://github.com/${REH_GITHUB_REPO}/releases/latest/download/${tarballName}`;
+	progress.report({ message: 'Downloading latest server...' });
+	try {
+		await sshExec(host, `curl -fSL --retry 3 "${latestUrl}" | tar -xzf - -C ${remoteInstallDir} --strip-components=1`);
+		await sshExec(host, `chmod +x ${remoteInstallDir}/bin/${product.serverApplicationName}`);
+		outputChannel.appendLine('Server installed from latest GitHub Release');
+		return;
+	} catch {
+		// Clean up empty directory
+		await sshExec(host, `rmdir ${remoteInstallDir} 2>/dev/null || true`);
+	}
+
+	throw vscode.RemoteAuthorityResolverError.NotAvailable(
+		'REH server not available. Push to main branch to trigger the CI build.', true
+	);
 }
 
-/**
- * SCP a file to the remote.
- */
-function scpFile(host: string, localPath: string, remotePath: string): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const proc = cp.spawn('scp', [
-			'-o', 'StrictHostKeyChecking=accept-new',
-			localPath,
-			`${host}:${remotePath}`
-		]);
-
-		let stderr = '';
-		proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-		proc.on('close', (code) => {
-			if (code === 0) {
-				resolve();
-			} else {
-				reject(new Error(`SCP failed (code ${code}): ${stderr}`));
-			}
-		});
-
-		proc.on('error', (err) => {
-			reject(new Error(`SCP failed: ${err.message}`));
-		});
-	});
-}
 
 /**
  * Start the dock-code server on the remote via SSH.
