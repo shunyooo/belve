@@ -442,4 +442,7 @@ import './contrib/editTelemetry/browser/editTelemetry.contribution.js';
 // Opener
 import './contrib/opener/browser/opener.contribution.js';
 
+// dock-code: Projects
+import './contrib/projects/browser/projects.contribution.js';
+
 //#endregion

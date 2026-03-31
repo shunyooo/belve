@@ -1,0 +1,77 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.projects-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+.projects-view .projects-list {
+	flex: 1;
+	overflow-y: auto;
+}
+
+.projects-view .project-item {
+	display: flex;
+	align-items: center;
+	padding: 4px 12px;
+	cursor: pointer;
+	height: 28px;
+}
+
+.projects-view .project-item:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.projects-view .project-item.active {
+	background-color: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+}
+
+.projects-view .project-status {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	margin-right: 8px;
+	flex-shrink: 0;
+}
+
+.projects-view .project-status.status-running {
+	background-color: var(--vscode-testing-iconPassed);
+}
+
+.projects-view .project-status.status-idle {
+	background-color: var(--vscode-descriptionForeground);
+}
+
+.projects-view .project-status.status-error {
+	background-color: var(--vscode-testing-iconFailed);
+}
+
+.projects-view .project-name {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.projects-view .project-name-input {
+	flex: 1;
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	outline: none;
+	padding: 0 4px;
+	font: inherit;
+	height: 20px;
+}
+
+.projects-view .projects-status-summary {
+	padding: 8px 12px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	border-top: 1px solid var(--vscode-sideBarSectionHeader-border);
+}
