@@ -54,4 +54,6 @@ export interface IProjectMainService {
 	getProjectByWebContentsId(webContentsId: number): Promise<IProject | undefined>;
 	openFolderInProject(projectId: string, folderUri: string): Promise<void>;
 	reloadProject(projectId: string): Promise<void>;
+	openRemoteInProject(projectId: string, remoteAuthority: string): Promise<void>;
+	createProjectWithRemote(name: string, remoteAuthority: string): Promise<IProject>;
 }

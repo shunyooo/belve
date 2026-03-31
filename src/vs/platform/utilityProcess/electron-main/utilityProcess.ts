@@ -499,7 +499,7 @@ export class WindowUtilityProcess extends UtilityProcess {
 		}
 
 		// Register to window events
-		this.registerWindowListeners(parentWindow, configuration);
+		this.registerWindowListeners(parentWindow, configuration, fallbackWebContents);
 
 		// Establish & exchange message ports
 		const windowPort = this.connect(configuration.payload);
@@ -508,7 +508,7 @@ export class WindowUtilityProcess extends UtilityProcess {
 		return true;
 	}
 
-	private registerWindowListeners(window: BrowserWindow, configuration: IWindowUtilityProcessConfiguration): void {
+	private registerWindowListeners(window: BrowserWindow, configuration: IWindowUtilityProcessConfiguration, viewWebContents?: WebContents): void {
 
 		// If the lifecycle of the utility process is bound to the window,
 		// we terminate the process if the window closes or changes.
@@ -520,7 +520,17 @@ export class WindowUtilityProcess extends UtilityProcess {
 			const terminate = graceTime && graceTime > 0
 				? () => this.waitForExit(graceTime)
 				: () => this.kill();
-			this._register(Event.filter(this.lifecycleMainService.onWillLoadWindow, e => e.window.win === window)(terminate));
+
+			if (viewWebContents) {
+				// WebContentsView project: bind lifecycle to the view's webContents,
+				// not to the parent window's reload. This prevents all project
+				// Extension Hosts from being killed when the main window reloads.
+				this._register(Event.fromNodeEventEmitter(viewWebContents, 'destroyed')(terminate));
+			} else {
+				// Standard window: terminate when the window reloads or closes
+				this._register(Event.filter(this.lifecycleMainService.onWillLoadWindow, e => e.window.win === window)(terminate));
+			}
+			// Always terminate when the parent BrowserWindow closes (app exit)
 			this._register(Event.fromNodeEventEmitter(window, 'closed')(terminate));
 		}
 	}

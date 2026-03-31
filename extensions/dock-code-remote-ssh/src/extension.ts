@@ -484,6 +484,7 @@ function startRemoteServer(
 
 /**
  * Create an SSH tunnel for port forwarding.
+ * Verifies the tunnel is operational by testing TCP connectivity.
  */
 function createSSHTunnel(host: string, localPort: number, remotePort: number): Promise<cp.ChildProcess> {
 	return new Promise((resolve, reject) => {
@@ -504,14 +505,43 @@ function createSSHTunnel(host: string, localPort: number, remotePort: number): P
 			reject(new Error(`SSH tunnel failed: ${err.message}`));
 		});
 
-		// Give SSH a moment to establish the tunnel
-		setTimeout(() => {
-			if (proc.exitCode === null) {
-				resolve(proc);
-			} else {
-				reject(new Error(`SSH tunnel exited with code ${proc.exitCode}`));
+		// Verify tunnel by actually connecting to the forwarded port
+		const verifyTunnel = async () => {
+			const net = require('net') as typeof import('net');
+			for (let attempt = 0; attempt < 20; attempt++) {
+				if (proc.exitCode !== null) {
+					throw new Error(`SSH tunnel exited with code ${proc.exitCode}`);
+				}
+				try {
+					await new Promise<void>((res, rej) => {
+						const socket = net.createConnection(localPort, '127.0.0.1', () => {
+							socket.destroy();
+							res();
+						});
+						socket.on('error', rej);
+						socket.setTimeout(500, () => {
+							socket.destroy();
+							rej(new Error('timeout'));
+						});
+					});
+					outputChannel.appendLine(`[tunnel] Verified: localhost:${localPort} -> ${host}:${remotePort} (attempt ${attempt + 1})`);
+					return; // tunnel is ready
+				} catch {
+					await new Promise(r => setTimeout(r, 500));
+				}
 			}
-		}, 1000);
+			throw new Error('SSH tunnel not ready after 10 seconds');
+		};
+
+		setTimeout(async () => {
+			try {
+				await verifyTunnel();
+				resolve(proc);
+			} catch (err: any) {
+				proc.kill();
+				reject(err);
+			}
+		}, 200);
 	});
 }
 

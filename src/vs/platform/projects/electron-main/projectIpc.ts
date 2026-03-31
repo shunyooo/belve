@@ -36,6 +36,8 @@ export class ProjectMainServiceChannel implements IServerChannel {
 			case 'getProjectByWebContentsId': return this.service.getProjectByWebContentsId(arg);
 			case 'openFolderInProject': return this.service.openFolderInProject(arg[0], arg[1]);
 			case 'reloadProject': return this.service.reloadProject(arg);
+			case 'openRemoteInProject': return this.service.openRemoteInProject(arg[0], arg[1]);
+			case 'createProjectWithRemote': return this.service.createProjectWithRemote(arg[0], arg[1]);
 		}
 
 		throw new Error(`Call not found: ${command}`);

@@ -19,6 +19,7 @@ export class RemoteFileSystemProviderClient extends DiskFileSystemProviderClient
 
 	static register(remoteAgentService: IRemoteAgentService, fileService: IFileService, logService: ILogService): IDisposable {
 		const connection = remoteAgentService.getConnection();
+		logService.info(`[dock-code] RemoteFileSystemProviderClient.register() called, connection=${connection ? 'yes' : 'no'}`);
 		if (!connection) {
 			return Disposable.None;
 		}
@@ -27,17 +28,20 @@ export class RemoteFileSystemProviderClient extends DiskFileSystemProviderClient
 
 		const environmentPromise = (async () => {
 			try {
+				logService.info('[dock-code] RemoteFileSystemProviderClient: awaiting getRawEnvironment...');
 				const environment = await remoteAgentService.getRawEnvironment();
 				if (environment) {
 					// Register remote fsp even before it is asked to activate
 					// because, some features (configuration) wait for its
 					// registration before making fs calls.
+					logService.info(`[dock-code] RemoteFileSystemProviderClient: registering provider for ${Schemas.vscodeRemote}, os=${environment.os}`);
 					fileService.registerProvider(Schemas.vscodeRemote, disposables.add(new RemoteFileSystemProviderClient(environment, connection)));
+					logService.info('[dock-code] RemoteFileSystemProviderClient: provider registered successfully');
 				} else {
-					logService.error('Cannot register remote filesystem provider. Remote environment doesnot exist.');
+					logService.error('[dock-code] Cannot register remote filesystem provider. Remote environment does not exist.');
 				}
 			} catch (error) {
-				logService.error('Cannot register remote filesystem provider. Error while fetching remote environment.', getErrorMessage(error));
+				logService.error('[dock-code] Cannot register remote filesystem provider. Error while fetching remote environment.', getErrorMessage(error));
 			}
 		})();
 

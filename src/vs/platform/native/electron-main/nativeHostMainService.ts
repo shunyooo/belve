@@ -313,6 +313,24 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 	}
 
 	private async doOpenEmptyWindow(windowId: number | undefined, options?: IOpenEmptyWindowOptions): Promise<void> {
+		// Intercept remote authority connections for dock-code project system
+		if (options?.remoteAuthority) {
+			// Check if request comes from a WebContentsView project
+			const wcProject = windowId !== undefined ? await this.projectMainService.getProjectByWebContentsId(windowId) : undefined;
+			// Also check if request comes from the main window (first project)
+			const mainWindow = this.windowsMainService.getWindows()[0];
+			const mainWindowWcId = mainWindow?.win?.webContents?.id;
+			console.log(`[NativeHostMainService] doOpenEmptyWindow: windowId=${windowId}, mainWindow.id=${mainWindow?.id}, mainWindow.webContents.id=${mainWindowWcId}, remoteAuthority=${options.remoteAuthority}, forceReuseWindow=${options.forceReuseWindow}`);
+			const isMainWindow = mainWindow && (windowId === mainWindowWcId || windowId === mainWindow.id);
+			const activeProject = wcProject ?? (isMainWindow ? await this.projectMainService.getActiveProject() : undefined);
+
+			if (activeProject) {
+				// Open remote in the current project
+				console.log(`[NativeHostMainService] Opening remote "${options.remoteAuthority}" in project "${activeProject.name}"`);
+				return this.projectMainService.openRemoteInProject(activeProject.id, options.remoteAuthority);
+			}
+		}
+
 		await this.windowsMainService.openEmptyWindow({
 			context: OpenContext.API,
 			contextWindowId: windowId

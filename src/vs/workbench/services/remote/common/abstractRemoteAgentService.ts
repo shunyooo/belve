@@ -51,7 +51,10 @@ export abstract class AbstractRemoteAgentService extends Disposable implements I
 	}
 
 	getEnvironment(): Promise<IRemoteAgentEnvironment | null> {
-		return this.getRawEnvironment().then(undefined, () => null);
+		return this.getRawEnvironment().then(undefined, (err) => {
+			this._logService.error(`[dock-code] getRawEnvironment failed: ${err?.message ?? err}`);
+			return null;
+		});
 	}
 
 	getRawEnvironment(): Promise<IRemoteAgentEnvironment | null> {

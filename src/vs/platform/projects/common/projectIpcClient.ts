@@ -82,6 +82,14 @@ export class ProjectMainServiceClient implements IProjectMainService {
 		return this.channel.call('reloadProject', projectId);
 	}
 
+	openRemoteInProject(projectId: string, remoteAuthority: string): Promise<void> {
+		return this.channel.call('openRemoteInProject', [projectId, remoteAuthority]);
+	}
+
+	createProjectWithRemote(name: string, remoteAuthority: string): Promise<IProject> {
+		return this.channel.call('createProjectWithRemote', [name, remoteAuthority]);
+	}
+
 	dispose(): void {
 		this.disposables.dispose();
 	}

@@ -402,16 +402,23 @@ export class NativeExtensionService extends AbstractExtensionService implements 
 			}
 
 			// fetch the remote environment
+			this._logService.info(`[dock-code] Fetching remote environment for authority: ${remoteAuthority}...`);
 			[remoteEnv, remoteExtensions] = await Promise.all([
 				this._remoteAgentService.getEnvironment(),
 				this._remoteExtensionsScannerService.scanExtensions()
 			]);
 
 			if (!remoteEnv) {
-				this._notificationService.notify({ severity: Severity.Error, message: nls.localize('getEnvironmentFailure', "Could not fetch remote environment") });
+				const connectionData = this._remoteAuthorityResolverService.getConnectionData(remoteAuthority);
+				const detail = connectionData
+					? `WebSocket target: ${connectionData.connectTo.type === 0 /* WebSocket */ ? `${(connectionData.connectTo as any).host}:${(connectionData.connectTo as any).port}` : 'managed'}`
+					: 'No connection data';
+				this._logService.error(`[dock-code] Failed to fetch remote environment. ${detail}`);
+				this._notificationService.notify({ severity: Severity.Error, message: nls.localize('getEnvironmentFailure', "Could not fetch remote environment") + ` (${detail})` });
 				// Proceed with the local extension host
 				return this._startLocalExtensionHost(emitter);
 			}
+			this._logService.info(`[dock-code] Remote environment fetched successfully for ${remoteAuthority}`);
 
 			const useHostProxyDefault = remoteEnv.useHostProxy;
 			this._register(this._configurationService.onDidChangeConfiguration(e => {

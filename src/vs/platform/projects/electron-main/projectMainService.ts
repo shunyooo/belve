@@ -333,16 +333,22 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			// For the main window project, delegate to WindowsMainService
 			const mainWindow = this.windowsMainService.getWindows()[0];
 			if (mainWindow) {
+				const parsed = URI.parse(folderUri);
+				const remoteAuthority = parsed.scheme === Schemas.vscodeRemote ? parsed.authority : undefined;
 				await this.windowsMainService.open({
 					context: OpenContext.API,
 					contextWindowId: mainWindow.id,
 					cli: this.environmentMainService.args,
-					urisToOpen: [{ folderUri: URI.parse(folderUri) }],
+					urisToOpen: [{ folderUri: parsed }],
+					remoteAuthority,
 				});
 			}
 		} else {
 			// For WebContentsView projects, reload the view with the new workspace
-			await this.reloadProjectView(project, { workspace: this.getWorkspaceIdentifier(URI.parse(folderUri)) });
+			const parsed = URI.parse(folderUri);
+			// Extract remoteAuthority from vscode-remote:// URIs (e.g. "ssh-remote+hostname")
+			const remoteAuthority = parsed.scheme === Schemas.vscodeRemote ? parsed.authority : undefined;
+			await this.reloadProjectView(project, { workspace: this.getWorkspaceIdentifier(parsed), remoteAuthority });
 		}
 	}
 
@@ -360,9 +366,44 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			}
 		} else {
 			// For WebContentsView projects, reload with current configuration
-			const workspaceId = project.folderUri ? this.getWorkspaceIdentifier(URI.parse(project.folderUri)) : this.getEmptyProjectWorkspace(project.id);
-			await this.reloadProjectView(project, { workspace: workspaceId });
+			if (project.folderUri) {
+				const parsed = URI.parse(project.folderUri);
+				const remoteAuthority = parsed.scheme === Schemas.vscodeRemote ? parsed.authority : undefined;
+				await this.reloadProjectView(project, { workspace: this.getWorkspaceIdentifier(parsed), remoteAuthority });
+			} else {
+				await this.reloadProjectView(project, { workspace: this.getEmptyProjectWorkspace(project.id) });
+			}
 		}
+	}
+
+	async openRemoteInProject(projectId: string, remoteAuthority: string): Promise<void> {
+		const project = this.projects.find(p => p.id === projectId);
+		if (!project) {
+			return;
+		}
+
+		console.log(`[ProjectMainService] Opening remote "${remoteAuthority}" in project "${project.name}"`);
+
+		if (projectId === this.mainWindowProjectId) {
+			// For main window, open via WindowsMainService
+			await this.windowsMainService.open({
+				context: OpenContext.API,
+				cli: this.environmentMainService.args,
+				forceReuseWindow: true,
+				remoteAuthority,
+			});
+		} else {
+			// For WebContentsView projects, reload with remote authority only (no local workspace)
+			await this.reloadProjectView(project, { remoteAuthority });
+		}
+	}
+
+	async createProjectWithRemote(name: string, remoteAuthority: string): Promise<IProject> {
+		const project = await this.createProject(name);
+		console.log(`[ProjectMainService] Created project "${name}" with remote "${remoteAuthority}"`);
+		// The view will be created by createProject, then we reload it with the remote
+		await this.openRemoteInProject(project.id, remoteAuthority);
+		return project;
 	}
 
 	private async reloadProjectView(project: IProject, overrides: { workspace?: ISingleFolderWorkspaceIdentifier; remoteAuthority?: string }): Promise<void> {
@@ -556,6 +597,7 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			userDataDir: this.environmentMainService.userDataPath,
 
 			workspace: project.folderUri ? this.getWorkspaceIdentifier(URI.parse(project.folderUri)) : this.getEmptyProjectWorkspace(project.id),
+			remoteAuthority: project.folderUri && URI.parse(project.folderUri).scheme === Schemas.vscodeRemote ? URI.parse(project.folderUri).authority : undefined,
 			userEnv: {},
 
 			nls: {
