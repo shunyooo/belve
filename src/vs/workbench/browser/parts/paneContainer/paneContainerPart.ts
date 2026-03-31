@@ -164,7 +164,7 @@ export class PaneContainerPart extends Part {
 		}
 	}
 
-	override saveState(): void {
+	protected override saveState(): void {
 		if (this.grid) {
 			const state = {
 				grid: this.grid.serialize()
