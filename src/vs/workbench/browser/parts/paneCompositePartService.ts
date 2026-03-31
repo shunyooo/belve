@@ -11,6 +11,7 @@ import { IProgressIndicator } from '../../../platform/progress/common/progress.j
 import { PaneCompositeDescriptor } from '../panecomposite.js';
 import { AuxiliaryBarPart } from './auxiliarybar/auxiliaryBarPart.js';
 import { PanelPart } from './panel/panelPart.js';
+import { ProjectBarPart } from './projectbar/projectBarPart.js';
 import { SidebarPart } from './sidebar/sidebarPart.js';
 import { IPaneComposite } from '../../common/panecomposite.js';
 import { ViewContainerLocation } from '../../common/views.js';
@@ -36,6 +37,10 @@ export class PaneCompositePartService extends Disposable implements IPaneComposi
 		const panelPart = instantiationService.createInstance(PanelPart);
 		const sideBarPart = instantiationService.createInstance(SidebarPart);
 		const auxiliaryBarPart = instantiationService.createInstance(AuxiliaryBarPart);
+
+		// ProjectBarPart is not a PaneComposite but needs to be instantiated here
+		// so it registers itself with the layout service before renderWorkbench() runs.
+		this._register(instantiationService.createInstance(ProjectBarPart));
 
 		this.paneCompositeParts.set(ViewContainerLocation.Panel, panelPart);
 		this.paneCompositeParts.set(ViewContainerLocation.Sidebar, sideBarPart);

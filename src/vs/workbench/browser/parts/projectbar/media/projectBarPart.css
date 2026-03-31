@@ -1,0 +1,175 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.monaco-workbench .part.projectbar {
+	width: 48px;
+	height: 100%;
+}
+
+.monaco-workbench .part.projectbar.expanded {
+	width: 200px;
+}
+
+.monaco-workbench .projectbar.bordered::before {
+	content: '';
+	float: left;
+	position: absolute;
+	box-sizing: border-box;
+	height: 100%;
+	width: 0px;
+	border-color: inherit;
+}
+
+.monaco-workbench .projectbar.left.bordered::before {
+	right: 0;
+	border-right-style: solid;
+	border-right-width: 1px;
+}
+
+.monaco-workbench .projectbar > .content {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+}
+
+.monaco-workbench .projectbar > .content > .actions-container {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	width: 100%;
+	margin-bottom: auto;
+}
+
+.monaco-workbench .projectbar.expanded > .content > .actions-container {
+	align-items: stretch;
+}
+
+/* Action items */
+.monaco-workbench .projectbar .action-item {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 48px;
+	height: 48px;
+	cursor: pointer;
+}
+
+.monaco-workbench .projectbar.expanded .action-item {
+	width: 100%;
+	justify-content: flex-start;
+	padding-left: 12px;
+	gap: 10px;
+	box-sizing: border-box;
+}
+
+.monaco-workbench .projectbar .action-item:focus {
+	outline: 0 !important;
+}
+
+.monaco-workbench .projectbar .action-item:focus-visible::before {
+	content: '';
+	position: absolute;
+	inset: 6px;
+	border: 1px solid var(--vscode-focusBorder);
+	border-radius: 4px;
+	pointer-events: none;
+}
+
+.monaco-workbench .projectbar .action-item .action-label {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	font-size: 16px;
+	border-radius: 4px;
+	color: var(--vscode-activityBar-inactiveForeground);
+	flex-shrink: 0;
+}
+
+.monaco-workbench .projectbar .action-item:hover .action-label {
+	color: var(--vscode-activityBar-foreground);
+}
+
+/* Action text (visible when expanded) */
+.monaco-workbench .projectbar .action-item .action-text {
+	font-size: 12px;
+	color: var(--vscode-activityBar-inactiveForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	flex: 1;
+	min-width: 0;
+}
+
+.monaco-workbench .projectbar .action-item:hover .action-text {
+	color: var(--vscode-activityBar-foreground);
+}
+
+.monaco-workbench .projectbar .action-item.checked .action-text {
+	color: var(--vscode-activityBar-foreground);
+}
+
+/* Toggle expand button */
+.monaco-workbench .projectbar .action-item.toggle-expand {
+	margin-bottom: 4px;
+	border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+}
+
+/* Add project button */
+.monaco-workbench .projectbar .action-item.add-project {
+	margin-bottom: 4px;
+}
+
+.monaco-workbench .projectbar .action-item.add-project .action-label {
+	font-size: 20px;
+}
+
+/* Project entry - shows first letter */
+.monaco-workbench .projectbar .action-item.project-entry .action-label.project-icon {
+	font-weight: 600;
+	font-size: 18px;
+	text-transform: uppercase;
+	background-color: var(--vscode-activityBar-inactiveForeground);
+	color: var(--vscode-activityBar-background);
+	border-radius: 6px;
+}
+
+.monaco-workbench .projectbar .action-item.project-entry:hover .action-label.project-icon {
+	background-color: var(--vscode-activityBar-foreground);
+}
+
+/* Selected/checked state */
+.monaco-workbench .projectbar .action-item.project-entry.checked .action-label.project-icon {
+	background-color: var(--vscode-activityBar-foreground);
+	color: var(--vscode-activityBar-background);
+}
+
+/* Active item indicator (vertical bar on the left) */
+.monaco-workbench .projectbar .action-item .active-item-indicator {
+	position: absolute;
+	left: 0;
+	width: 2px;
+	height: 24px;
+	background-color: transparent;
+	border-radius: 0 2px 2px 0;
+}
+
+.monaco-workbench .projectbar .action-item.project-entry.checked .active-item-indicator {
+	background-color: var(--vscode-activityBar-activeBorder, var(--vscode-activityBar-foreground));
+}
+
+/* Active background for checked items */
+.monaco-workbench .projectbar .action-item.project-entry.checked {
+	background-color: var(--vscode-activityBar-activeBackground);
+}
+
+/* High contrast styling */
+.monaco-workbench.hc-black .projectbar .action-item .action-label,
+.monaco-workbench.hc-light .projectbar .action-item .action-label {
+	padding: 6px;
+}

@@ -16,7 +16,8 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../common/views.js';
-import { IProject, IProjectService, ProjectStatus } from '../../common/project.js';
+import type { IProject } from '../../../../../platform/projects/common/projects.js';
+import { IProjectMainService, ProjectStatus } from '../../../../../platform/projects/common/projects.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { localize } from '../../../../../nls.js';
 
@@ -26,6 +27,7 @@ export class ProjectsView extends ViewPane {
 
 	private listContainer: HTMLElement | undefined;
 	private summaryContainer: HTMLElement | undefined;
+	private _renderVersion = 0;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -38,7 +40,7 @@ export class ProjectsView extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
-		@IProjectService private readonly projectService: IProjectService,
+		@IProjectMainService private readonly projectService: IProjectMainService,
 		@IDialogService private readonly dialogService: IDialogService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
@@ -57,15 +59,22 @@ export class ProjectsView extends ViewPane {
 		this._register(this.projectService.onDidChangeActiveProject(() => this.renderProjectList()));
 	}
 
-	private renderProjectList(): void {
+	private async renderProjectList(): Promise<void> {
 		if (!this.listContainer || !this.summaryContainer) {
 			return;
 		}
 
 		DOM.clearNode(this.listContainer);
+		const version = ++this._renderVersion;
 
-		const projects = this.projectService.getProjects();
-		const activeProject = this.projectService.getActiveProject();
+		const [projects, activeProject] = await Promise.all([
+			this.projectService.getProjects(),
+			this.projectService.getActiveProject(),
+		]);
+
+		if (version !== this._renderVersion) {
+			return; // stale render, discard
+		}
 
 		for (const project of projects) {
 			const isActive = activeProject?.id === project.id;
@@ -81,7 +90,7 @@ export class ProjectsView extends ViewPane {
 			nameEl.textContent = project.name;
 
 			this._register(DOM.addDisposableListener(item, DOM.EventType.CLICK, () => {
-				this.projectService.setActiveProject(project.id);
+				this.projectService.switchToProject(project.id);
 			}));
 
 			this._register(DOM.addDisposableListener(item, DOM.EventType.CONTEXT_MENU, (e: MouseEvent) => {
@@ -93,8 +102,8 @@ export class ProjectsView extends ViewPane {
 		this.renderStatusSummary(projects);
 	}
 
-	private startInlineRename(projectId: string, nameEl: HTMLElement): void {
-		const project = this.projectService.getProject(projectId);
+	private async startInlineRename(projectId: string, nameEl: HTMLElement): Promise<void> {
+		const project = await this.projectService.getProject(projectId);
 		if (!project) {
 			return;
 		}

@@ -3,12 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { localize2 } from '../../../../nls.js';
+import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
-import { IProjectService } from '../common/project.js';
-import { localize } from '../../../../nls.js';
+import { IProjectMainService } from '../../../../platform/projects/common/projects.js';
 
 class NewProjectAction extends Action2 {
 	constructor() {
@@ -20,15 +19,14 @@ class NewProjectAction extends Action2 {
 	}
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
-		const projectService = accessor.get(IProjectService);
+		const projectService = accessor.get(IProjectMainService);
 		const quickInputService = accessor.get(IQuickInputService);
 		const name = await quickInputService.input({
 			placeHolder: localize('projectNamePlaceholder', "Project name"),
 			prompt: localize('projectNamePrompt', "Enter a name for the new project"),
 		});
 		if (name) {
-			const project = projectService.createProject(name);
-			projectService.setActiveProject(project.id);
+			await projectService.createProject(name);
 		}
 	}
 }

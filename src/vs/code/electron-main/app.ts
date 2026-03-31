@@ -140,6 +140,9 @@ import { McpGatewayChannel } from '../../platform/mcp/node/mcpGatewayChannel.js'
 import { IWebContentExtractorService } from '../../platform/webContentExtractor/common/webContentExtractor.js';
 import { NativeWebContentExtractorService } from '../../platform/webContentExtractor/electron-main/webContentExtractorService.js';
 import ErrorTelemetry from '../../platform/telemetry/electron-main/errorTelemetry.js';
+import { IProjectMainService } from '../../platform/projects/common/projects.js';
+import { ProjectMainService } from '../../platform/projects/electron-main/projectMainService.js';
+import { ProjectMainServiceChannel } from '../../platform/projects/electron-main/projectIpc.js';
 
 /**
  * The main VS Code application. There will only ever be one instance,
@@ -153,6 +156,7 @@ export class CodeApplication extends Disposable {
 	};
 
 	private windowsMainService: IWindowsMainService | undefined;
+	private projectMainService: ProjectMainService | undefined;
 	private auxiliaryWindowsMainService: IAuxiliaryWindowsMainService | undefined;
 	private nativeHostMainService: INativeHostMainService | undefined;
 
@@ -258,6 +262,15 @@ export class CodeApplication extends Disposable {
 			for (const window of windows) {
 				if (frame.processId === window.webContents.mainFrame.processId) {
 					return true;
+				}
+			}
+
+			// Also allow requests from project WebContentsViews
+			if (this.projectMainService) {
+				for (const wc of this.projectMainService.getProjectWebContents()) {
+					if (frame.processId === wc.mainFrame.processId) {
+						return true;
+					}
 				}
 			}
 
@@ -1077,6 +1090,9 @@ export class CodeApplication extends Disposable {
 		services.set(IWindowsMainService, new SyncDescriptor(WindowsMainService, [machineId, sqmId, devDeviceId, this.userEnv], false));
 		services.set(IAuxiliaryWindowsMainService, new SyncDescriptor(AuxiliaryWindowsMainService, undefined, false));
 
+		// Projects
+		services.set(IProjectMainService, new SyncDescriptor(ProjectMainService, undefined, false));
+
 		// Dialogs
 		const dialogMainService = new DialogMainService(this.logService, this.productService);
 		services.set(IDialogMainService, dialogMainService);
@@ -1244,6 +1260,10 @@ export class CodeApplication extends Disposable {
 		const updateChannel = new UpdateChannel(accessor.get(IUpdateService));
 		mainProcessElectronServer.registerChannel('update', updateChannel);
 
+		// Projects
+		const projectChannel = new ProjectMainServiceChannel(accessor.get(IProjectMainService));
+		mainProcessElectronServer.registerChannel('projects', projectChannel);
+
 		// Metered Connection
 		const meteredConnectionChannel = new MeteredConnectionChannel(accessor.get(IMeteredConnectionService) as MeteredConnectionMainService);
 		mainProcessElectronServer.registerChannel(METERED_CONNECTION_CHANNEL, meteredConnectionChannel);
@@ -1353,6 +1373,7 @@ export class CodeApplication extends Disposable {
 
 	private async openFirstWindow(accessor: ServicesAccessor, initialProtocolUrls: IInitialProtocolUrls | undefined): Promise<ICodeWindow[]> {
 		const windowsMainService = this.windowsMainService = accessor.get(IWindowsMainService);
+		this.projectMainService = accessor.get(IProjectMainService) as ProjectMainService;
 		this.auxiliaryWindowsMainService = accessor.get(IAuxiliaryWindowsMainService);
 
 		const context = isLaunchedFromCli(process.env) ? OpenContext.CLI : OpenContext.DESKTOP;

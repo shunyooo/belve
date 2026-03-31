@@ -8,7 +8,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { ActiveProjectContext, IProject, IProjectData, IProjectService, IProjectsChangeEvent, ProjectCountContext, ProjectStatus } from '../common/project.js';
+import { ActiveProjectContext, IProject, IProjectData, IProjectService, IProjectsChangeEvent, IProjectSwitchEvent, ProjectCountContext, ProjectStatus } from '../common/project.js';
 
 const PROJECTS_STORAGE_KEY = 'dockcode.projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'dockcode.activeProjectId';
@@ -21,6 +21,9 @@ export class ProjectService extends Disposable implements IProjectService {
 
 	private readonly _onDidChangeProjects = this._register(new Emitter<IProjectsChangeEvent>());
 	readonly onDidChangeProjects: Event<IProjectsChangeEvent> = this._onDidChangeProjects.event;
+
+	private readonly _onWillChangeActiveProject = this._register(new Emitter<IProjectSwitchEvent>());
+	readonly onWillChangeActiveProject: Event<IProjectSwitchEvent> = this._onWillChangeActiveProject.event;
 
 	private readonly _onDidChangeActiveProject = this._register(new Emitter<IProject | undefined>());
 	readonly onDidChangeActiveProject: Event<IProject | undefined> = this._onDidChangeActiveProject.event;
@@ -39,7 +42,7 @@ export class ProjectService extends Disposable implements IProjectService {
 	}
 
 	private loadFromStorage(): void {
-		const raw = this.storageService.get(PROJECTS_STORAGE_KEY, StorageScope.WORKSPACE);
+		const raw = this.storageService.get(PROJECTS_STORAGE_KEY, StorageScope.APPLICATION);
 		if (raw) {
 			try {
 				const data: IProjectData[] = JSON.parse(raw);
@@ -48,7 +51,7 @@ export class ProjectService extends Disposable implements IProjectService {
 				this.projects = [];
 			}
 		}
-		this.activeProjectId = this.storageService.get(ACTIVE_PROJECT_STORAGE_KEY, StorageScope.WORKSPACE);
+		this.activeProjectId = this.storageService.get(ACTIVE_PROJECT_STORAGE_KEY, StorageScope.APPLICATION);
 		this.updateContextKeys();
 	}
 
@@ -57,13 +60,14 @@ export class ProjectService extends Disposable implements IProjectService {
 			id: p.id,
 			name: p.name,
 			createdAt: p.createdAt,
+			folderUri: p.folderUri,
 			status: p.status,
 		}));
-		this.storageService.store(PROJECTS_STORAGE_KEY, JSON.stringify(data), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		this.storageService.store(PROJECTS_STORAGE_KEY, JSON.stringify(data), StorageScope.APPLICATION, StorageTarget.MACHINE);
 		if (this.activeProjectId) {
-			this.storageService.store(ACTIVE_PROJECT_STORAGE_KEY, this.activeProjectId, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			this.storageService.store(ACTIVE_PROJECT_STORAGE_KEY, this.activeProjectId, StorageScope.APPLICATION, StorageTarget.MACHINE);
 		} else {
-			this.storageService.remove(ACTIVE_PROJECT_STORAGE_KEY, StorageScope.WORKSPACE);
+			this.storageService.remove(ACTIVE_PROJECT_STORAGE_KEY, StorageScope.APPLICATION);
 		}
 	}
 
@@ -95,17 +99,20 @@ export class ProjectService extends Disposable implements IProjectService {
 		if (!project) {
 			return;
 		}
+		const from = this.getActiveProject();
+		this._onWillChangeActiveProject.fire({ from, to: project });
 		this.activeProjectId = id;
 		this.saveToStorage();
 		this.updateContextKeys();
 		this._onDidChangeActiveProject.fire(project);
 	}
 
-	createProject(name: string): IProject {
+	createProject(name: string, folderUri?: string): IProject {
 		const project: IProject = {
 			id: generateUuid(),
 			name,
 			createdAt: Date.now(),
+			folderUri,
 			status: ProjectStatus.Idle,
 		};
 		this.projects.push(project);
@@ -132,7 +139,11 @@ export class ProjectService extends Disposable implements IProjectService {
 		}
 		const [removed] = this.projects.splice(index, 1);
 		if (this.activeProjectId === id) {
-			this.activeProjectId = this.projects[0]?.id;
+			const nextProject = this.projects[0];
+			if (nextProject) {
+				this._onWillChangeActiveProject.fire({ from: removed, to: nextProject });
+			}
+			this.activeProjectId = nextProject?.id;
 			this._onDidChangeActiveProject.fire(this.getActiveProject());
 		}
 		this.saveToStorage();
@@ -148,5 +159,14 @@ export class ProjectService extends Disposable implements IProjectService {
 		project.status = status;
 		this.saveToStorage();
 		this._onDidChangeProjects.fire({ added: [], removed: [], changed: [project] });
+	}
+
+	updateProjectFolder(id: string, folderUri: string): void {
+		const project = this.projects.find(p => p.id === id);
+		if (!project) {
+			return;
+		}
+		(project as { folderUri?: string }).folderUri = folderUri;
+		this.saveToStorage();
 	}
 }
