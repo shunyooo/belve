@@ -1,0 +1,84 @@
+name: Build REH Server
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+  workflow_dispatch:
+
+jobs:
+  build-reh-linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd remote && npm ci
+
+      - name: Build REH (linux-x64)
+        run: |
+          NODE_OPTIONS="--experimental-strip-types" \
+          node --max-old-space-size=8192 \
+          ./node_modules/gulp/bin/gulp.js vscode-reh-linux-x64
+        env:
+          VSCODE_QUALITY: stable
+
+      - name: Verify native modules
+        run: |
+          file ../vscode-reh-linux-x64/node_modules/node-pty/build/Release/pty.node
+          echo "---"
+          ls -la ../vscode-reh-linux-x64/bin/
+
+      - name: Package REH
+        run: |
+          cd ..
+          tar -czf dock-code-reh-linux-x64.tar.gz vscode-reh-linux-x64/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dock-code-reh-linux-x64
+          path: ../dock-code-reh-linux-x64.tar.gz
+          retention-days: 30
+
+  build-reh-linux-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd remote && npm ci
+
+      - name: Build REH (linux-arm64)
+        run: |
+          NODE_OPTIONS="--experimental-strip-types" \
+          node --max-old-space-size=8192 \
+          ./node_modules/gulp/bin/gulp.js vscode-reh-linux-arm64
+        env:
+          VSCODE_QUALITY: stable
+
+      - name: Package REH
+        run: |
+          cd ..
+          tar -czf dock-code-reh-linux-arm64.tar.gz vscode-reh-linux-arm64/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dock-code-reh-linux-arm64
+          path: ../dock-code-reh-linux-arm64.tar.gz
+          retention-days: 30

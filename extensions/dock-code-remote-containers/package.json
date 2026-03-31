@@ -24,7 +24,7 @@
 	],
 	"main": "./out/extension",
 	"devDependencies": {
-		"@types/node": "22.x"
+		"@types/node": "^22.19.15"
 	},
 	"capabilities": {
 		"untrustedWorkspaces": {
