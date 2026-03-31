@@ -45,15 +45,13 @@ jobs:
           ls -la ../vscode-reh-linux-x64/bin/
 
       - name: Package REH
-        run: |
-          cd ..
-          tar -czf dock-code-reh-linux-x64.tar.gz vscode-reh-linux-x64/
+        run: tar -czf dock-code-reh-linux-x64.tar.gz -C .. vscode-reh-linux-x64/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: dock-code-reh-linux-x64
-          path: ../dock-code-reh-linux-x64.tar.gz
+          path: dock-code-reh-linux-x64.tar.gz
           retention-days: 30
 
       - name: Create/Update Release
@@ -61,16 +59,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           COMMIT_SHORT=$(git rev-parse --short HEAD)
-          COMMIT_FULL=$(git rev-parse HEAD)
           TAG="reh-${COMMIT_SHORT}"
 
-          # Create release with the REH tarball
           gh release create "${TAG}" \
             --title "REH Server ${COMMIT_SHORT}" \
-            --notes "Auto-built REH server for commit ${COMMIT_FULL}" \
+            --notes "Auto-built REH server for commit $(git rev-parse HEAD)" \
             --latest \
-            ../dock-code-reh-linux-x64.tar.gz \
-            || gh release upload "${TAG}" ../dock-code-reh-linux-x64.tar.gz --clobber
+            dock-code-reh-linux-x64.tar.gz \
+            || gh release upload "${TAG}" dock-code-reh-linux-x64.tar.gz --clobber
 
   build-reh-linux-arm64:
     runs-on: ubuntu-latest
@@ -96,9 +92,7 @@ jobs:
           ./node_modules/gulp/bin/gulp.js vscode-reh-linux-arm64
 
       - name: Package REH
-        run: |
-          cd ..
-          tar -czf dock-code-reh-linux-arm64.tar.gz vscode-reh-linux-arm64/
+        run: tar -czf dock-code-reh-linux-arm64.tar.gz -C .. vscode-reh-linux-arm64/
 
       - name: Upload to Release
         env:
@@ -107,8 +101,7 @@ jobs:
           COMMIT_SHORT=$(git rev-parse --short HEAD)
           TAG="reh-${COMMIT_SHORT}"
 
-          # Wait for linux-x64 job to create the release, then upload
           for i in $(seq 1 30); do
-            gh release upload "${TAG}" ../dock-code-reh-linux-arm64.tar.gz --clobber 2>/dev/null && break
+            gh release upload "${TAG}" dock-code-reh-linux-arm64.tar.gz --clobber 2>/dev/null && break
             sleep 10
           done
