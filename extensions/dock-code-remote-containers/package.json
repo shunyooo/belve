@@ -60,6 +60,11 @@
 				"command": "dock-code-remote-containers.rebuildContainer"
 			},
 			{
+				"title": "Reopen without Container",
+				"category": "Dev Containers",
+				"command": "dock-code-remote-containers.reopenWithoutContainer"
+			},
+			{
 				"title": "Show Log",
 				"category": "Dev Containers",
 				"command": "dock-code-remote-containers.showLog"
@@ -72,6 +77,10 @@
 				},
 				{
 					"command": "dock-code-remote-containers.rebuildContainer",
+					"when": "remoteName == dev-container"
+				},
+				{
+					"command": "dock-code-remote-containers.reopenWithoutContainer",
 					"when": "remoteName == dev-container"
 				},
 				{
@@ -89,6 +98,11 @@
 					"command": "dock-code-remote-containers.rebuildContainer",
 					"when": "remoteName == dev-container",
 					"group": "remote_20_container_1_open@2"
+				},
+				{
+					"command": "dock-code-remote-containers.reopenWithoutContainer",
+					"when": "remoteName == dev-container",
+					"group": "remote_20_container_1_open@3"
 				},
 				{
 					"command": "dock-code-remote-containers.showLog",

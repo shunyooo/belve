@@ -96,10 +96,32 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
-	// Auto-detect devcontainer.json in current workspace
-	if (!vscode.env.remoteName) {
-		detectDevcontainerInWorkspace();
-	}
+	// Command: Reopen without Container (DevContainer → SSH)
+	context.subscriptions.push(vscode.commands.registerCommand('dock-code-remote-containers.reopenWithoutContainer', async () => {
+		// Currently in a dev-container, switch back to SSH
+		if (vscode.env.remoteName !== 'dev-container') {
+			return;
+		}
+		const folders = vscode.workspace.workspaceFolders;
+		if (!folders || folders.length === 0) {
+			return;
+		}
+		// The authority encodes host:folderPath — extract the SSH host
+		const folder = folders[0];
+		const authority = folder.uri.authority;
+		const hexPayload = authority.substring(authority.indexOf('+') + 1);
+		const payload = Buffer.from(hexPayload, 'hex').toString('utf8');
+		const colonIdx = payload.indexOf(':');
+		const host = payload.substring(0, colonIdx);
+		const folderPath = payload.substring(colonIdx + 1);
+
+		// Switch to SSH remote with the same folder
+		const sshUri = vscode.Uri.parse(`vscode-remote://ssh-remote+${host}${folderPath}`);
+		await vscode.commands.executeCommand('vscode.openFolder', sshUri, { forceReuseWindow: true });
+	}));
+
+	// Auto-detect devcontainer.json in current workspace (local or SSH)
+	detectDevcontainerInWorkspace();
 }
 
 /**
@@ -184,9 +206,15 @@ async function browseRemoteFolders(host: string): Promise<string | undefined> {
 }
 
 /**
- * Check if the current workspace has a devcontainer.json and offer to open in container.
+ * Detect devcontainer.json in current workspace and offer to reopen in container.
+ * Works for both local and SSH-connected workspaces.
  */
 async function detectDevcontainerInWorkspace(): Promise<void> {
+	// Skip if already in a dev container
+	if (vscode.env.remoteName === 'dev-container') {
+		return;
+	}
+
 	const folders = vscode.workspace.workspaceFolders;
 	if (!folders || folders.length === 0) {
 		return;
@@ -201,14 +229,35 @@ async function detectDevcontainerInWorkspace(): Promise<void> {
 		for (const candidate of candidates) {
 			try {
 				await vscode.workspace.fs.stat(candidate);
-				// Found devcontainer.json — show notification
-				const result = await vscode.window.showInformationMessage(
-					`Folder "${folder.name}" contains a Dev Container configuration. Reopen in container?`,
-					'Open in Container',
-					'Not Now'
-				);
-				if (result === 'Open in Container') {
-					await vscode.commands.executeCommand('dock-code-remote-containers.openInContainer');
+
+				// Found devcontainer.json
+				if (vscode.env.remoteName === 'ssh-remote') {
+					// SSH connected — offer to reopen in container
+					const host = folder.uri.authority.replace(/^ssh-remote\+/, '');
+					const folderPath = folder.uri.path;
+
+					const result = await vscode.window.showInformationMessage(
+						`This folder has a Dev Container configuration. Reopen in container?`,
+						'Reopen in Container',
+						'Not Now'
+					);
+					if (result === 'Reopen in Container') {
+						const authorityId = Buffer.from(`${host}:${folderPath}`).toString('hex');
+						await vscode.commands.executeCommand('vscode.newWindow', {
+							remoteAuthority: `dev-container+${authorityId}`,
+							reuseWindow: true
+						});
+					}
+				} else {
+					// Local — offer to open in container (needs SSH host selection)
+					const result = await vscode.window.showInformationMessage(
+						`Folder "${folder.name}" has a Dev Container configuration. Open in container on remote host?`,
+						'Open in Container',
+						'Not Now'
+					);
+					if (result === 'Open in Container') {
+						await vscode.commands.executeCommand('dock-code-remote-containers.openInContainer');
+					}
 				}
 				return; // Only show once
 			} catch {
