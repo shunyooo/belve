@@ -168,6 +168,62 @@
 	background-color: var(--vscode-activityBar-activeBackground);
 }
 
+/* Agent session entries (shown under each project) */
+.monaco-workbench .projectbar .session-entry {
+	display: flex;
+	align-items: center;
+	height: 24px;
+	padding-left: 20px;
+	gap: 6px;
+	cursor: default;
+}
+
+.monaco-workbench .projectbar.expanded .session-entry {
+	padding-left: 32px;
+}
+
+.monaco-workbench .projectbar .session-entry .session-status-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.monaco-workbench .projectbar .session-entry .session-text {
+	font-size: 10px;
+	color: var(--vscode-activityBar-inactiveForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .projectbar .session-status-dot.status-running {
+	background-color: #f5a623;
+	animation: status-pulse 1.2s ease-in-out infinite;
+}
+
+.monaco-workbench .projectbar .session-status-dot.status-waiting {
+	background-color: #f5a623;
+}
+
+.monaco-workbench .projectbar .session-status-dot.status-completed {
+	background-color: #4caf50;
+}
+
+.monaco-workbench .projectbar .session-status-dot.status-error {
+	background-color: #f44336;
+}
+
+.monaco-workbench .projectbar .session-status-dot.status-idle {
+	background-color: var(--vscode-activityBar-inactiveForeground);
+	opacity: 0.4;
+}
+
+@keyframes status-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.4; }
+}
+
 /* High contrast styling */
 .monaco-workbench.hc-black .projectbar .action-item .action-label,
 .monaco-workbench.hc-light .projectbar .action-item .action-label {

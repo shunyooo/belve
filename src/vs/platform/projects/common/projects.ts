@@ -9,7 +9,14 @@ import { createDecorator } from '../../instantiation/common/instantiation.js';
 export enum ProjectStatus {
 	Idle = 'idle',
 	Running = 'running',
+	Waiting = 'waiting',
+	Completed = 'completed',
 	Error = 'error'
+}
+
+export interface IAgentSession {
+	readonly sessionId: string;
+	readonly status: ProjectStatus;
 }
 
 export interface IProjectData {
@@ -18,6 +25,7 @@ export interface IProjectData {
 	readonly createdAt: number;
 	readonly folderUri?: string;
 	status: ProjectStatus;
+	agentSessions?: IAgentSession[];
 }
 
 export interface IProject extends IProjectData { }
@@ -46,6 +54,7 @@ export interface IProjectMainService {
 	renameProject(id: string, newName: string): Promise<void>;
 	deleteProject(id: string): Promise<void>;
 	updateProjectStatus(id: string, status: ProjectStatus): Promise<void>;
+	updateAgentSessions(id: string, sessions: IAgentSession[]): Promise<void>;
 	updateProjectFolder(id: string, folderUri: string): Promise<void>;
 
 	getProjectForWindow(windowId: number): Promise<IProject | undefined>;

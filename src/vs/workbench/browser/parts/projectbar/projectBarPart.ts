@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+/* eslint-disable no-restricted-syntax */
+
 import './media/projectBarPart.css';
 import { Part } from '../../part.js';
 import { Parts, IWorkbenchLayoutService } from '../../../services/layout/browser/layoutService.js';
@@ -21,8 +23,7 @@ import { IContextMenuService } from '../../../../platform/contextview/browser/co
 import { Action, Separator } from '../../../../base/common/actions.js';
 import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
-import type { IProject } from '../../../../platform/projects/common/projects.js';
-import { IProjectMainService } from '../../../../platform/projects/common/projects.js';
+import { type IAgentSession, type IProject, IProjectMainService, ProjectStatus } from '../../../../platform/projects/common/projects.js';
 import { localize } from '../../../../nls.js';
 
 const HOVER_GROUP_ID = 'projectbar';
@@ -192,6 +193,12 @@ export class ProjectBarPart extends Part {
 
 		for (const project of projects) {
 			this.createProjectEntry(container, project, activeProject?.id === project.id);
+			// Show agent session sub-items
+			if (project.agentSessions && project.agentSessions.length > 0) {
+				for (const session of project.agentSessions) {
+					this.createSessionEntry(container, session);
+				}
+			}
 		}
 	}
 
@@ -272,6 +279,44 @@ export class ProjectBarPart extends Part {
 				});
 			})
 		);
+	}
+
+	private createSessionEntry(container: HTMLElement, session: IAgentSession): void {
+		const entry = append(container, $('.session-entry'));
+		const dot = append(entry, $('span.session-status-dot'));
+
+		let statusClass: string;
+		let statusLabel: string;
+		switch (session.status) {
+			case ProjectStatus.Running:
+				statusClass = 'status-running';
+				statusLabel = 'Running';
+				break;
+			case ProjectStatus.Waiting:
+				statusClass = 'status-waiting';
+				statusLabel = 'Waiting';
+				break;
+			case ProjectStatus.Completed:
+				statusClass = 'status-completed';
+				statusLabel = 'Done';
+				break;
+			case ProjectStatus.Error:
+				statusClass = 'status-error';
+				statusLabel = 'Error';
+				break;
+			default:
+				statusClass = 'status-idle';
+				statusLabel = 'Idle';
+				break;
+		}
+		dot.classList.add(statusClass);
+
+		if (this._expanded) {
+			const text = append(entry, $('span.session-text'));
+			text.textContent = statusLabel;
+		}
+
+		entry.title = `${session.sessionId.substring(0, 8)}: ${statusLabel}`;
 	}
 
 	override updateStyles(): void {

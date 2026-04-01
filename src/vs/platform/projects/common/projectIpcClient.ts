@@ -6,8 +6,7 @@
 import { Emitter, Event } from '../../../base/common/event.js';
 import { DisposableStore } from '../../../base/common/lifecycle.js';
 import { IChannel } from '../../../base/parts/ipc/common/ipc.js';
-import type { IProject, IProjectsChangeEvent } from './projects.js';
-import { IProjectMainService, ProjectStatus } from './projects.js';
+import { type IAgentSession, type IProject, type IProjectsChangeEvent, IProjectMainService, ProjectStatus } from './projects.js';
 
 export class ProjectMainServiceClient implements IProjectMainService {
 
@@ -56,6 +55,10 @@ export class ProjectMainServiceClient implements IProjectMainService {
 
 	updateProjectStatus(id: string, status: ProjectStatus): Promise<void> {
 		return this.channel.call('updateProjectStatus', [id, status]);
+	}
+
+	updateAgentSessions(id: string, sessions: IAgentSession[]): Promise<void> {
+		return this.channel.call('updateAgentSessions', [id, sessions]);
 	}
 
 	updateProjectFolder(id: string, folderUri: string): Promise<void> {

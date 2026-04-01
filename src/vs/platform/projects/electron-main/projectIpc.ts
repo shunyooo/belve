@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { Event } from '../../../base/common/event.js';
 import { IServerChannel } from '../../../base/parts/ipc/common/ipc.js';
 import { IProjectMainService } from '../common/projects.js';
@@ -30,6 +32,7 @@ export class ProjectMainServiceChannel implements IServerChannel {
 			case 'renameProject': return this.service.renameProject(arg[0], arg[1]);
 			case 'deleteProject': return this.service.deleteProject(arg);
 			case 'updateProjectStatus': return this.service.updateProjectStatus(arg[0], arg[1]);
+			case 'updateAgentSessions': return this.service.updateAgentSessions(arg[0], arg[1]);
 			case 'updateProjectFolder': return this.service.updateProjectFolder(arg[0], arg[1]);
 			case 'getProjectForWindow': return this.service.getProjectForWindow(arg);
 			case 'getWindowForProject': return this.service.getWindowForProject(arg);

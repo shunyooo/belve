@@ -26,7 +26,7 @@ export class TerminalPaneContent extends Disposable implements IPaneContent {
 		}
 		this._isRendered = true;
 
-		this.terminalService.createTerminal({}).then(instance => {
+		this.terminalService.createTerminal({ config: { env: { DOCK_CODE_SESSION: '1' } } }).then(instance => {
 			this.instance = instance;
 			instance.attachToElement(container);
 			instance.setVisible(true);

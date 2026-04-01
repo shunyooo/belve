@@ -50,6 +50,7 @@ npm run valid-layers-check
 - `npm run compile` は使わない（Node 22 で .ts ファイルの直接実行が必要なため失敗する）
 - esbuild の transpile-only モードでは `const enum` がインライン展開されない。renderer 側コードでは `import type` を使い、`const enum` の代わりに `enum` を使うこと
 - 既存インスタンスが残っていると新規起動が即終了する（single-instance lock）。起動しない場合は既存プロセスを kill し `/tmp/vscode-*` と `1.11-main.sock` を削除
+- デバッグログ（`console.log`, `logService.info` 等）は基本的に残す。開発時のトラブルシューティングに重要なため、削除ではなくログレベルで制御する
 
 ## dock-code 固有のアーキテクチャ
 

@@ -11,7 +11,7 @@ import { generateUuid } from '../../../base/common/uuid.js';
 import { IEnvironmentMainService } from '../../environment/electron-main/environmentMainService.js';
 import { ILogService } from '../../log/common/log.js';
 import { IWindowsMainService, OpenContext } from '../../windows/electron-main/windows.js';
-import { type IProject, type IProjectData, type IProjectsChangeEvent, IProjectMainService, ProjectStatus } from '../common/projects.js';
+import { type IAgentSession, type IProject, type IProjectData, type IProjectsChangeEvent, IProjectMainService, ProjectStatus } from '../common/projects.js';
 import { IProtocolMainService } from '../../protocol/electron-main/protocol.js';
 import { INativeWindowConfiguration } from '../../window/common/window.js';
 import { IUserDataProfilesMainService } from '../../userDataProfile/electron-main/userDataProfile.js';
@@ -81,6 +81,12 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 
 		this.dataFilePath = path.join(this.environmentMainService.userDataPath, 'projects.json');
 		this.loadFromDisk();
+
+		// Set up agent event monitoring and hooks
+		import('./agentHooksSetup.js').then(({ ensureAgentHooks }) => ensureAgentHooks(this.logService));
+		import('./agentEventMonitor.js').then(({ AgentEventMonitor }) => {
+			this._register(new AgentEventMonitor(this, this.logService));
+		});
 	}
 
 	private loadFromDisk(): void {
@@ -271,6 +277,15 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 		}
 		project.status = status;
 		this.saveToDisk();
+		this._onDidChangeProjects.fire({ added: [], removed: [], changed: [project] });
+	}
+
+	async updateAgentSessions(id: string, sessions: IAgentSession[]): Promise<void> {
+		const project = this.projects.find(p => p.id === id);
+		if (!project) {
+			return;
+		}
+		(project as { agentSessions?: IAgentSession[] }).agentSessions = sessions;
 		this._onDidChangeProjects.fire({ added: [], removed: [], changed: [project] });
 	}
 
