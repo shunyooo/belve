@@ -81,6 +81,22 @@
 	position: relative;
 }
 
+/* Ensure terminal fills the pane content area */
+.pane-view-content > .terminal-wrapper {
+	width: 100% !important;
+	height: 100% !important;
+}
+
+.pane-view-content > .terminal-wrapper > .terminal-xterm-host {
+	width: 100% !important;
+	height: 100% !important;
+}
+
+.pane-view-content > .terminal-wrapper > .terminal-xterm-host > .xterm {
+	width: 100% !important;
+	height: 100% !important;
+}
+
 /* Focus glow animation — used on panes and workbench areas */
 
 .pane-view {

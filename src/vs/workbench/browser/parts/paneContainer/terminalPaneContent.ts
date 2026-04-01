@@ -11,6 +11,8 @@ export class TerminalPaneContent extends Disposable implements IPaneContent {
 	readonly type = 'terminal';
 	private instance: ITerminalInstance | undefined;
 	private _isRendered = false;
+	private _lastWidth = 0;
+	private _lastHeight = 0;
 
 	constructor(
 		@ITerminalService private readonly terminalService: ITerminalService,
@@ -28,10 +30,18 @@ export class TerminalPaneContent extends Disposable implements IPaneContent {
 			this.instance = instance;
 			instance.attachToElement(container);
 			instance.setVisible(true);
+			// Apply pending layout after terminal is attached
+			if (this._lastWidth > 0 && this._lastHeight > 0) {
+				instance.layout({ width: this._lastWidth, height: this._lastHeight });
+			}
+		}, err => {
+			console.error('[TerminalPaneContent] createTerminal failed:', err);
 		});
 	}
 
 	layout(width: number, height: number): void {
+		this._lastWidth = width;
+		this._lastHeight = height;
 		this.instance?.layout({ width, height });
 	}
 
