@@ -27,8 +27,8 @@ export class PaneContainerPart extends Part {
 
 	//#region IView
 
-	readonly minimumWidth = 200;
-	readonly maximumWidth = 800;
+	readonly minimumWidth = 100;
+	readonly maximumWidth = Number.POSITIVE_INFINITY;
 	readonly minimumHeight = 0;
 	readonly maximumHeight = Number.POSITIVE_INFINITY;
 

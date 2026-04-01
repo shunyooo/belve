@@ -1642,7 +1642,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		const workbenchGrid = SerializableGrid.deserialize(
 			this.createGridDescriptor(),
 			{ fromJSON },
-			{ proportionalLayout: false }
+			{ proportionalLayout: true }
 		);
 
 		this.mainContainer.prepend(workbenchGrid.element);
@@ -1683,6 +1683,12 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 				? this.workbenchGrid.getViewCachedVisibleSize(this.sideBarPartView)
 				: this.workbenchGrid.getViewSize(this.sideBarPartView).width;
 			this.stateModel.setInitializationValue(LayoutStateKeys.SIDEBAR_SIZE, sideBarSize as number);
+
+			// PaneContainer Size
+			const paneContainerSize = this.stateModel.getRuntimeValue(LayoutStateKeys.PANECONTAINER_HIDDEN)
+				? this.workbenchGrid.getViewCachedVisibleSize(this.paneContainerPartView)
+				: this.workbenchGrid.getViewSize(this.paneContainerPartView).width;
+			this.stateModel.setInitializationValue(LayoutStateKeys.PANECONTAINER_SIZE, paneContainerSize as number);
 
 			// Panel Size
 			const panelSize = this.stateModel.getRuntimeValue(LayoutStateKeys.PANEL_HIDDEN)
@@ -2654,10 +2660,11 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			visible: !this.stateModel.getRuntimeValue(LayoutStateKeys.PROJECTBAR_HIDDEN)
 		};
 
+		const paneContainerSize = this.stateModel.getInitializationValue(LayoutStateKeys.PANECONTAINER_SIZE);
 		const paneContainerNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.PANECONTAINER_PART },
-			size: paneContainerWidth,
+			size: paneContainerSize,
 			visible: !this.stateModel.getRuntimeValue(LayoutStateKeys.PANECONTAINER_HIDDEN)
 		};
 
@@ -2848,6 +2855,7 @@ const LayoutStateKeys = {
 	SIDEBAR_SIZE: new InitializationStateKey<number>('sideBar.size', StorageScope.PROFILE, StorageTarget.MACHINE, 300),
 	AUXILIARYBAR_SIZE: new InitializationStateKey<number>('auxiliaryBar.size', StorageScope.PROFILE, StorageTarget.MACHINE, 300),
 	PANEL_SIZE: new InitializationStateKey<number>('panel.size', StorageScope.PROFILE, StorageTarget.MACHINE, 300),
+	PANECONTAINER_SIZE: new InitializationStateKey<number>('paneContainer.size', StorageScope.PROFILE, StorageTarget.MACHINE, 400),
 
 	// Part State
 	PANEL_LAST_NON_MAXIMIZED_HEIGHT: new RuntimeStateKey<number>('panel.lastNonMaximizedHeight', StorageScope.PROFILE, StorageTarget.MACHINE, 300),
@@ -3003,6 +3011,7 @@ class LayoutStateModel extends Disposable {
 			}
 			return true;
 		})();
+		LayoutStateKeys.PANECONTAINER_SIZE.defaultValue = Math.max(300, mainContainerDimension.width / 3);
 		LayoutStateKeys.PANEL_SIZE.defaultValue = (this.stateCache.get(LayoutStateKeys.PANEL_POSITION.name) ?? isHorizontal(LayoutStateKeys.PANEL_POSITION.defaultValue)) ? mainContainerDimension.height / 3 : mainContainerDimension.width / 4;
 		LayoutStateKeys.PANEL_POSITION.defaultValue = positionFromString(this.configurationService.getValue(WorkbenchLayoutSettings.PANEL_POSITION) ?? 'bottom');
 
