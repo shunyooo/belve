@@ -259,13 +259,28 @@ export class AgentEventMonitor extends Disposable {
 	private startRelay(projectId: string, projectName: string, remote: { type: string; host: string }): void {
 		// Ensure hooks are configured on the remote host
 		ensureRemoteAgentHooks(remote.host, this.logService);
-		// The remote events file path (same as local, using /tmp/ since os.tmpdir() varies)
+
 		const remoteEventsFile = '/tmp/dock-code-agent-events';
 
-		// Build the SSH command to tail the remote events file
-		// For DevContainer: the hooks run on the SSH host (not inside the container),
-		// because the terminal PTY runs through SSH → shell
-		const tailCmd = `tail -n 0 -f ${remoteEventsFile} 2>/dev/null`;
+		// Build the tail command based on connection type
+		let tailCmd: string;
+		if (remote.type === 'dev-container') {
+			// For DevContainer: tail events from both the SSH host AND all running containers
+			// Hooks run inside the container, so events are written to the container's /tmp/
+			tailCmd = [
+				// Tail SSH host events (if any local sessions)
+				`(touch ${remoteEventsFile} && tail -n 0 -f ${remoteEventsFile} 2>/dev/null &)`,
+				// Tail events from all running containers that have the events file
+				`for cid in $(docker ps -q 2>/dev/null)`,
+				`do (docker exec $cid sh -c 'touch ${remoteEventsFile} && tail -n 0 -f ${remoteEventsFile}' 2>/dev/null &)`,
+				`done`,
+				// Keep the SSH session alive
+				`wait`,
+			].join('; ');
+		} else {
+			// For SSH: just tail the host's events file
+			tailCmd = `touch ${remoteEventsFile} && tail -n 0 -f ${remoteEventsFile} 2>/dev/null`;
+		}
 
 		const sshArgs = [
 			'-o', 'StrictHostKeyChecking=accept-new',
@@ -273,8 +288,7 @@ export class AgentEventMonitor extends Disposable {
 			'-o', 'ConnectTimeout=10',
 			'-o', 'BatchMode=yes',
 			remote.host,
-			// Ensure the events file exists, then tail it
-			`touch ${remoteEventsFile} && ${tailCmd}`,
+			tailCmd,
 		];
 
 		this.logService.info(`[AgentEventMonitor] Starting remote relay for "${projectName}" via ${remote.host}`);

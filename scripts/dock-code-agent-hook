@@ -9,10 +9,6 @@
 // Reads Claude Code hook JSON from stdin, writes event to dock-code events file.
 // Only runs when DOCK_CODE_SESSION env var is set (i.e. inside dock-code terminal).
 
-if (!process.env.DOCK_CODE_SESSION) {
-	process.exit(0);
-}
-
 const [status, message] = process.argv.slice(2);
 if (!status) {
 	process.exit(0);
