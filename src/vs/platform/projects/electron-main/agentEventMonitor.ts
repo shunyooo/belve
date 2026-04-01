@@ -7,9 +7,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path'; // eslint-disable-line local/code-import-patterns
 import * as cp from 'child_process';
+import electron from 'electron';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { ILogService } from '../../log/common/log.js';
 import { type IAgentSession, IProjectMainService, ProjectStatus } from '../common/projects.js';
+import { IWindowsMainService } from '../../windows/electron-main/windows.js';
 import { ensureRemoteAgentHooks } from './agentHooksSetup.js';
 
 /** dock-code agent event file path */
@@ -85,9 +87,13 @@ export class AgentEventMonitor extends Disposable {
 	/** Active relay processes for remote projects */
 	private readonly relayProcesses = new Map<string, cp.ChildProcess>();
 
+	/** Previous aggregate status per project, for transition detection */
+	private readonly previousStatus = new Map<string, ProjectStatus>();
+
 	constructor(
 		private readonly projectService: IProjectMainService,
 		private readonly logService: ILogService,
+		private readonly windowsMainService: IWindowsMainService,
 	) {
 		super();
 		this.start();
@@ -194,13 +200,94 @@ export class AgentEventMonitor extends Disposable {
 		this.logService.info(`[AgentEventMonitor] project=${projectId}: session=${event.sessionId} ${event.status}, aggregate=${aggregate} (${tracker.sessionCount} sessions)`);
 		await this.projectService.updateProjectStatus(projectId, aggregate);
 		await this.projectService.updateAgentSessions(projectId, sessions);
+
+		// Desktop notifications on aggregate status transitions
+		const previousAggregate = this.previousStatus.get(projectId);
+		this.previousStatus.set(projectId, aggregate);
+		if (aggregate !== previousAggregate) {
+			this.maybeShowNotification(projectId, aggregate, event.message);
+		}
 	}
+
+	//#region Desktop Notifications
+
+	private async maybeShowNotification(projectId: string, status: ProjectStatus, eventMessage: string): Promise<void> {
+		// Only notify for completed, error, and waiting transitions
+		if (status !== ProjectStatus.Completed &&
+			status !== ProjectStatus.Error &&
+			status !== ProjectStatus.Waiting) {
+			return;
+		}
+
+		// Don't notify if the window is focused AND this is the active project
+		const activeProject = await this.projectService.getActiveProject();
+		const focusedWindow = this.windowsMainService.getFocusedWindow();
+		if (focusedWindow && activeProject?.id === projectId) {
+			return;
+		}
+
+		const project = await this.projectService.getProject(projectId);
+		if (!project) {
+			return;
+		}
+
+		if (!electron.Notification.isSupported()) {
+			return;
+		}
+
+		const body = this.getNotificationBody(status, eventMessage);
+		const notification = new electron.Notification({
+			title: project.name,
+			body,
+			silent: status === ProjectStatus.Completed,
+		});
+
+		notification.on('click', () => {
+			this.handleNotificationClick(projectId);
+		});
+
+		notification.show();
+		this.logService.info(`[AgentEventMonitor] Notification: project="${project.name}" status=${status}`);
+	}
+
+	private getNotificationBody(status: ProjectStatus, message: string): string {
+		switch (status) {
+			case ProjectStatus.Completed:
+				return message || 'Agent completed';
+			case ProjectStatus.Error:
+				return message || 'Agent encountered an error';
+			case ProjectStatus.Waiting:
+				return message || 'Agent is waiting for input';
+			default:
+				return message || 'Agent status changed';
+		}
+	}
+
+	private handleNotificationClick(projectId: string): void {
+		this.projectService.switchToProject(projectId);
+
+		// Bring window to front
+		const mainWindow = this.windowsMainService.getLastActiveWindow()
+			?? this.windowsMainService.getWindows()[0];
+		if (mainWindow?.win) {
+			if (mainWindow.win.isMinimized()) {
+				mainWindow.win.restore();
+			}
+			mainWindow.win.focus();
+		}
+
+		// Focus PaneContainer terminal via IPC
+		this.projectService.requestPaneContainerFocus();
+	}
+
+	//#endregion
 
 	private mapStatus(eventStatus: string): ProjectStatus | undefined {
 		switch (eventStatus) {
 			case 'running': return ProjectStatus.Running;
 			case 'waiting': return ProjectStatus.Waiting;
 			case 'completed': return ProjectStatus.Completed;
+			case 'error': return ProjectStatus.Error;
 			case 'session_start': return ProjectStatus.Running;
 			case 'session_end': return ProjectStatus.Idle;
 			default: return undefined;

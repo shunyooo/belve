@@ -19,6 +19,7 @@ import { ACTIVITY_BAR_BACKGROUND, ACTIVITY_BAR_BORDER } from '../../../common/th
 import { assertReturnsDefined } from '../../../../base/common/types.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { PaneDirection } from '../../../services/paneContainer/common/paneContainerService.js';
+import { IProjectMainService } from '../../../../platform/projects/common/projects.js';
 const PANE_CONTAINER_STATE_KEY = 'dockcode.paneContainer.state';
 
 export class PaneContainerPart extends Part {
@@ -48,8 +49,14 @@ export class PaneContainerPart extends Part {
 		@IThemeService themeService: IThemeService,
 		@IStorageService private readonly storageService2: IStorageService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IProjectMainService private readonly projectMainService: IProjectMainService,
 	) {
 		super(Parts.PANECONTAINER_PART, { hasTitle: false }, themeService, storageService2, layoutService);
+
+		// Focus PaneContainer when requested via notification click
+		this._register(this.projectMainService.onDidRequestPaneContainerFocus(() => {
+			this.focus();
+		}));
 	}
 
 	protected override createContentArea(parent: HTMLElement): HTMLElement {

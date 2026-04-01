@@ -20,9 +20,13 @@ export class ProjectMainServiceClient implements IProjectMainService {
 	private readonly _onDidChangeActiveProject = this.disposables.add(new Emitter<IProject | undefined>());
 	readonly onDidChangeActiveProject: Event<IProject | undefined> = this._onDidChangeActiveProject.event;
 
+	private readonly _onDidRequestPaneContainerFocus = this.disposables.add(new Emitter<void>());
+	readonly onDidRequestPaneContainerFocus: Event<void> = this._onDidRequestPaneContainerFocus.event;
+
 	constructor(private readonly channel: IChannel) {
 		this.disposables.add(this.channel.listen<IProjectsChangeEvent>('onDidChangeProjects')(e => this._onDidChangeProjects.fire(e)));
 		this.disposables.add(this.channel.listen<IProject | undefined>('onDidChangeActiveProject')(e => this._onDidChangeActiveProject.fire(e)));
+		this.disposables.add(this.channel.listen<void>('onDidRequestPaneContainerFocus')(() => this._onDidRequestPaneContainerFocus.fire()));
 	}
 
 	getProjects(): Promise<IProject[]> {
@@ -91,6 +95,10 @@ export class ProjectMainServiceClient implements IProjectMainService {
 
 	createProjectWithRemote(name: string, remoteAuthority: string): Promise<IProject> {
 		return this.channel.call('createProjectWithRemote', [name, remoteAuthority]);
+	}
+
+	requestPaneContainerFocus(): Promise<void> {
+		return this.channel.call('requestPaneContainerFocus');
 	}
 
 	dispose(): void {

@@ -17,6 +17,7 @@ export class ProjectMainServiceChannel implements IServerChannel {
 		switch (event) {
 			case 'onDidChangeProjects': return this.service.onDidChangeProjects;
 			case 'onDidChangeActiveProject': return this.service.onDidChangeActiveProject;
+			case 'onDidRequestPaneContainerFocus': return this.service.onDidRequestPaneContainerFocus;
 		}
 
 		throw new Error(`Event not found: ${event}`);
@@ -41,6 +42,7 @@ export class ProjectMainServiceChannel implements IServerChannel {
 			case 'reloadProject': return this.service.reloadProject(arg);
 			case 'openRemoteInProject': return this.service.openRemoteInProject(arg[0], arg[1]);
 			case 'createProjectWithRemote': return this.service.createProjectWithRemote(arg[0], arg[1]);
+			case 'requestPaneContainerFocus': return this.service.requestPaneContainerFocus();
 		}
 
 		throw new Error(`Call not found: ${command}`);

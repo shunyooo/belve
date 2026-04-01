@@ -65,6 +65,9 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 	private readonly _onDidChangeActiveProject = this._register(new Emitter<IProject | undefined>());
 	readonly onDidChangeActiveProject: Event<IProject | undefined> = this._onDidChangeActiveProject.event;
 
+	private readonly _onDidRequestPaneContainerFocus = this._register(new Emitter<void>());
+	readonly onDidRequestPaneContainerFocus: Event<void> = this._onDidRequestPaneContainerFocus.event;
+
 	private readonly dataFilePath: string;
 
 	constructor(
@@ -85,7 +88,7 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 		// Set up agent event monitoring and hooks
 		import('./agentHooksSetup.js').then(({ ensureAgentHooks }) => ensureAgentHooks(this.logService));
 		import('./agentEventMonitor.js').then(({ AgentEventMonitor }) => {
-			this._register(new AgentEventMonitor(this, this.logService));
+			this._register(new AgentEventMonitor(this, this.logService, this.windowsMainService));
 		});
 	}
 
@@ -287,6 +290,10 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 		}
 		(project as { agentSessions?: IAgentSession[] }).agentSessions = sessions;
 		this._onDidChangeProjects.fire({ added: [], removed: [], changed: [project] });
+	}
+
+	async requestPaneContainerFocus(): Promise<void> {
+		this._onDidRequestPaneContainerFocus.fire();
 	}
 
 	async updateProjectFolder(id: string, folderUri: string): Promise<void> {
