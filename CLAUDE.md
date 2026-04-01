@@ -72,6 +72,81 @@ WebContentsView プロジェクトからのフォルダオープンは `NativeHo
 
 `app.ts` の `isAllowedVsCodeFileRequest()` が WebContentsView の `frame.processId` も許可する必要がある。`ProjectMainService.getProjectWebContents()` で全 WebContentsView の webContents を返す。
 
+### SSH / DevContainer リモート接続
+
+#### アーキテクチャ
+
+```
+ローカル (dock-code)                     リモート (SSH先 / コンテナ)
+┌─────────────────────────┐            ┌──────────────────────┐
+│ BrowserWindow            │            │  REH Server           │
+│ ├── Project 1 (main wc)  │            │  (Remote Extension    │
+│ │   └── Extension Host 1 │            │   Host)               │
+│ ├── Project 2 (WCV)      │   SSH      │  - ファイル操作         │
+│ │   └── Extension Host 2 ──tunnel────→│  - LSP                │
+│ └── Project 3 (WCV)      │            │  - ターミナル (PTY)     │
+│     └── Extension Host 3 │            │  - ワークスペース拡張    │
+└─────────────────────────┘            └──────────────────────┘
+```
+
+**各 WebContentsView は独自の Extension Host を持つ**。これにより各プロジェクトが異なる SSH 先やコンテナに独立して接続できる。
+
+#### 拡張機能
+
+**`extensions/dock-code-remote-ssh/`** — SSH リモート接続
+- `RemoteAuthorityResolver` を `ssh-remote` authority で登録
+- システムの `ssh` コマンドで接続（`~/.ssh/config` 対応）
+- REH サーバーを GitHub Release からリモートにダウンロード・起動
+- SSH ポートフォワードでトンネル確立、TCP 接続確認で準備完了を検証
+- `nativeHostMainService.doOpenEmptyWindow` でインターセプトし、プロジェクトシステムにルーティング
+
+**`extensions/dock-code-remote-containers/`** — DevContainer (SSH 先でコンテナ起動)
+- SSH 接続 → `devcontainer up` → コンテナ内に REH インストール → socat ポートリレー → SSH トンネル
+- SSH ワークスペースで `devcontainer.json` を検出 → 「Reopen in Container」通知
+- 「Reopen without Container」で SSH に戻れる（Dockerfile 編集時等）
+- authority 形式: `dev-container+<hex(host:folderPath)>`
+
+#### REH (Remote Extension Host) サーバー
+
+リモートで動く VS Code のバックエンド。ファイル操作、LSP、ターミナル PTY、拡張機能実行を担う。
+
+**ビルド:**
+```bash
+# ローカルビルド（開発用、macOS のネイティブモジュールが混入するため非推奨）
+NODE_OPTIONS="--experimental-strip-types" node --max-old-space-size=8192 \
+  ./node_modules/gulp/bin/gulp.js vscode-reh-linux-x64
+```
+
+**本番ビルド（GitHub Actions）:**
+- `.github/workflows/build-reh.yml` で Linux ランナー上でビルド
+- `main` push で自動実行、GitHub Release にアップロード
+- ネイティブモジュール（node-pty, @parcel/watcher）が正しい Linux バイナリで含まれる
+- SSH/DevContainer 拡張は Release から `curl` でリモートにダウンロード
+
+**mangling 無効化:** `build/gulpfile.reh.ts` で `compileBuildWithoutManglingTask` を使用（upstream のテストファイルとの互換性問題を回避）
+
+#### remoteAuthority の保持
+
+`vscode-remote://` URI のフォルダを開く際、`remoteAuthority` を失わないことが重要。以下の箇所で対応済み:
+- `projectMainService.openFolderInProject()` — URI scheme から remoteAuthority を抽出
+- `projectMainService.reloadProject()` — 同上
+- `projectMainService.createViewForProject()` — project.folderUri から remoteAuthority を設定
+- `nativeHostMainService.doOpenEmptyWindow()` — remoteAuthority 付きリクエストをプロジェクトにルーティング
+
+#### Extension Host ライフサイクル
+
+`utilityProcess.ts` の `registerWindowListeners()` を修正し、WebContentsView の Extension Host は `webContents.destroyed` イベントに紐づけ。メインウィンドウのリロードで他プロジェクトの Extension Host が kill されない。
+
+#### 既知の問題と判断
+
+| 問題 | 判断 |
+|------|------|
+| Microsoft の Remote SSH/Containers は VSDA チェックで動作不可 | 自前の resolver 拡張を開発 |
+| Open Remote SSH (OSS) はメンテ不活発 + バージョン不一致 | 自前実装を選択 |
+| macOS で REH ビルド → Linux ネイティブモジュールが不正 | GitHub Actions で Linux 上でビルド（根本解決） |
+| VS Code マーケットプレイスの TOS はフォークに対してグレー | 現状は使用、将来 Open VSX も検討 |
+| upstream の mangler がテストファイルのクラス名をリネーム | REH ビルドで mangling を無効化 |
+
 ## VS Code 上流のコーディングガイドライン
 
 ### 基本ルール

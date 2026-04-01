@@ -120,30 +120,35 @@
 
 ## 8. DevContainer / SSH 連携
 
-### 背景: Microsoft 拡張の制約
-- Microsoft の Remote SSH / Remote Containers 拡張は VSDA (Visual Studio Developer Authentication) チェックがあり、VS Code フォークでは動作しない
-- Cursor 等は Microsoft と個別契約で回避しているが、OSS フォークには不可能
-- → 自前の resolver 拡張を開発する方針
+### ステータス: SSH ✅ 動作確認済 / DevContainer ✅ 基本動作確認済
 
-### 8-1. SSH
-- まず Open Remote SSH (`jeanp413.open-remote-ssh`) を試す
-- 動作しない/不安定な場合は自前の SSH resolver 拡張を開発
-  - `vscode.workspace.registerRemoteAuthorityResolver` で `ssh-remote` を解決
-  - SSH 接続 → リモートに dock-code server をインストール → Extension Host をリモートで起動
-- SSH 接続設定のプロジェクト紐づけ
-- 接続断時の自動再接続
-- tmux 統合（1-1 と連携）
+### 実装済み
 
-### 8-2. DevContainer（自前 resolver 拡張）
-- dock-code 専用の拡張機能を開発（例: `dock-code.remote-devcontainer`）
-- `@devcontainers/cli`（OSS）でコンテナのライフサイクル管理（起動/停止/再構築）
-- `remoteAuthority` resolver を実装し、コンテナ内で dock-code server + Extension Host を起動
-- これにより LSP・拡張・ターミナルがすべてコンテナ内で動作する
-- プロジェクトごとに DevContainer 定義を紐づけ
-- プロジェクト作成時に DevContainer を自動起動
+**SSH (`extensions/dock-code-remote-ssh/`)**
+- 自前の `RemoteAuthorityResolver` で `ssh-remote` を解決
+- システム `ssh` コマンドで接続、`~/.ssh/config` ホスト一覧表示
+- REH サーバーを GitHub Release からリモートにダウンロード・起動
+- SSH トンネル（TCP 接続確認付き）
+- プロジェクトシステム統合（新ウィンドウではなくプロジェクト内で開く）
+- 起動時の自動復元
 
-### 8-3. 実装の流れ
-1. Open Remote SSH で SSH 接続を検証
-2. DevContainer resolver 拡張の雛形を作成
-3. `devcontainer up` → server インストール → remoteAuthority 接続のパイプラインを実装
-4. プロジェクト作成 UI に DevContainer/SSH 設定を統合
+**DevContainer (`extensions/dock-code-remote-containers/`)**
+- SSH 先で `devcontainer up` → コンテナ起動
+- コンテナ内に REH サーバーをインストール（GitHub Release から）
+- socat ポートリレー + SSH トンネル
+- devcontainer.json 自動検出 → 「Reopen in Container」通知
+- 「Reopen without Container」で SSH に戻る
+- リモートフォルダブラウザ UI
+
+**REH ビルド CI (`.github/workflows/build-reh.yml`)**
+- GitHub Actions で Linux 上でビルド → Release に自動公開
+- linux-x64 / linux-arm64 対応
+- ネイティブモジュール（node-pty, @parcel/watcher）が正しいバイナリで含まれる
+
+### 次にやること
+
+- [ ] DevContainer 接続時にマウント済みワークスペースフォルダを自動で開く（ループせずに）
+- [ ] SSH 接続断時の自動再接続
+- [ ] プロジェクト作成 UI に SSH/DevContainer 設定を統合
+- [ ] `.vscode` の色設定が ProjectBar/PaneContainer に波及する問題の修正
+- [ ] tmux 統合（1-1 と連携）
