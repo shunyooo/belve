@@ -1,61 +1,61 @@
 # dock-code
 
-1つのウィンドウで複数の開発環境（SSH / DevContainer）を管理・即座に切り替えできるデスクトップアプリ。VS Code フォーク。
+A desktop app for managing multiple development environments (SSH / DevContainer) in a single window with instant switching. Built on VS Code.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ [P1] [P2] [P3] │  Terminal  │  VS Code Editor              │
 │                 │            │                              │
 │  ProjectBar     │  Pane      │  ActivityBar + Sidebar +     │
-│  (プロジェクト   │  Container │  Editor + Panel              │
-│   切り替え)      │            │                              │
+│  (project       │  Container │  Editor + Panel              │
+│   switching)    │            │                              │
 │                 │────────────│                              │
 │                 │  Terminal  │                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## 特徴
+## Features
 
-- **マルチプロジェクト** — 1ウィンドウ内で複数プロジェクトを独立管理。各プロジェクトが独自の Extension Host・リモート接続を持つ
-- **SSH リモート開発** — VSDA 不要の自前 SSH resolver。プロジェクト内で SSH 先のファイル編集・ターミナル実行
-- **DevContainer** — SSH 先で `devcontainer up` → コンテナ内で開発。SSH ↔ DevContainer のシームレスな切り替え
-- **PaneContainer** — ProjectBar の右に自由分割できるターミナル/ペイン領域
-- **VS Code 互換** — マーケットプレイス拡張、テーマ、キーバインドがそのまま使える
+- **Multi-Project** — Manage multiple projects in a single window. Each project has its own Extension Host and remote connection
+- **SSH Remote Development** — Custom SSH resolver (no VSDA dependency). Edit files and run terminals on remote hosts within a project
+- **DevContainer** — Run `devcontainer up` on SSH hosts. Seamlessly switch between SSH and DevContainer
+- **PaneContainer** — Freely split terminal/pane area next to the ProjectBar
+- **VS Code Compatible** — Marketplace extensions, themes, and keybindings work out of the box
 
-## アーキテクチャ
+## Architecture
 
 ```
 Single BrowserWindow
 ├── Project 1 (main webContents) ── Extension Host 1 ── SSH/DevContainer A
 ├── Project 2 (WebContentsView)  ── Extension Host 2 ── SSH/DevContainer B
 ├── Project 3 (WebContentsView)  ── Extension Host 3 ── SSH/DevContainer C
-└── プロジェクト切り替え: view.setVisible(true/false) + webContents.focus()
+└── Switching: view.setVisible(true/false) + webContents.focus()
 ```
 
-各プロジェクトは Electron の `WebContentsView` で独立した renderer プロセスとして動作。プロジェクト間の切り替えはビューの表示/非表示で瞬時に行われる。
+Each project runs as an independent renderer process using Electron's `WebContentsView`. Switching between projects is instant via view visibility toggling.
 
-## 開発
+## Development
 
 ```bash
-# 依存インストール
+# Install dependencies
 npm ci
 
-# 型チェック
+# Type check
 npm run compile-check-ts-native
 
-# トランスパイル
+# Transpile
 NODE_OPTIONS="--experimental-strip-types" node build/next/index.ts transpile
 
-# 起動
+# Launch
 ./scripts/code.sh
 
-# REH サーバービルド（GitHub Actions で自動実行）
+# Build REH server (runs automatically via GitHub Actions)
 NODE_OPTIONS="--experimental-strip-types" node --max-old-space-size=8192 \
   ./node_modules/gulp/bin/gulp.js vscode-reh-linux-x64
 ```
 
-## ライセンス
+## License
 
 [MIT](LICENSE.txt)
 
-VS Code のフォークです。元のリポジトリ: [microsoft/vscode](https://github.com/microsoft/vscode)
+Fork of [microsoft/vscode](https://github.com/microsoft/vscode).
