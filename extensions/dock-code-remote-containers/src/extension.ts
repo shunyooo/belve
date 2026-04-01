@@ -338,6 +338,27 @@ function getProductConfig(): { commit?: string; serverApplicationName: string; s
 }
 
 /**
+ * Schedule opening the correct workspace folder after resolver returns.
+ * Needed because the initial connection may open to /root (container default),
+ * and on cached reconnections the folder check was previously skipped.
+ */
+function scheduleWorkspaceFolderOpen(authority: string, remoteWorkspaceFolder: string): void {
+	setTimeout(() => {
+		const folders = vscode.workspace.workspaceFolders;
+		const currentPath = folders?.[0]?.uri.path;
+		if (currentPath !== remoteWorkspaceFolder) {
+			outputChannel.appendLine(`  Opening workspace folder: ${remoteWorkspaceFolder}`);
+			const uri = vscode.Uri.from({
+				scheme: 'vscode-remote',
+				authority,
+				path: remoteWorkspaceFolder,
+			});
+			vscode.commands.executeCommand('vscode.openFolder', uri, { forceReuseWindow: true });
+		}
+	}, 0);
+}
+
+/**
  * Main resolve function.
  * Authority format: dev-container+<hex(host:folderPath)>
  */
@@ -360,6 +381,9 @@ async function doResolve(
 	const cached = resolvedConnections.get(authority);
 	if (cached) {
 		outputChannel.appendLine('  Reusing cached connection');
+		// Ensure correct workspace folder is open (may have been /root on first connect)
+		const fullAuthority = `dev-container+${hexPayload}`;
+		scheduleWorkspaceFolderOpen(fullAuthority, cached.remoteWorkspaceFolder);
 		return new vscode.ResolvedAuthority('127.0.0.1', cached.localPort, cached.connectionToken);
 	}
 
@@ -443,19 +467,7 @@ async function doResolve(
 	// Open the container's workspace folder if not already open
 	// Schedule after resolve returns to avoid blocking the resolver
 	const fullAuthority = `dev-container+${hexPayload}`;
-	setTimeout(() => {
-		const folders = vscode.workspace.workspaceFolders;
-		const currentPath = folders?.[0]?.uri.path;
-		if (currentPath !== remoteWorkspaceFolder) {
-			outputChannel.appendLine(`  Opening workspace folder: ${remoteWorkspaceFolder}`);
-			const uri = vscode.Uri.from({
-				scheme: 'vscode-remote',
-				authority: fullAuthority,
-				path: remoteWorkspaceFolder,
-			});
-			vscode.commands.executeCommand('vscode.openFolder', uri, { forceReuseWindow: true });
-		}
-	}, 0);
+	scheduleWorkspaceFolderOpen(fullAuthority, remoteWorkspaceFolder);
 
 	return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
 }
