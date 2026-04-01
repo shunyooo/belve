@@ -458,6 +458,23 @@ function needsBomAdded(filePath: string): boolean {
 	return /([\/\\])test\1.*utf8/.test(filePath);
 }
 
+/**
+ * Ensure codicon.ttf is copied from node_modules to the out directory.
+ * The font is .gitignored in src/ and only copied by the gulp build pipeline,
+ * so esbuild transpile mode needs to handle it explicitly.
+ */
+async function ensureCodiconFont(outDir: string): Promise<void> {
+	const src = path.join(REPO_ROOT, 'node_modules', '@vscode', 'codicons', 'dist', 'codicon.ttf');
+	const dest = path.join(REPO_ROOT, outDir, 'vs', 'base', 'browser', 'ui', 'codicons', 'codicon', 'codicon.ttf');
+	try {
+		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+		await fs.promises.copyFile(src, dest);
+		console.log('[codicons] codicon.ttf copied to out');
+	} catch (e) {
+		console.warn('[codicons] Failed to copy codicon.ttf:', e);
+	}
+}
+
 async function copyFile(srcPath: string, destPath: string): Promise<void> {
 	await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
 
@@ -1052,6 +1069,7 @@ async function watch(): Promise<void> {
 	try {
 		await transpile(outDir, false);
 		await copyAllNonTsFiles(outDir, false);
+		await ensureCodiconFont(outDir);
 		console.log(`Finished transpilation with 0 errors after ${Date.now() - t1} ms`);
 	} catch (err) {
 		console.error('[watch] Initial build failed:', err);
@@ -1189,6 +1207,7 @@ async function main(): Promise<void> {
 					const t1 = Date.now();
 					await transpile(outDir, options.excludeTests);
 					await copyAllNonTsFiles(outDir, options.excludeTests);
+					await ensureCodiconFont(outDir);
 					console.log(`[transpile] Done in ${Date.now() - t1}ms`);
 				}
 				break;

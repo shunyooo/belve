@@ -6,8 +6,18 @@
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { $, append, clearNode } from '../../../../base/browser/dom.js';
-import { IViewSize } from '../../../../base/browser/ui/grid/grid.js';
-import { ISerializableView } from '../../../../base/browser/ui/grid/grid.js';
+import { IViewSize, ISerializableView } from '../../../../base/browser/ui/grid/grid.js';
+
+/**
+ * Show a brief focus glow animation on the given element.
+ * Used for visual feedback when navigating between areas.
+ */
+export function showFocusGlow(element: HTMLElement): void {
+	element.classList.remove('dockcode-focus-glow');
+	void element.offsetWidth; // force reflow to restart animation
+	element.classList.add('dockcode-focus-glow');
+	setTimeout(() => element.classList.remove('dockcode-focus-glow'), 400);
+}
 
 export interface IPaneContent extends IDisposable {
 	readonly type: string;
@@ -48,16 +58,28 @@ export class PaneView extends Disposable implements ISerializableView {
 	private readonly _onDidRequestSplitRight = this._register(new Emitter<void>());
 	readonly onDidRequestSplitRight: Event<void> = this._onDidRequestSplitRight.event;
 
+	private readonly _onDidFocus = this._register(new Emitter<void>());
+	readonly onDidFocus: Event<void> = this._onDidFocus.event;
+
 	constructor() {
 		super();
 
 		this.element = $('.pane-view');
+
+		// Fire onDidFocus when any child receives focus
+		this._register({ dispose: () => this.element.removeEventListener('focusin', this._focusInHandler) });
+		this.element.addEventListener('focusin', this._focusInHandler);
 
 		this.headerElement = append(this.element, $('.pane-view-header'));
 		this.contentElement = append(this.element, $('.pane-view-content'));
 
 		this.createHeader();
 	}
+
+	private readonly _focusInHandler = () => {
+		this._onDidFocus.fire();
+		this.showFocusGlow();
+	};
 
 	private createHeader(): void {
 		clearNode(this.headerElement);
@@ -123,6 +145,10 @@ export class PaneView extends Disposable implements ISerializableView {
 
 	focus(): void {
 		this._content?.focus();
+	}
+
+	private showFocusGlow(): void {
+		showFocusGlow(this.element);
 	}
 
 	toJSON(): object {

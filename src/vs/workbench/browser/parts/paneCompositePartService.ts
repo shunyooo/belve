@@ -20,6 +20,7 @@ import { IPaneCompositePartService } from '../../services/panecomposite/browser/
 import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
 import { IPaneCompositePart } from './paneCompositePart.js';
 import { SINGLE_WINDOW_PARTS } from '../../services/layout/browser/layoutService.js';
+import { setPaneContainerInstance } from '../../services/paneContainer/common/paneContainerService.js';
 
 export class PaneCompositePartService extends Disposable implements IPaneCompositePartService {
 
@@ -42,7 +43,9 @@ export class PaneCompositePartService extends Disposable implements IPaneComposi
 		// ProjectBarPart and PaneContainerPart are not PaneComposites but need to be instantiated here
 		// so they register themselves with the layout service before renderWorkbench() runs.
 		this._register(instantiationService.createInstance(ProjectBarPart));
-		this._register(instantiationService.createInstance(PaneContainerPart));
+		const paneContainerPart = instantiationService.createInstance(PaneContainerPart);
+		this._register(paneContainerPart);
+		setPaneContainerInstance(paneContainerPart);
 
 		this.paneCompositeParts.set(ViewContainerLocation.Panel, panelPart);
 		this.paneCompositeParts.set(ViewContainerLocation.Sidebar, sideBarPart);

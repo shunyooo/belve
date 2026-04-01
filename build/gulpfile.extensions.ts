@@ -92,6 +92,8 @@ const compilations = [
 	'extensions/vscode-colorize-tests/tsconfig.json',
 	'extensions/vscode-colorize-perf-tests/tsconfig.json',
 	'extensions/vscode-test-resolver/tsconfig.json',
+	'extensions/dock-code-remote-ssh/tsconfig.json',
+	'extensions/dock-code-remote-containers/tsconfig.json',
 
 	'.vscode/extensions/vscode-selfhost-test-provider/tsconfig.json',
 	'.vscode/extensions/vscode-selfhost-import-aid/tsconfig.json',

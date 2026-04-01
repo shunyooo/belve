@@ -5,8 +5,7 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IPaneContent } from './paneView.js';
-import { ITerminalService } from '../../../contrib/terminal/browser/terminal.js';
-import type { ITerminalInstance } from '../../../contrib/terminal/browser/terminal.js';
+import { ITerminalService, type ITerminalInstance } from '../../../contrib/terminal/browser/terminal.js'; // eslint-disable-line local/code-import-patterns
 
 export class TerminalPaneContent extends Disposable implements IPaneContent {
 	readonly type = 'terminal';
@@ -14,7 +13,7 @@ export class TerminalPaneContent extends Disposable implements IPaneContent {
 	private _isRendered = false;
 
 	constructor(
-		private readonly terminalService: ITerminalService,
+		@ITerminalService private readonly terminalService: ITerminalService,
 	) {
 		super();
 	}

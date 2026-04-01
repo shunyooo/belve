@@ -6,13 +6,12 @@
 import { WebContentsView } from 'electron';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
-import { FileAccess } from '../../../base/common/network.js';
+import { FileAccess, Schemas } from '../../../base/common/network.js';
 import { generateUuid } from '../../../base/common/uuid.js';
 import { IEnvironmentMainService } from '../../environment/electron-main/environmentMainService.js';
 import { ILogService } from '../../log/common/log.js';
 import { IWindowsMainService, OpenContext } from '../../windows/electron-main/windows.js';
-import type { IProject, IProjectData, IProjectsChangeEvent } from '../common/projects.js';
-import { IProjectMainService, ProjectStatus } from '../common/projects.js';
+import { type IProject, type IProjectData, type IProjectsChangeEvent, IProjectMainService, ProjectStatus } from '../common/projects.js';
 import { IProtocolMainService } from '../../protocol/electron-main/protocol.js';
 import { INativeWindowConfiguration } from '../../window/common/window.js';
 import { IUserDataProfilesMainService } from '../../userDataProfile/electron-main/userDataProfile.js';
@@ -26,8 +25,7 @@ import { ICSSDevelopmentService } from '../../cssDev/node/cssDevService.js';
 import { URI } from '../../../base/common/uri.js';
 import { getSingleFolderWorkspaceIdentifier } from '../../workspaces/node/workspaces.js';
 import * as fs from 'fs';
-import * as path from 'path';
-import { Schemas } from '../../../base/common/network.js';
+import * as path from 'path'; // eslint-disable-line local/code-import-patterns
 import type { ISingleFolderWorkspaceIdentifier } from '../../workspace/common/workspace.js';
 
 interface IProjectView {
@@ -168,6 +166,8 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			for (const [, pv] of this.projectViews) {
 				pv.view.setVisible(false);
 			}
+			// Focus the main window's webContents
+			mainWindow.win.webContents.focus();
 		} else {
 			const targetView = this.projectViews.get(id);
 			if (targetView) {
@@ -475,7 +475,7 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			pv.view.setVisible(true);
 			pv.view.webContents.focus();
 		});
-		pv.view.webContents.once('did-fail-load', (_event: any, errorCode: number, errorDescription: string) => {
+		pv.view.webContents.once('did-fail-load', (_event: Electron.Event, errorCode: number, errorDescription: string) => {
 			console.log(`[ProjectView:${project.name}] did-fail-load: ${errorCode} ${errorDescription}`);
 		});
 		pv.view.webContents.loadURL(workbenchUrl);

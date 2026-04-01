@@ -7,6 +7,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { IProjectService } from '../common/project.js';
 import { ProjectService } from './projectService.js';
 import './projectsActions.js';
+import './dockCodeKeybindings.js';
 
 // Legacy renderer-only project service — will be replaced by IProjectMainService
 registerSingleton(IProjectService, ProjectService, InstantiationType.Delayed);

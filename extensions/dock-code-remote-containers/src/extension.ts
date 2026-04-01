@@ -1,7 +1,6 @@
 /*---------------------------------------------------------------------------------------------
- *  dock-code Remote - Containers Extension
- *  Opens folders in Dev Containers on SSH remote hosts.
- *  Flow: local → SSH → remote host → Docker container (REH server)
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
@@ -16,6 +15,14 @@ let outputChannel: vscode.OutputChannel;
 
 /** Active processes per authority, for cleanup */
 const activeProcesses = new Map<string, cp.ChildProcess[]>();
+
+/** Cached resolved connections per authority (reused on workspace folder redirect) */
+interface CachedConnection {
+	localPort: number;
+	connectionToken: string;
+	remoteWorkspaceFolder: string;
+}
+const resolvedConnections = new Map<string, CachedConnection>();
 
 export function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel('Remote - Containers');
@@ -349,6 +356,13 @@ async function doResolve(
 	outputChannel.appendLine(`  SSH host: ${host}`);
 	outputChannel.appendLine(`  Folder: ${folderPath}`);
 
+	// Reuse cached connection (e.g. after workspace folder redirect)
+	const cached = resolvedConnections.get(authority);
+	if (cached) {
+		outputChannel.appendLine('  Reusing cached connection');
+		return new vscode.ResolvedAuthority('127.0.0.1', cached.localPort, cached.connectionToken);
+	}
+
 	const connectionToken = crypto.randomBytes(20).toString('hex');
 	const product = getProductConfig();
 	const commit = product.commit || await getLocalCommit(context);
@@ -416,17 +430,34 @@ async function doResolve(
 		dispose: () => {
 			procs.forEach(p => p.kill());
 			activeProcesses.delete(authority);
+			resolvedConnections.delete(authority);
 		}
 	});
 
 	outputChannel.appendLine(`  Tunnel: localhost:${localPort} → ${host}:${remoteHostPort} → container:${containerPort}`);
-
 	outputChannel.appendLine(`  Workspace folder: ${remoteWorkspaceFolder}`);
 
-	// Set the workspace folder via resolver options (no reload needed)
-	const result = new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
-	(result as any).extensionHostEnv = { VSCODE_REMOTE_WORKSPACE_FOLDER: remoteWorkspaceFolder };
-	return result;
+	// Cache the connection for reuse on workspace folder redirect
+	resolvedConnections.set(authority, { localPort, connectionToken, remoteWorkspaceFolder });
+
+	// Open the container's workspace folder if not already open
+	// Schedule after resolve returns to avoid blocking the resolver
+	const fullAuthority = `dev-container+${hexPayload}`;
+	setTimeout(() => {
+		const folders = vscode.workspace.workspaceFolders;
+		const currentPath = folders?.[0]?.uri.path;
+		if (currentPath !== remoteWorkspaceFolder) {
+			outputChannel.appendLine(`  Opening workspace folder: ${remoteWorkspaceFolder}`);
+			const uri = vscode.Uri.from({
+				scheme: 'vscode-remote',
+				authority: fullAuthority,
+				path: remoteWorkspaceFolder,
+			});
+			vscode.commands.executeCommand('vscode.openFolder', uri, { forceReuseWindow: true });
+		}
+	}, 0);
+
+	return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
 }
 
 /**
