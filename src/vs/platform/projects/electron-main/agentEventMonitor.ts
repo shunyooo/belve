@@ -6,9 +6,11 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path'; // eslint-disable-line local/code-import-patterns
+import * as cp from 'child_process';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { ILogService } from '../../log/common/log.js';
 import { type IAgentSession, IProjectMainService, ProjectStatus } from '../common/projects.js';
+import { ensureRemoteAgentHooks } from './agentHooksSetup.js';
 
 /** dock-code agent event file path */
 export const AGENT_EVENTS_FILE = path.join(os.tmpdir(), 'dock-code-agent-events');
@@ -80,12 +82,19 @@ export class AgentEventMonitor extends Disposable {
 	/** Per-project session trackers */
 	private readonly trackers = new Map<string, ProjectSessionTracker>();
 
+	/** Active relay processes for remote projects */
+	private readonly relayProcesses = new Map<string, cp.ChildProcess>();
+
 	constructor(
 		private readonly projectService: IProjectMainService,
 		private readonly logService: ILogService,
 	) {
 		super();
 		this.start();
+		this.startRemoteRelays();
+
+		// Watch for new projects being added (e.g. new remote connections)
+		this._register(this.projectService.onDidChangeProjects(() => this.startRemoteRelays()));
 	}
 
 	private start(): void {
@@ -204,8 +213,122 @@ export class AgentEventMonitor extends Disposable {
 		return normalized === projectPath || normalized.endsWith(projectPath) || projectPath.endsWith(normalized);
 	}
 
+	//#region Remote Event Relay
+
+	/**
+	 * For remote projects (SSH/DevContainer), starts a background SSH process
+	 * that tails the remote events file and appends to the local events file.
+	 * This bridges agent events from containers/remote hosts to local monitoring.
+	 */
+	private async startRemoteRelays(): Promise<void> {
+		const projects = await this.projectService.getProjects();
+		for (const project of projects) {
+			if (!project.folderUri || this.relayProcesses.has(project.id)) {
+				continue;
+			}
+
+			const remote = this.parseRemoteAuthority(project.folderUri);
+			if (!remote) {
+				continue;
+			}
+
+			this.startRelay(project.id, project.name, remote);
+		}
+	}
+
+	private parseRemoteAuthority(folderUri: string): { type: 'ssh'; host: string } | { type: 'dev-container'; host: string; containerId?: string } | undefined {
+		// vscode-remote://ssh-remote+hostname/path
+		const sshMatch = folderUri.match(/vscode-remote:\/\/ssh-remote\+([^/]+)/);
+		if (sshMatch) {
+			return { type: 'ssh', host: decodeURIComponent(sshMatch[1]) };
+		}
+
+		// vscode-remote://dev-container%2B<hex>/path
+		const dcMatch = folderUri.match(/vscode-remote:\/\/dev-container[+%]2[Bb]([^/]+)/);
+		if (dcMatch) {
+			const hex = decodeURIComponent(dcMatch[1]);
+			const payload = Buffer.from(hex, 'hex').toString('utf8');
+			const colonIdx = payload.indexOf(':');
+			const host = payload.substring(0, colonIdx);
+			return { type: 'dev-container', host };
+		}
+
+		return undefined;
+	}
+
+	private startRelay(projectId: string, projectName: string, remote: { type: string; host: string }): void {
+		// Ensure hooks are configured on the remote host
+		ensureRemoteAgentHooks(remote.host, this.logService);
+		// The remote events file path (same as local, using /tmp/ since os.tmpdir() varies)
+		const remoteEventsFile = '/tmp/dock-code-agent-events';
+
+		// Build the SSH command to tail the remote events file
+		// For DevContainer: the hooks run on the SSH host (not inside the container),
+		// because the terminal PTY runs through SSH → shell
+		const tailCmd = `tail -n 0 -f ${remoteEventsFile} 2>/dev/null`;
+
+		const sshArgs = [
+			'-o', 'StrictHostKeyChecking=accept-new',
+			'-o', 'ServerAliveInterval=30',
+			'-o', 'ConnectTimeout=10',
+			'-o', 'BatchMode=yes',
+			remote.host,
+			// Ensure the events file exists, then tail it
+			`touch ${remoteEventsFile} && ${tailCmd}`,
+		];
+
+		this.logService.info(`[AgentEventMonitor] Starting remote relay for "${projectName}" via ${remote.host}`);
+
+		const proc = cp.spawn('ssh', sshArgs, {
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+
+		this.relayProcesses.set(projectId, proc);
+
+		// Pipe remote events to local events file
+		proc.stdout?.on('data', (data: Buffer) => {
+			try {
+				fs.appendFileSync(AGENT_EVENTS_FILE, data.toString());
+			} catch {
+				// Ignore write errors
+			}
+		});
+
+		proc.stderr?.on('data', (data: Buffer) => {
+			const msg = data.toString().trim();
+			if (msg) {
+				this.logService.warn(`[AgentEventMonitor] Relay stderr (${projectName}): ${msg}`);
+			}
+		});
+
+		proc.on('close', (code) => {
+			this.logService.info(`[AgentEventMonitor] Relay for "${projectName}" exited (code ${code})`);
+			this.relayProcesses.delete(projectId);
+
+			// Auto-restart after a delay if still running
+			if (!this._store.isDisposed) {
+				setTimeout(() => {
+					if (!this._store.isDisposed && !this.relayProcesses.has(projectId)) {
+						this.startRemoteRelays();
+					}
+				}, 5000);
+			}
+		});
+
+		proc.on('error', (err) => {
+			this.logService.error(`[AgentEventMonitor] Relay error (${projectName}):`, err);
+			this.relayProcesses.delete(projectId);
+		});
+	}
+
+	//#endregion
+
 	override dispose(): void {
 		this.watcher?.close();
+		for (const [, proc] of this.relayProcesses) {
+			proc.kill();
+		}
+		this.relayProcesses.clear();
 		super.dispose();
 	}
 }
