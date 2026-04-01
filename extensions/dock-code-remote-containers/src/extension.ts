@@ -421,13 +421,12 @@ async function doResolve(
 
 	outputChannel.appendLine(`  Tunnel: localhost:${localPort} → ${host}:${remoteHostPort} → container:${containerPort}`);
 
-	// Open the workspace folder inside the container after connection
-	setTimeout(() => {
-		const remoteUri = vscode.Uri.parse(`vscode-remote://dev-container+${hexPayload}${remoteWorkspaceFolder}`);
-		vscode.commands.executeCommand('vscode.openFolder', remoteUri, { forceReuseWindow: true });
-	}, 2000);
+	outputChannel.appendLine(`  Workspace folder: ${remoteWorkspaceFolder}`);
 
-	return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
+	// Set the workspace folder via resolver options (no reload needed)
+	const result = new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
+	(result as any).extensionHostEnv = { VSCODE_REMOTE_WORKSPACE_FOLDER: remoteWorkspaceFolder };
+	return result;
 }
 
 /**
