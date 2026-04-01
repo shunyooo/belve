@@ -332,7 +332,7 @@ async function doResolve(
 
 	// Step 3: Start/build the dev container on remote
 	progress.report({ message: 'Starting Dev Container...' });
-	const containerId = await startRemoteDevContainer(host, folderPath);
+	const { containerId, remoteWorkspaceFolder } = await startRemoteDevContainer(host, folderPath);
 	outputChannel.appendLine(`  Container ID: ${containerId}`);
 
 	// Step 4: Install REH server in container (via SSH → docker exec)
@@ -356,9 +356,7 @@ async function doResolve(
 
 	// Step 6: Set up SSH tunnel to container port
 	progress.report({ message: 'Setting up tunnel...' });
-	// First, forward container port to remote host
 	const remoteHostPort = await getRemoteContainerPortMapping(host, containerId, containerPort);
-	// Then, forward remote host port to local
 	const localPort = await findFreePort();
 	const tunnelProcess = await createSSHTunnel(host, localPort, remoteHostPort);
 
@@ -373,13 +371,20 @@ async function doResolve(
 	});
 
 	outputChannel.appendLine(`  Tunnel: localhost:${localPort} → ${host}:${remoteHostPort} → container:${containerPort}`);
+
+	// Open the workspace folder inside the container after connection
+	setTimeout(() => {
+		const remoteUri = vscode.Uri.parse(`vscode-remote://dev-container+${hexPayload}${remoteWorkspaceFolder}`);
+		vscode.commands.executeCommand('vscode.openFolder', remoteUri, { forceReuseWindow: true });
+	}, 2000);
+
 	return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
 }
 
 /**
  * Start a dev container on the remote host.
  */
-async function startRemoteDevContainer(host: string, folderPath: string): Promise<string> {
+async function startRemoteDevContainer(host: string, folderPath: string): Promise<{ containerId: string; remoteWorkspaceFolder: string }> {
 	outputChannel.appendLine(`  Running devcontainer up on ${host}...`);
 	const output = await sshExec(host, `devcontainer up --workspace-folder "${folderPath}" 2>&1`);
 
@@ -389,7 +394,9 @@ async function startRemoteDevContainer(host: string, folderPath: string): Promis
 		try {
 			const result = JSON.parse(lines[i]);
 			if (result.containerId) {
-				return result.containerId;
+				const remoteWorkspaceFolder = result.remoteWorkspaceFolder || '/workspaces/' + path.basename(folderPath);
+				outputChannel.appendLine(`  Remote workspace folder: ${remoteWorkspaceFolder}`);
+				return { containerId: result.containerId, remoteWorkspaceFolder };
 			}
 		} catch {
 			continue;
