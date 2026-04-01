@@ -13,36 +13,58 @@ import { AGENT_EVENTS_FILE } from './agentEventMonitor.js';
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 const DOCK_CODE_HOOK_MARKER = 'dock-code-agent-events';
 
-/**
- * Generates the hook command that writes an event to the dock-code events file.
- */
-function makeHookCommand(statusField: string, messageField: string): string {
-	const eventsFile = AGENT_EVENTS_FILE.replace(/'/g, '\\\'');
-	// Only write events when running inside dock-code (DOCK_CODE_SESSION env var is set)
-	return `node -e 'if(!process.env.DOCK_CODE_SESSION)process.exit(0);let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{const j=JSON.parse(d);require("fs").appendFileSync("${eventsFile}",JSON.stringify({source:"terminal",eventType:"claude-code",status:${statusField},projectPath:j.cwd,sessionId:j.session_id,message:${messageField}})+"\\n")})'`;
-}
+/** Path where dock-code-agent-hook script will be installed */
+const HOOK_SCRIPT_INSTALL_PATH = path.join(os.homedir(), '.local', 'bin', 'dock-code-agent-hook');
 
 /**
  * The hooks dock-code needs in Claude Code's settings.json.
+ * Each hook calls `dock-code-agent-hook <status> <message>`.
  */
 function getDockCodeHooks(): Record<string, object> {
+	const cmd = (status: string, message: string) =>
+		`dock-code-agent-hook ${status} ${message}`;
 	return {
 		UserPromptSubmit: {
-			hooks: [{ type: 'command', command: makeHookCommand('"running"', '"Generating"') }]
+			hooks: [{ type: 'command', command: cmd('running', 'Generating') }]
 		},
 		Notification: {
-			hooks: [{ type: 'command', command: makeHookCommand('"waiting"', 'j.notification_type') }]
+			hooks: [{ type: 'command', command: cmd('waiting', 'notification') }]
 		},
 		Stop: {
-			hooks: [{ type: 'command', command: makeHookCommand('"completed"', '"Done"') }]
+			hooks: [{ type: 'command', command: cmd('completed', 'Done') }]
 		},
 		SessionStart: {
-			hooks: [{ type: 'command', command: makeHookCommand('"session_start"', 'j.source') }]
+			hooks: [{ type: 'command', command: cmd('session_start', 'start') }]
 		},
 		SessionEnd: {
-			hooks: [{ type: 'command', command: makeHookCommand('"session_end"', 'j.reason') }]
+			hooks: [{ type: 'command', command: cmd('session_end', 'end') }]
 		},
 	};
+}
+
+/**
+ * Install the dock-code-agent-hook script to ~/.local/bin/
+ */
+function installHookScript(logService: ILogService): void {
+	const thisDir = import.meta.dirname;
+	const sourcePath = path.join(thisDir, '..', '..', '..', '..', 'scripts', 'dock-code-agent-hook');
+	// In dev mode, import.meta.dirname is in out/, source is in repo root
+	const devSourcePath = path.resolve(thisDir, '..', '..', '..', '..', '..', 'scripts', 'dock-code-agent-hook');
+	const src = fs.existsSync(sourcePath) ? sourcePath : devSourcePath;
+
+	if (!fs.existsSync(src)) {
+		logService.warn('[AgentHooksSetup] dock-code-agent-hook script not found at', src);
+		return;
+	}
+
+	try {
+		fs.mkdirSync(path.dirname(HOOK_SCRIPT_INSTALL_PATH), { recursive: true });
+		fs.copyFileSync(src, HOOK_SCRIPT_INSTALL_PATH);
+		fs.chmodSync(HOOK_SCRIPT_INSTALL_PATH, 0o755);
+		logService.info('[AgentHooksSetup] Installed dock-code-agent-hook to', HOOK_SCRIPT_INSTALL_PATH);
+	} catch (err) {
+		logService.error('[AgentHooksSetup] Failed to install hook script:', err);
+	}
 }
 
 /**
@@ -50,6 +72,9 @@ function getDockCodeHooks(): Record<string, object> {
  * Adds hooks alongside any existing ones without disrupting them.
  */
 export function ensureAgentHooks(logService: ILogService): void {
+	// Install the hook script to ~/.local/bin/
+	installHookScript(logService);
+
 	try {
 		// Read existing settings
 		let settings: Record<string, unknown> = {};
@@ -94,24 +119,42 @@ export function ensureAgentHooks(logService: ILogService): void {
  * which gets relayed back to local by AgentEventMonitor.
  */
 export function ensureRemoteAgentHooks(host: string, logService: ILogService): void {
-	// Generate a node script that adds hooks to ~/.claude/settings.json on the remote
-	const remoteEventsFile = '/tmp/dock-code-agent-events';
 	const marker = DOCK_CODE_HOOK_MARKER;
 
-	// Build the remote hook commands (same as local but with fixed /tmp/ path)
-	function remoteHookCmd(statusField: string, messageField: string): string {
-		return `node -e 'if(!process.env.DOCK_CODE_SESSION)process.exit(0);let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{const j=JSON.parse(d);require("fs").appendFileSync("${remoteEventsFile}",JSON.stringify({source:"terminal",eventType:"claude-code",status:${statusField},projectPath:j.cwd,sessionId:j.session_id,message:${messageField}})+"\\n")})'`;
-	}
-
+	// Same hook commands as local (dock-code-agent-hook is installed on remote too)
+	const cmd = (status: string, message: string) =>
+		`dock-code-agent-hook ${status} ${message}`;
 	const hooksJson = JSON.stringify({
-		UserPromptSubmit: { hooks: [{ type: 'command', command: remoteHookCmd('"running"', '"Generating"') }] },
-		Notification: { hooks: [{ type: 'command', command: remoteHookCmd('"waiting"', 'j.notification_type') }] },
-		Stop: { hooks: [{ type: 'command', command: remoteHookCmd('"completed"', '"Done"') }] },
-		SessionStart: { hooks: [{ type: 'command', command: remoteHookCmd('"session_start"', 'j.source') }] },
-		SessionEnd: { hooks: [{ type: 'command', command: remoteHookCmd('"session_end"', 'j.reason') }] },
+		UserPromptSubmit: { hooks: [{ type: 'command', command: cmd('running', 'Generating') }] },
+		Notification: { hooks: [{ type: 'command', command: cmd('waiting', 'notification') }] },
+		Stop: { hooks: [{ type: 'command', command: cmd('completed', 'Done') }] },
+		SessionStart: { hooks: [{ type: 'command', command: cmd('session_start', 'start') }] },
+		SessionEnd: { hooks: [{ type: 'command', command: cmd('session_end', 'end') }] },
 	});
 
-	// Node script to run on the remote that merges hooks into ~/.claude/settings.json
+	// Step 1: scp the hook script to remote
+	const remoteThisDir = import.meta.dirname;
+	const remoteSrcPath = path.join(remoteThisDir, '..', '..', '..', '..', 'scripts', 'dock-code-agent-hook');
+	const remoteDevSrcPath = path.resolve(remoteThisDir, '..', '..', '..', '..', '..', 'scripts', 'dock-code-agent-hook');
+	const src = fs.existsSync(remoteSrcPath) ? remoteSrcPath : remoteDevSrcPath;
+
+	if (fs.existsSync(src)) {
+		const scpProc = cp.spawn('scp', [
+			'-o', 'StrictHostKeyChecking=accept-new',
+			'-o', 'BatchMode=yes',
+			src,
+			`${host}:.local/bin/dock-code-agent-hook`,
+		], { stdio: ['ignore', 'pipe', 'pipe'] });
+		scpProc.on('close', (code) => {
+			if (code === 0) {
+				logService.info(`[AgentHooksSetup] Installed hook script on ${host}`);
+			} else {
+				logService.warn(`[AgentHooksSetup] Failed to scp hook script to ${host}`);
+			}
+		});
+	}
+
+	// Step 2: Configure hooks in remote ~/.claude/settings.json
 	const remoteScript = `
 		const fs = require('fs');
 		const path = require('path');
@@ -136,8 +179,7 @@ export function ensureRemoteAgentHooks(host: string, logService: ILogService): v
 		'-o', 'ConnectTimeout=10',
 		'-o', 'BatchMode=yes',
 		host,
-		// Fix ownership if needed (e.g. root-owned from Docker), then run node script
-		'test -w ~/.claude/settings.json 2>/dev/null || (test -f ~/.claude/settings.json && sudo chown `whoami` ~/.claude/settings.json 2>/dev/null); node -e \'' + remoteScript.replace(/'/g, '\'\\\'\'') + '\'',
+		'mkdir -p ~/.local/bin && chmod +x ~/.local/bin/dock-code-agent-hook 2>/dev/null; test -w ~/.claude/settings.json 2>/dev/null || (test -f ~/.claude/settings.json && sudo chown `whoami` ~/.claude/settings.json 2>/dev/null); node -e \'' + remoteScript.replace(/'/g, '\'\\\'\'') + '\'',
 	];
 
 	logService.info(`[AgentHooksSetup] Configuring remote hooks on ${host}`);
