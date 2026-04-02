@@ -65,8 +65,8 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 	private readonly _onDidChangeActiveProject = this._register(new Emitter<IProject | undefined>());
 	readonly onDidChangeActiveProject: Event<IProject | undefined> = this._onDidChangeActiveProject.event;
 
-	private readonly _onDidRequestPaneContainerFocus = this._register(new Emitter<void>());
-	readonly onDidRequestPaneContainerFocus: Event<void> = this._onDidRequestPaneContainerFocus.event;
+	private readonly _onDidRequestPaneContainerFocus = this._register(new Emitter<string | undefined>());
+	readonly onDidRequestPaneContainerFocus: Event<string | undefined> = this._onDidRequestPaneContainerFocus.event;
 
 	private readonly dataFilePath: string;
 
@@ -292,8 +292,8 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 		this._onDidChangeProjects.fire({ added: [], removed: [], changed: [project] });
 	}
 
-	async requestPaneContainerFocus(): Promise<void> {
-		this._onDidRequestPaneContainerFocus.fire();
+	async requestPaneContainerFocus(paneId?: string): Promise<void> {
+		this._onDidRequestPaneContainerFocus.fire(paneId);
 	}
 
 	async updateProjectFolder(id: string, folderUri: string): Promise<void> {
@@ -591,6 +591,12 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 		// Create the WebContentsView
 		const view = new WebContentsView({ webPreferences });
 		view.setBackgroundColor('#1e1e1e');
+
+		// Disable background throttling so Extension Hosts can initialize
+		// even when the view is not visible (e.g. non-active projects during restore).
+		// Without this, Chromium throttles the renderer and "Page needs to be visible"
+		// errors cause the Extension Host to exit with code 0 before activating.
+		view.webContents.setBackgroundThrottling(false);
 
 		// Build the configuration for the renderer
 		const defaultProfile = this.userDataProfilesMainService.defaultProfile;

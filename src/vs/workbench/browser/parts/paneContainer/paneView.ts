@@ -7,6 +7,7 @@ import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { $, append, clearNode } from '../../../../base/browser/dom.js';
 import { IViewSize, ISerializableView } from '../../../../base/browser/ui/grid/grid.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 
 /**
  * Show a brief focus glow animation on the given element.
@@ -30,9 +31,13 @@ export interface IPaneContent extends IDisposable {
 export interface IPaneViewState {
 	type: string;
 	contentState: object;
+	paneId?: string;
 }
 
 export class PaneView extends Disposable implements ISerializableView {
+
+	/** Unique identifier for this pane, stable across its lifetime */
+	readonly id: string;
 
 	readonly element: HTMLElement;
 	readonly minimumWidth = 100;
@@ -61,9 +66,10 @@ export class PaneView extends Disposable implements ISerializableView {
 	private readonly _onDidFocus = this._register(new Emitter<void>());
 	readonly onDidFocus: Event<void> = this._onDidFocus.event;
 
-	constructor() {
+	constructor(id?: string) {
 		super();
 
+		this.id = id ?? generateUuid();
 		this.element = $('.pane-view');
 
 		// Fire onDidFocus when any child receives focus
@@ -85,7 +91,8 @@ export class PaneView extends Disposable implements ISerializableView {
 		clearNode(this.headerElement);
 
 		const title = append(this.headerElement, $('span.pane-view-title'));
-		title.textContent = this._content?.type ?? 'Empty';
+		const tmuxSession = `dc-${this.id.substring(0, 8)}`;
+		title.textContent = this._content?.type === 'terminal' ? `tmux: ${tmuxSession}` : (this._content?.type ?? 'Empty');
 
 		const actions = append(this.headerElement, $('.pane-view-actions'));
 
@@ -154,6 +161,7 @@ export class PaneView extends Disposable implements ISerializableView {
 	toJSON(): object {
 		return {
 			type: 'paneView',
+			paneId: this.id,
 			contentType: this._content?.type ?? 'empty',
 			contentState: this._content?.toJSON() ?? {}
 		};

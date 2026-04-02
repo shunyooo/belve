@@ -8,10 +8,11 @@ import * as os from 'os';
 import * as path from 'path'; // eslint-disable-line local/code-import-patterns
 import * as cp from 'child_process';
 import { ILogService } from '../../log/common/log.js';
-import { AGENT_EVENTS_FILE } from './agentEventMonitor.js';
 
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 const DOCK_CODE_HOOK_MARKER = 'dock-code-agent-events';
+/** Marker for the current hook version. Update when hook commands change to trigger re-registration. */
+const DOCK_CODE_HOOK_VERSION_MARKER = 'dock-code-v7';
 
 /**
  * Generate the inline node command for a hook.
@@ -20,11 +21,55 @@ const DOCK_CODE_HOOK_MARKER = 'dock-code-agent-events';
  */
 function makeHookCommand(status: string, message: string): string {
 	// Compact inline script — writes agent event to dock-code events file.
-	// No env var check — runs in any environment where dock-code hooks are configured.
+	// Only runs when DOCK_CODE_SESSION env var is set (i.e. inside dock-code's PaneContainer terminal).
 	const script = [
+		`var _v="${DOCK_CODE_HOOK_VERSION_MARKER}"`,
+		'if(!process.env.DOCK_CODE_SESSION)process.exit(0)',
 		'let d=""',
 		'process.stdin.on("data",c=>d+=c)',
-		`process.stdin.on("end",()=>{try{const j=JSON.parse(d);require("fs").appendFileSync("/tmp/dock-code-agent-events",JSON.stringify({source:"terminal",eventType:"claude-code",status:"${status}",projectPath:j.cwd,sessionId:j.session_id,message:"${message}"})+"\\n")}catch{}})`,
+		`process.stdin.on("end",()=>{try{const j=JSON.parse(d);require("fs").appendFileSync("/tmp/dock-code-agent-events",JSON.stringify({source:"terminal",eventType:"claude-code",status:"${status}",projectPath:j.cwd,sessionId:j.session_id,paneId:process.env.DOCK_CODE_PANE_ID||"",message:"${message}"})+"\\n")}catch{}})`,
+	].join(';');
+	return `node -e '${script}'`;
+}
+
+/**
+ * Generate a combined hook command for UserPromptSubmit that:
+ * 1. Writes the "running" status event
+ * 2. Spawns a background `claude -p` to generate a ≤10 char session label
+ *
+ * Combined into one command because Claude Code hooks within a group share stdin,
+ * so both operations must read the same stdin data in one process.
+ */
+function makeUserPromptSubmitCommand(): string {
+	const script = [
+		`var _v="${DOCK_CODE_HOOK_VERSION_MARKER}"`,
+		'if(!process.env.DOCK_CODE_SESSION)process.exit(0)',
+		'let d=""',
+		'process.stdin.on("data",c=>d+=c)',
+		'process.stdin.on("end",()=>{try{const j=JSON.parse(d)',
+		'const fs=require("fs"),p=require("path"),cp=require("child_process")',
+		'const pid=process.env.DOCK_CODE_PANE_ID||""',
+		// Debug: dump raw stdin to file for inspection
+		'fs.writeFileSync("/tmp/dock-code-hook-debug.json",d)',
+		// Write status event
+		'fs.appendFileSync("/tmp/dock-code-agent-events",JSON.stringify({source:"terminal",eventType:"claude-code",status:"running",projectPath:j.cwd,sessionId:j.session_id,paneId:pid,message:"Generating"})+"\\n")',
+		// Label generation (background, first prompt only)
+		'const mk=p.join(require("os").tmpdir(),"dock-code-label-"+j.session_id)',
+		'fs.writeFileSync("/tmp/dock-code-hook-debug2.txt","mk="+mk+" exists="+fs.existsSync(mk)+" prompt="+(j.prompt||"NONE"))',
+		'if(!fs.existsSync(mk)){fs.writeFileSync(mk,"")',
+		'const prompt=j.prompt||""',
+		'if(prompt){const sid=j.session_id,cwd=j.cwd',
+		'const q="Generate a label (max 10 characters, in the same language as the input) that summarizes this task. Output ONLY the label, nothing else: "+prompt.substring(0,500)',
+		'const env=Object.assign({},process.env,{DOCK_CODE_SESSION:""})',
+		'fs.writeFileSync("/tmp/dock-code-hook-debug3.txt","spawning claude")',
+		'const c=cp.spawn("claude",["--model","haiku","-p",q],{stdio:["ignore","pipe","pipe"],env:env})',
+		'let o=""',
+		'c.stdout.on("data",b=>o+=b)',
+		'c.stderr.on("data",b=>fs.appendFileSync("/tmp/dock-code-hook-debug4.txt",b))',
+		'c.on("close",()=>{const label=o.trim().substring(0,15)',
+		'fs.writeFileSync("/tmp/dock-code-hook-debug5.txt","label="+label)',
+		'if(label)fs.appendFileSync("/tmp/dock-code-agent-events",JSON.stringify({source:"terminal",eventType:"claude-code",status:"label",projectPath:cwd,sessionId:sid,paneId:pid,message:label})+"\\n")})}}',
+		'}catch(e){fs.writeFileSync("/tmp/dock-code-hook-error.txt",String(e))}})',
 	].join(';');
 	return `node -e '${script}'`;
 }
@@ -32,10 +77,14 @@ function makeHookCommand(status: string, message: string): string {
 /**
  * The hooks dock-code needs in Claude Code's settings.json.
  */
-function getDockCodeHooks(): Record<string, object> {
+/**
+ * Returns dock-code hooks. Values are either a single hook group object
+ * or an array of hook groups (when multiple hooks need separate stdin pipes).
+ */
+function getDockCodeHooks(): Record<string, object | object[]> {
 	return {
 		UserPromptSubmit: {
-			hooks: [{ type: 'command', command: makeHookCommand('running', 'Generating') }]
+			hooks: [{ type: 'command', command: makeUserPromptSubmitCommand() }]
 		},
 		Notification: {
 			hooks: [{ type: 'command', command: makeHookCommand('waiting', 'notification') }]
@@ -53,8 +102,8 @@ function getDockCodeHooks(): Record<string, object> {
 }
 
 /**
- * Ensures Claude Code's settings.json has dock-code hooks configured.
- * Adds hooks alongside any existing ones without disrupting them.
+ * Ensures Claude Code's settings.json has up-to-date dock-code hooks configured.
+ * If old hooks exist (without DOCK_CODE_SESSION guard), they are replaced.
  */
 export function ensureAgentHooks(logService: ILogService): void {
 	try {
@@ -68,12 +117,20 @@ export function ensureAgentHooks(logService: ILogService): void {
 			fs.mkdirSync(path.dirname(CLAUDE_SETTINGS_PATH), { recursive: true });
 		}
 
-		// Check if dock-code hooks already exist
 		const hooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
-		const hasMarker = JSON.stringify(hooks).includes(DOCK_CODE_HOOK_MARKER);
-		if (hasMarker) {
-			logService.info('[AgentHooksSetup] dock-code hooks already configured');
+		const hooksStr = JSON.stringify(hooks);
+		const hasMarker = hooksStr.includes(DOCK_CODE_HOOK_MARKER);
+		const hasCurrentVersion = hooksStr.includes(DOCK_CODE_HOOK_VERSION_MARKER);
+
+		if (hasMarker && hasCurrentVersion) {
+			logService.info('[AgentHooksSetup] dock-code hooks already up to date');
 			return;
+		}
+
+		// Remove old dock-code hooks before adding new ones
+		if (hasMarker && !hasCurrentVersion) {
+			logService.info('[AgentHooksSetup] Replacing outdated dock-code hooks');
+			removeDockCodeHooks(hooks);
 		}
 
 		// Add dock-code hooks to each event type
@@ -82,16 +139,39 @@ export function ensureAgentHooks(logService: ILogService): void {
 			if (!hooks[eventType]) {
 				hooks[eventType] = [];
 			}
-			(hooks[eventType] as unknown[]).push(hookDef);
+			if (Array.isArray(hookDef)) {
+				for (const entry of hookDef) {
+					(hooks[eventType] as unknown[]).push(entry);
+				}
+			} else {
+				(hooks[eventType] as unknown[]).push(hookDef);
+			}
 		}
 
 		settings.hooks = hooks;
 
 		// Write back
 		fs.writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf8');
-		logService.info('[AgentHooksSetup] Added dock-code hooks to Claude Code settings');
+		logService.info('[AgentHooksSetup] Configured dock-code hooks in Claude Code settings');
 	} catch (err) {
 		logService.error('[AgentHooksSetup] Failed to configure hooks:', err);
+	}
+}
+
+/**
+ * Removes all dock-code hooks from the hooks object (identified by the marker string).
+ */
+function removeDockCodeHooks(hooks: Record<string, unknown[]>): void {
+	for (const [eventType, hookList] of Object.entries(hooks)) {
+		if (!Array.isArray(hookList)) {
+			continue;
+		}
+		hooks[eventType] = hookList.filter(
+			(hook) => !JSON.stringify(hook).includes(DOCK_CODE_HOOK_MARKER)
+		);
+		if (hooks[eventType].length === 0) {
+			delete hooks[eventType];
+		}
 	}
 }
 
@@ -102,11 +182,13 @@ export function ensureAgentHooks(logService: ILogService): void {
  */
 export function ensureRemoteAgentHooks(host: string, logService: ILogService): void {
 	const marker = DOCK_CODE_HOOK_MARKER;
+	const versionMarker = DOCK_CODE_HOOK_VERSION_MARKER;
 
 	// Same inline hook commands as local — works in any environment
 	const hooksJson = JSON.stringify(getDockCodeHooks());
 
 	// Configure hooks in remote ~/.claude/settings.json
+	// Also handles upgrading old hooks (without DOCK_CODE_SESSION guard)
 	const remoteScript = `
 		const fs = require('fs');
 		const path = require('path');
@@ -116,11 +198,20 @@ export function ensureRemoteAgentHooks(host: string, logService: ILogService): v
 		try { fs.mkdirSync(settingsDir, { recursive: true, mode: 0o755 }); } catch {}
 		try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
 		const hooks = settings.hooks || {};
-		if (JSON.stringify(hooks).includes('${marker}')) { process.exit(0); }
+		const s = JSON.stringify(hooks);
+		if (s.includes('${marker}') && s.includes('${versionMarker}')) { process.exit(0); }
+		if (s.includes('${marker}')) {
+			for (const [k, v] of Object.entries(hooks)) {
+				if (!Array.isArray(v)) continue;
+				hooks[k] = v.filter(h => !JSON.stringify(h).includes('${marker}'));
+				if (hooks[k].length === 0) delete hooks[k];
+			}
+		}
 		const newHooks = ${hooksJson};
 		for (const [k, v] of Object.entries(newHooks)) {
 			if (!hooks[k]) hooks[k] = [];
-			hooks[k].push(v);
+			if (Array.isArray(v)) { for (const e of v) hooks[k].push(e); }
+			else hooks[k].push(v);
 		}
 		settings.hooks = hooks;
 		const content = JSON.stringify(settings, null, 2);
@@ -162,8 +253,8 @@ function syncSettingsToContainers(host: string, logService: ILogService): void {
 	const syncCmd = [
 		'for cid in $(docker ps -q 2>/dev/null); do',
 		'  docker exec $cid test -f /root/.claude/settings.json 2>/dev/null &&',
-		'  cat ~/.claude/settings.json | docker exec -i $cid sh -c \'cat > /root/.claude/settings.json\' 2>/dev/null &&',
-		'  echo "synced $cid"',
+		'  cat ~/.claude/settings.json | docker exec -i $cid tee /root/.claude/settings.json >/dev/null 2>/dev/null &&',
+		'  echo "synced $cid";',
 		'done',
 	].join(' ');
 
@@ -176,10 +267,19 @@ function syncSettingsToContainers(host: string, logService: ILogService): void {
 	], { stdio: ['ignore', 'pipe', 'pipe'] });
 
 	let output = '';
+	let stderr = '';
 	proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
+	proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
 	proc.on('close', (code) => {
 		if (code === 0 && output.trim()) {
 			logService.info(`[AgentHooksSetup] Synced settings to containers: ${output.trim()}`);
+		} else if (code !== 0) {
+			logService.warn(`[AgentHooksSetup] Container sync failed (code ${code}): ${stderr.substring(0, 200)}`);
+		} else {
+			logService.info(`[AgentHooksSetup] Container sync: no containers to sync`);
 		}
+	});
+	proc.on('error', (err) => {
+		logService.error(`[AgentHooksSetup] Container sync error:`, err);
 	});
 }

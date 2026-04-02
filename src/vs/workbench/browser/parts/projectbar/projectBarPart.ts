@@ -196,7 +196,7 @@ export class ProjectBarPart extends Part {
 			// Show agent session sub-items
 			if (project.agentSessions && project.agentSessions.length > 0) {
 				for (const session of project.agentSessions) {
-					this.createSessionEntry(container, session);
+					this.createSessionEntry(container, project.id, session);
 				}
 			}
 		}
@@ -281,7 +281,8 @@ export class ProjectBarPart extends Part {
 		);
 	}
 
-	private createSessionEntry(container: HTMLElement, session: IAgentSession): void {
+	private createSessionEntry(container: HTMLElement, projectId: string, session: IAgentSession): void {
+		const disposables = this.entryDisposables.value!;
 		const entry = append(container, $('.session-entry'));
 		const dot = append(entry, $('span.session-status-dot'));
 
@@ -312,11 +313,25 @@ export class ProjectBarPart extends Part {
 		dot.classList.add(statusClass);
 
 		if (this._expanded) {
-			const text = append(entry, $('span.session-text'));
-			text.textContent = statusLabel;
+			const name = append(entry, $('span.session-text'));
+			name.textContent = session.label ?? session.sessionId.substring(0, 8);
+			const status = append(entry, $('span.session-status-label'));
+			status.textContent = statusLabel;
+			status.classList.add(statusClass);
 		}
 
-		entry.title = `${session.sessionId.substring(0, 8)}: ${statusLabel}`;
+		entry.title = session.label
+			? `${session.label} (${statusLabel})`
+			: `${session.sessionId.substring(0, 8)}: ${statusLabel}`;
+		entry.style.cursor = 'pointer';
+
+		// Click → switch to project and focus the specific pane
+		disposables.add(
+			addDisposableListener(entry, EventType.CLICK, () => {
+				this.projectService.switchToProject(projectId);
+				this.projectService.requestPaneContainerFocus(session.paneId);
+			})
+		);
 	}
 
 	override updateStyles(): void {

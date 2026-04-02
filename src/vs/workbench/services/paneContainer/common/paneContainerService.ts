@@ -27,6 +27,8 @@ export interface IPaneContainerService {
 	getPaneCount(): number;
 	getActivePaneIndex(): number;
 	focusPaneAtIndex(index: number): void;
+	/** Focus a pane by its unique ID. Returns true if found, false if not (falls back to generic focus). */
+	focusPaneById(paneId: string): boolean;
 }
 
 /**

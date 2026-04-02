@@ -17,6 +17,8 @@ export enum ProjectStatus {
 export interface IAgentSession {
 	readonly sessionId: string;
 	readonly status: ProjectStatus;
+	readonly paneId?: string;
+	readonly label?: string;
 }
 
 export interface IProjectData {
@@ -43,7 +45,7 @@ export interface IProjectMainService {
 
 	readonly onDidChangeProjects: Event<IProjectsChangeEvent>;
 	readonly onDidChangeActiveProject: Event<IProject | undefined>;
-	readonly onDidRequestPaneContainerFocus: Event<void>;
+	readonly onDidRequestPaneContainerFocus: Event<string | undefined>;
 
 	getProjects(): Promise<IProject[]>;
 	getProject(id: string): Promise<IProject | undefined>;
@@ -66,5 +68,5 @@ export interface IProjectMainService {
 	reloadProject(projectId: string): Promise<void>;
 	openRemoteInProject(projectId: string, remoteAuthority: string): Promise<void>;
 	createProjectWithRemote(name: string, remoteAuthority: string): Promise<IProject>;
-	requestPaneContainerFocus(): Promise<void>;
+	requestPaneContainerFocus(paneId?: string): Promise<void>;
 }

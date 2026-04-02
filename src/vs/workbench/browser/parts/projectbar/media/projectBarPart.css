@@ -179,7 +179,10 @@
 }
 
 .monaco-workbench .projectbar.expanded .session-entry {
-	padding-left: 32px;
+	padding-left: 24px;
+	padding-right: 4px;
+	overflow: hidden;
+	gap: 4px;
 }
 
 .monaco-workbench .projectbar .session-entry .session-status-dot {
@@ -195,6 +198,28 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	min-width: 0;
+}
+
+.monaco-workbench .projectbar .session-entry .session-status-label {
+	font-size: 9px;
+	flex-shrink: 0;
+}
+
+.monaco-workbench .projectbar .session-entry .session-status-label.status-running {
+	color: #f5a623;
+}
+
+.monaco-workbench .projectbar .session-entry .session-status-label.status-waiting {
+	color: #f5a623;
+}
+
+.monaco-workbench .projectbar .session-entry .session-status-label.status-completed {
+	color: #4caf50;
+}
+
+.monaco-workbench .projectbar .session-entry .session-status-label.status-error {
+	color: #f44336;
 }
 
 .monaco-workbench .projectbar .session-status-dot.status-running {

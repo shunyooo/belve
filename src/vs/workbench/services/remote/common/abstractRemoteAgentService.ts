@@ -38,6 +38,7 @@ export abstract class AbstractRemoteAgentService extends Disposable implements I
 		@ILogService private readonly _logService: ILogService
 	) {
 		super();
+		this._logService.info(`[dock-code] AbstractRemoteAgentService: remoteAuthority=${this._environmentService.remoteAuthority || 'undefined'}`);
 		if (this._environmentService.remoteAuthority) {
 			this._connection = this._register(new RemoteAgentConnection(this._environmentService.remoteAuthority, productService.commit, productService.quality, this.remoteSocketFactoryService, this._remoteAuthorityResolverService, signService, this._logService));
 		} else {

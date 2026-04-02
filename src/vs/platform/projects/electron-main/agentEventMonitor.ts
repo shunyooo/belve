@@ -8,6 +8,7 @@ import * as os from 'os';
 import * as path from 'path'; // eslint-disable-line local/code-import-patterns
 import * as cp from 'child_process';
 import electron from 'electron';
+import { URI } from '../../../base/common/uri.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { ILogService } from '../../log/common/log.js';
 import { type IAgentSession, IProjectMainService, ProjectStatus } from '../common/projects.js';
@@ -23,6 +24,7 @@ interface AgentEvent {
 	status: string;
 	projectPath: string;
 	sessionId: string;
+	paneId?: string;
 	message: string;
 }
 
@@ -32,15 +34,61 @@ interface AgentEvent {
  * Priority: running > waiting > error > completed > idle
  * If any session is running, project is running. Etc.
  */
-class ProjectSessionTracker {
-	private readonly sessions = new Map<string, ProjectStatus>();
+/** Stale threshold for active sessions (Running/Waiting) — 10 minutes */
+const ACTIVE_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
+/** Stale threshold for terminal sessions (Completed/Error) — 5 minutes */
+const TERMINAL_SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 
-	update(sessionId: string, status: ProjectStatus): void {
+interface SessionEntry {
+	status: ProjectStatus;
+	lastEventTime: number;
+	paneId?: string;
+	label?: string;
+}
+
+class ProjectSessionTracker {
+	private readonly sessions = new Map<string, SessionEntry>();
+
+	update(sessionId: string, status: ProjectStatus, paneId?: string): void {
 		if (status === ProjectStatus.Idle) {
 			this.sessions.delete(sessionId);
 		} else {
-			this.sessions.set(sessionId, status);
+			const existing = this.sessions.get(sessionId);
+			this.sessions.set(sessionId, {
+				status,
+				lastEventTime: Date.now(),
+				paneId: paneId || existing?.paneId,
+				label: existing?.label,
+			});
 		}
+	}
+
+	setLabel(sessionId: string, label: string): boolean {
+		const entry = this.sessions.get(sessionId);
+		if (entry) {
+			entry.label = label;
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Remove zombie sessions that haven't received events within the timeout.
+	 * Returns true if any sessions were removed.
+	 */
+	cleanupStale(): boolean {
+		const now = Date.now();
+		let changed = false;
+		for (const [sessionId, entry] of this.sessions) {
+			const age = now - entry.lastEventTime;
+			const isActive = entry.status === ProjectStatus.Running || entry.status === ProjectStatus.Waiting;
+			const timeout = isActive ? ACTIVE_SESSION_TIMEOUT_MS : TERMINAL_SESSION_TIMEOUT_MS;
+			if (age > timeout) {
+				this.sessions.delete(sessionId);
+				changed = true;
+			}
+		}
+		return changed;
 	}
 
 	/** Get the highest-priority status across all sessions */
@@ -55,8 +103,8 @@ class ProjectSessionTracker {
 			ProjectStatus.Completed,
 		];
 		for (const s of priority) {
-			for (const [, status] of this.sessions) {
-				if (status === s) {
+			for (const [, entry] of this.sessions) {
+				if (entry.status === s) {
 					return s;
 				}
 			}
@@ -69,7 +117,7 @@ class ProjectSessionTracker {
 	}
 
 	getSessions(): IAgentSession[] {
-		return Array.from(this.sessions.entries()).map(([sessionId, status]) => ({ sessionId, status }));
+		return Array.from(this.sessions.entries()).map(([sessionId, entry]) => ({ sessionId, status: entry.status, paneId: entry.paneId, label: entry.label }));
 	}
 }
 
@@ -77,6 +125,9 @@ class ProjectSessionTracker {
  * Monitors the dock-code agent events file for status changes from Claude Code
  * and other AI agents. Updates project statuses in ProjectMainService accordingly.
  */
+/** How often to check for zombie sessions — 60 seconds */
+const CLEANUP_INTERVAL_MS = 60 * 1000;
+
 export class AgentEventMonitor extends Disposable {
 
 	private watcher: fs.FSWatcher | undefined;
@@ -90,6 +141,11 @@ export class AgentEventMonitor extends Disposable {
 	/** Previous aggregate status per project, for transition detection */
 	private readonly previousStatus = new Map<string, ProjectStatus>();
 
+	/** Suppresses notifications during initial file replay at startup */
+	private initializing = true;
+
+	private readonly cleanupTimer: ReturnType<typeof setInterval>;
+
 	constructor(
 		private readonly projectService: IProjectMainService,
 		private readonly logService: ILogService,
@@ -101,23 +157,28 @@ export class AgentEventMonitor extends Disposable {
 
 		// Watch for new projects being added (e.g. new remote connections)
 		this._register(this.projectService.onDidChangeProjects(() => this.startRemoteRelays()));
+
+		// Periodically clean up zombie sessions
+		this.cleanupTimer = setInterval(() => this.cleanupStaleSessions(), CLEANUP_INTERVAL_MS);
 	}
 
 	private start(): void {
-		// Create file if it doesn't exist
+		// Truncate events file on startup — old sessions are gone (terminals reinitialized).
+		// New sessions will re-register via Claude Code hooks as agents start.
 		try {
-			if (!fs.existsSync(AGENT_EVENTS_FILE)) {
-				fs.writeFileSync(AGENT_EVENTS_FILE, '', 'utf8');
-			}
-			// Start from end of file (only process new events)
-			const stat = fs.statSync(AGENT_EVENTS_FILE);
-			this.fileOffset = stat.size;
+			fs.writeFileSync(AGENT_EVENTS_FILE, '', 'utf8');
+			this.fileOffset = 0;
 		} catch (err) {
 			this.logService.error('[AgentEventMonitor] Failed to initialize events file:', err);
 			return;
 		}
 
-		this.logService.info(`[AgentEventMonitor] Watching ${AGENT_EVENTS_FILE}`);
+		this.logService.info(`[AgentEventMonitor] Watching ${AGENT_EVENTS_FILE} (truncated on startup)`);
+		this.initializing = false;
+
+		// Clear any in-memory state from prior lifecycle
+		this.trackers.clear();
+		this.previousStatus.clear();
 
 		try {
 			this.watcher = fs.watch(AGENT_EVENTS_FILE, { persistent: false }, (_eventType) => {
@@ -162,6 +223,12 @@ export class AgentEventMonitor extends Disposable {
 	}
 
 	private async handleEvent(event: AgentEvent): Promise<void> {
+		// Handle label events separately — they update session metadata, not status
+		if (event.status === 'label') {
+			await this.handleLabelEvent(event);
+			return;
+		}
+
 		const status = this.mapStatus(event.status);
 		if (!status) {
 			return;
@@ -177,13 +244,10 @@ export class AgentEventMonitor extends Disposable {
 			}
 		}
 
-		// Fallback: if no folderUri match, apply to active project
+		// No fallback — if projectPath doesn't match any project, ignore the event.
+		// This avoids misattributing events from external terminals.
 		if (!projectId) {
-			const active = await this.projectService.getActiveProject();
-			projectId = active?.id;
-		}
-
-		if (!projectId) {
+			this.logService.debug(`[AgentEventMonitor] No project match for path="${event.projectPath}", ignoring`);
 			return;
 		}
 
@@ -193,7 +257,7 @@ export class AgentEventMonitor extends Disposable {
 			tracker = new ProjectSessionTracker();
 			this.trackers.set(projectId, tracker);
 		}
-		tracker.update(event.sessionId, status);
+		tracker.update(event.sessionId, status, event.paneId);
 
 		const aggregate = tracker.getAggregateStatus();
 		const sessions = tracker.getSessions();
@@ -205,13 +269,35 @@ export class AgentEventMonitor extends Disposable {
 		const previousAggregate = this.previousStatus.get(projectId);
 		this.previousStatus.set(projectId, aggregate);
 		if (aggregate !== previousAggregate) {
-			this.maybeShowNotification(projectId, aggregate, event.message);
+			this.maybeShowNotification(projectId, aggregate, event.message, event.paneId);
+		}
+	}
+
+	private async handleLabelEvent(event: AgentEvent): Promise<void> {
+		const label = event.message;
+		if (!label) {
+			return;
+		}
+
+		// Find which project/tracker owns this session
+		for (const [projectId, tracker] of this.trackers) {
+			if (tracker.setLabel(event.sessionId, label)) {
+				this.logService.info(`[AgentEventMonitor] Label set: session=${event.sessionId} label="${label}"`);
+				const sessions = tracker.getSessions();
+				await this.projectService.updateAgentSessions(projectId, sessions);
+				return;
+			}
 		}
 	}
 
 	//#region Desktop Notifications
 
-	private async maybeShowNotification(projectId: string, status: ProjectStatus, eventMessage: string): Promise<void> {
+	private async maybeShowNotification(projectId: string, status: ProjectStatus, eventMessage: string, paneId?: string): Promise<void> {
+		// Don't fire notifications during startup replay of old events
+		if (this.initializing) {
+			return;
+		}
+
 		// Only notify for completed, error, and waiting transitions
 		if (status !== ProjectStatus.Completed &&
 			status !== ProjectStatus.Error &&
@@ -243,7 +329,7 @@ export class AgentEventMonitor extends Disposable {
 		});
 
 		notification.on('click', () => {
-			this.handleNotificationClick(projectId);
+			this.handleNotificationClick(projectId, paneId);
 		});
 
 		notification.show();
@@ -263,7 +349,7 @@ export class AgentEventMonitor extends Disposable {
 		}
 	}
 
-	private handleNotificationClick(projectId: string): void {
+	private handleNotificationClick(projectId: string, paneId?: string): void {
 		this.projectService.switchToProject(projectId);
 
 		// Bring window to front
@@ -276,8 +362,27 @@ export class AgentEventMonitor extends Disposable {
 			mainWindow.win.focus();
 		}
 
-		// Focus PaneContainer terminal via IPC
-		this.projectService.requestPaneContainerFocus();
+		// Focus specific pane (or PaneContainer generically) via IPC
+		this.projectService.requestPaneContainerFocus(paneId);
+	}
+
+	//#endregion
+
+	//#region Zombie Session Cleanup
+
+	private async cleanupStaleSessions(): Promise<void> {
+		for (const [projectId, tracker] of this.trackers) {
+			const changed = tracker.cleanupStale();
+			if (changed) {
+				const aggregate = tracker.getAggregateStatus();
+				const sessions = tracker.getSessions();
+				this.logService.info(`[AgentEventMonitor] Cleaned up stale sessions for project=${projectId}, aggregate=${aggregate} (${sessions.length} remaining)`);
+				await this.projectService.updateProjectStatus(projectId, aggregate);
+				await this.projectService.updateAgentSessions(projectId, sessions);
+
+				this.previousStatus.set(projectId, aggregate);
+			}
+		}
 	}
 
 	//#endregion
@@ -295,9 +400,17 @@ export class AgentEventMonitor extends Disposable {
 	}
 
 	private pathMatches(folderUri: string, projectPath: string): boolean {
-		// folderUri might be file:///path or just /path
-		const normalized = folderUri.replace(/^file:\/\//, '');
-		return normalized === projectPath || normalized.endsWith(projectPath) || projectPath.endsWith(normalized);
+		// Extract the path component from the folderUri
+		// For file:///path → /path
+		// For vscode-remote://authority/path → /path
+		let folderPath: string;
+		try {
+			const uri = URI.parse(folderUri);
+			folderPath = uri.path;
+		} catch {
+			folderPath = folderUri.replace(/^file:\/\//, '');
+		}
+		return folderPath === projectPath || folderPath.endsWith(projectPath) || projectPath.startsWith(folderPath);
 	}
 
 	//#region Remote Event Relay
@@ -425,6 +538,7 @@ export class AgentEventMonitor extends Disposable {
 	//#endregion
 
 	override dispose(): void {
+		clearInterval(this.cleanupTimer);
 		this.watcher?.close();
 		for (const [, proc] of this.relayProcesses) {
 			proc.kill();

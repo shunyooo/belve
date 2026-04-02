@@ -13,11 +13,16 @@ export class TerminalPaneContent extends Disposable implements IPaneContent {
 	private _isRendered = false;
 	private _lastWidth = 0;
 	private _lastHeight = 0;
+	private _paneId: string = '';
 
 	constructor(
 		@ITerminalService private readonly terminalService: ITerminalService,
 	) {
 		super();
+	}
+
+	setPaneId(paneId: string): void {
+		this._paneId = paneId;
 	}
 
 	render(container: HTMLElement): void {
@@ -26,7 +31,22 @@ export class TerminalPaneContent extends Disposable implements IPaneContent {
 		}
 		this._isRendered = true;
 
-		this.terminalService.createTerminal({ config: { env: { DOCK_CODE_SESSION: '1' } } }).then(instance => {
+		// Wrap shell in tmux for session persistence across reconnections.
+		// Uses pane ID for stable session name so re-attach works after restart.
+		// Falls back to plain $SHELL if tmux is not installed.
+		const tmuxSession = `dc-${this._paneId.substring(0, 8)}`;
+		const tmuxCmd = `command -v tmux >/dev/null 2>&1 && exec tmux new-session -A -s ${tmuxSession} || exec $SHELL`;
+
+		this.terminalService.createTerminal({
+			config: {
+				executable: '/bin/sh',
+				args: ['-c', tmuxCmd],
+				env: {
+					DOCK_CODE_SESSION: '1',
+					DOCK_CODE_PANE_ID: this._paneId,
+				}
+			}
+		}).then(instance => {
 			this.instance = instance;
 			instance.attachToElement(container);
 			instance.setVisible(true);

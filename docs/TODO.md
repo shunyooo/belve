@@ -110,11 +110,14 @@ AgentEventMonitor.readNewEvents()
 
 ### 未実装
 
-#### 3-2. 通知システム
-- [ ] エージェントの状態変化時にデスクトップ通知/アプリ内通知
-  - 完了、エラー、入力待ち（ユーザーの対応が必要）などをトリガーに
-- [ ] 通知クリック → 該当プロジェクトに切り替え → 該当ターミナルにフォーカス
-- [ ] 通知の優先度/フィルタリング（全完了通知は不要、エラーのみ等）
+#### 3-2. 通知システム ✅
+- [x] エージェントの状態変化時にデスクトップ通知（Electron Notification API）
+  - Completed, Error, Waiting への遷移で発火
+  - ウィンドウフォーカス中 + アクティブプロジェクト → 抑制
+  - Error/Waiting は音あり、Completed は silent
+- [x] 通知クリック → 該当プロジェクトに切り替え → PaneContainer ターミナルにフォーカス
+  - `onDidRequestPaneContainerFocus` IPC イベントで main→renderer フォーカス要求
+- [ ] 通知の優先度/フィルタリング設定 UI（全完了通知は不要、エラーのみ等）
 
 #### 3-3. ファイル監視 & エディタ連携
 - [ ] エージェントがファイルを編集したとき、VS Code エディタで自動的にそのファイルを開く/更新する
@@ -243,6 +246,7 @@ AgentEventMonitor.readNewEvents()
 - 「Reopen without Container」で SSH に戻る
 - リモートフォルダブラウザ UI
 - [x] 接続時にマウント済みワークスペースフォルダを自動で開く（接続キャッシュ + deferred openFolder でループ防止）
+- [x] キャッシュ再利用時もワークスペースフォルダを正しく開く（`scheduleWorkspaceFolderOpen` 共通化）
 
 **REH ビルド CI (`.github/workflows/build-reh.yml`)**
 - GitHub Actions で Linux 上でビルド → Release に自動公開

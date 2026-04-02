@@ -53,9 +53,13 @@ export class PaneContainerPart extends Part {
 	) {
 		super(Parts.PANECONTAINER_PART, { hasTitle: false }, themeService, storageService2, layoutService);
 
-		// Focus PaneContainer when requested via notification click
-		this._register(this.projectMainService.onDidRequestPaneContainerFocus(() => {
-			this.focus();
+		// Focus PaneContainer (optionally a specific pane) when requested
+		this._register(this.projectMainService.onDidRequestPaneContainerFocus((paneId) => {
+			if (paneId) {
+				this.focusPaneById(paneId);
+			} else {
+				this.focus();
+			}
 		}));
 	}
 
@@ -77,8 +81,8 @@ export class PaneContainerPart extends Part {
 			try {
 				const parsed = JSON.parse(state);
 				this.grid = SerializableGrid.deserialize(parsed.grid, {
-					fromJSON: (data: { contentType?: string }) => {
-						return this.createPaneFromType(data.contentType ?? 'terminal');
+					fromJSON: (data: { contentType?: string; paneId?: string }) => {
+						return this.createPaneFromType(data.contentType ?? 'terminal', data.paneId);
 					}
 				});
 			} catch {
@@ -97,8 +101,8 @@ export class PaneContainerPart extends Part {
 		}
 	}
 
-	private createPaneFromType(type: string): PaneView {
-		const pane = new PaneView();
+	private createPaneFromType(type: string, paneId?: string): PaneView {
+		const pane = new PaneView(paneId);
 		this.panes.push(pane);
 
 		const disposables = new DisposableStore();
@@ -111,7 +115,7 @@ export class PaneContainerPart extends Part {
 		// Track active pane on focus (click, keyboard, etc.)
 		disposables.add(pane.onDidFocus(() => this.setActivePane(pane)));
 
-		const content = this.createContent(type);
+		const content = this.createContent(type, pane.id);
 		if (content) {
 			pane.setContent(content);
 		}
@@ -119,10 +123,13 @@ export class PaneContainerPart extends Part {
 		return pane;
 	}
 
-	private createContent(type: string): IPaneContent | undefined {
+	private createContent(type: string, paneId: string): IPaneContent | undefined {
 		switch (type) {
-			case 'terminal':
-				return this.instantiationService.createInstance(TerminalPaneContent);
+			case 'terminal': {
+				const content = this.instantiationService.createInstance(TerminalPaneContent);
+				content.setPaneId(paneId);
+				return content;
+			}
 			default:
 				return undefined;
 		}
@@ -317,6 +324,18 @@ export class PaneContainerPart extends Part {
 
 	getPanes(): readonly PaneView[] {
 		return this.panes;
+	}
+
+	focusPaneById(paneId: string): boolean {
+		const pane = this.panes.find(p => p.id === paneId);
+		if (pane) {
+			this.setActivePane(pane);
+			pane.focus();
+			return true;
+		}
+		// Fallback to generic focus
+		this.focus();
+		return false;
 	}
 
 	//#endregion
