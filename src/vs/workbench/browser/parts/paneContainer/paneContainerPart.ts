@@ -64,6 +64,7 @@ export class PaneContainerPart extends Part {
 	}
 
 	protected override createContentArea(parent: HTMLElement): HTMLElement {
+		console.warn(`[PaneContainerPart] createContentArea called`);
 		this.element = parent;
 		this.element.classList.add('pane-container-part');
 
@@ -77,21 +78,27 @@ export class PaneContainerPart extends Part {
 
 	private initGrid(): void {
 		const state = this.storageService2.get(PANE_CONTAINER_STATE_KEY, StorageScope.WORKSPACE);
+		console.warn(`[PaneContainerPart] initGrid: stored state exists=${!!state}, stateLength=${state?.length ?? 0}`);
 		if (state) {
 			try {
 				const parsed = JSON.parse(state);
+				console.warn(`[PaneContainerPart] initGrid: parsed grid OK, deserializing...`);
 				this.grid = SerializableGrid.deserialize(parsed.grid, {
 					fromJSON: (data: { contentType?: string; paneId?: string }) => {
+						console.warn(`[PaneContainerPart] fromJSON: contentType=${data.contentType}, paneId=${data.paneId}`);
 						return this.createPaneFromType(data.contentType ?? 'terminal', data.paneId);
 					}
 				});
-			} catch {
+				console.warn(`[PaneContainerPart] initGrid: deserialization complete, panes=${this.panes.length}`);
+			} catch (err) {
 				// Fallback to fresh grid
+				console.warn(`[PaneContainerPart] initGrid: deserialization failed:`, err);
 				this.grid = undefined;
 			}
 		}
 
 		if (!this.grid) {
+			console.warn(`[PaneContainerPart] initGrid: creating fresh grid with single terminal pane`);
 			const initialPane = this.createPaneFromType('terminal');
 			this.grid = new SerializableGrid(initialPane);
 		}
@@ -102,6 +109,7 @@ export class PaneContainerPart extends Part {
 	}
 
 	private createPaneFromType(type: string, paneId?: string): PaneView {
+		console.warn(`[PaneContainerPart] createPaneFromType: type=${type}, paneId=${paneId}`);
 		const pane = new PaneView(paneId);
 		this.panes.push(pane);
 
@@ -117,20 +125,31 @@ export class PaneContainerPart extends Part {
 
 		const content = this.createContent(type, pane.id);
 		if (content) {
+			console.warn(`[PaneContainerPart] createPaneFromType: calling setContent on pane ${pane.id}`);
 			pane.setContent(content);
+		} else {
+			console.warn(`[PaneContainerPart] createPaneFromType: content is undefined for pane ${pane.id}`);
 		}
 
 		return pane;
 	}
 
 	private createContent(type: string, paneId: string): IPaneContent | undefined {
+		console.warn(`[PaneContainerPart] createContent: type=${type}, paneId=${paneId}`);
 		switch (type) {
 			case 'terminal': {
-				const content = this.instantiationService.createInstance(TerminalPaneContent);
-				content.setPaneId(paneId);
-				return content;
+				try {
+					const content = this.instantiationService.createInstance(TerminalPaneContent);
+					content.setPaneId(paneId);
+					console.warn(`[PaneContainerPart] createContent: TerminalPaneContent created OK`);
+					return content;
+				} catch (err) {
+					console.warn(`[PaneContainerPart] createContent: TerminalPaneContent creation FAILED:`, err);
+					return undefined;
+				}
 			}
 			default:
+				console.warn(`[PaneContainerPart] createContent: unknown type "${type}"`);
 				return undefined;
 		}
 	}

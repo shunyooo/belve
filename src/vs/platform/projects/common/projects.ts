@@ -26,6 +26,7 @@ export interface IProjectData {
 	readonly name: string;
 	readonly createdAt: number;
 	readonly folderUri?: string;
+	readonly remoteAuthority?: string;
 	status: ProjectStatus;
 	agentSessions?: IAgentSession[];
 }

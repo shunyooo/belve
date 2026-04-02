@@ -118,6 +118,7 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 					name: p.name,
 					createdAt: p.createdAt,
 					folderUri: p.folderUri,
+					remoteAuthority: p.remoteAuthority,
 					status: p.status,
 				})),
 				activeProjectId: this.activeProjectId,
@@ -347,8 +348,9 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			return;
 		}
 
-		// Update the stored folder
+		// Update the stored folder (clear standalone remoteAuthority since folderUri now contains it)
 		(project as { folderUri?: string }).folderUri = folderUri;
+		(project as { remoteAuthority?: string }).remoteAuthority = undefined;
 		this.saveToDisk();
 
 		if (projectId === this.mainWindowProjectId) {
@@ -392,6 +394,8 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 				const parsed = URI.parse(project.folderUri);
 				const remoteAuthority = parsed.scheme === Schemas.vscodeRemote ? parsed.authority : undefined;
 				await this.reloadProjectView(project, { workspace: this.getWorkspaceIdentifier(parsed), remoteAuthority });
+			} else if (project.remoteAuthority) {
+				await this.reloadProjectView(project, { remoteAuthority: project.remoteAuthority });
 			} else {
 				await this.reloadProjectView(project, { workspace: this.getEmptyProjectWorkspace(project.id) });
 			}
@@ -405,6 +409,12 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 		}
 
 		console.log(`[ProjectMainService] Opening remote "${remoteAuthority}" in project "${project.name}"`);
+
+		// Persist the remote authority so the project reconnects on restart.
+		// Clear folderUri — a specific folder hasn't been opened yet.
+		(project as { folderUri?: string }).folderUri = undefined;
+		(project as { remoteAuthority?: string }).remoteAuthority = remoteAuthority;
+		this.saveToDisk();
 
 		if (projectId === this.mainWindowProjectId) {
 			// For main window, open via WindowsMainService
@@ -624,8 +634,12 @@ export class ProjectMainService extends Disposable implements IProjectMainServic
 			tmpDir: this.environmentMainService.tmpDir.fsPath,
 			userDataDir: this.environmentMainService.userDataPath,
 
-			workspace: project.folderUri ? this.getWorkspaceIdentifier(URI.parse(project.folderUri)) : this.getEmptyProjectWorkspace(project.id),
-			remoteAuthority: project.folderUri && URI.parse(project.folderUri).scheme === Schemas.vscodeRemote ? URI.parse(project.folderUri).authority : undefined,
+			workspace: project.folderUri
+				? this.getWorkspaceIdentifier(URI.parse(project.folderUri))
+				: (!project.remoteAuthority ? this.getEmptyProjectWorkspace(project.id) : undefined),
+			remoteAuthority: project.folderUri && URI.parse(project.folderUri).scheme === Schemas.vscodeRemote
+				? URI.parse(project.folderUri).authority
+				: project.remoteAuthority,
 			userEnv: {},
 
 			nls: {

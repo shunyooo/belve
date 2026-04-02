@@ -12,7 +12,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { $, addDisposableListener, append, clearNode, EventType, getWindow } from '../../../../base/browser/dom.js';
-import { ACTIVITY_BAR_BACKGROUND, ACTIVITY_BAR_BORDER } from '../../../common/theme.js';
+import { SIDE_BAR_BACKGROUND, SIDE_BAR_BORDER } from '../../../common/theme.js';
 import { contrastBorder } from '../../../../platform/theme/common/colorRegistry.js';
 import { assertReturnsDefined } from '../../../../base/common/types.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -338,10 +338,10 @@ export class ProjectBarPart extends Part {
 		super.updateStyles();
 
 		const container = assertReturnsDefined(this.getContainer());
-		const background = this.getColor(ACTIVITY_BAR_BACKGROUND) || '';
+		const background = this.getColor(SIDE_BAR_BACKGROUND) || '';
 		container.style.backgroundColor = background;
 
-		const borderColor = this.getColor(ACTIVITY_BAR_BORDER) || this.getColor(contrastBorder) || '';
+		const borderColor = this.getColor(SIDE_BAR_BORDER) || this.getColor(contrastBorder) || '';
 		container.classList.toggle('bordered', !!borderColor);
 		container.style.borderColor = borderColor ? borderColor : '';
 	}

@@ -87,18 +87,18 @@
 	height: 24px;
 	font-size: 16px;
 	border-radius: 4px;
-	color: var(--vscode-activityBar-inactiveForeground);
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
 	flex-shrink: 0;
 }
 
 .monaco-workbench .projectbar .action-item:hover .action-label {
-	color: var(--vscode-activityBar-foreground);
+	color: var(--vscode-foreground);
 }
 
 /* Action text (visible when expanded) */
 .monaco-workbench .projectbar .action-item .action-text {
 	font-size: 12px;
-	color: var(--vscode-activityBar-inactiveForeground);
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -107,11 +107,11 @@
 }
 
 .monaco-workbench .projectbar .action-item:hover .action-text {
-	color: var(--vscode-activityBar-foreground);
+	color: var(--vscode-foreground);
 }
 
 .monaco-workbench .projectbar .action-item.checked .action-text {
-	color: var(--vscode-activityBar-foreground);
+	color: var(--vscode-foreground);
 }
 
 /* Toggle expand button */
@@ -134,19 +134,19 @@
 	font-weight: 600;
 	font-size: 18px;
 	text-transform: uppercase;
-	background-color: var(--vscode-activityBar-inactiveForeground);
-	color: var(--vscode-activityBar-background);
+	background-color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+	color: var(--vscode-sideBar-background);
 	border-radius: 6px;
 }
 
 .monaco-workbench .projectbar .action-item.project-entry:hover .action-label.project-icon {
-	background-color: var(--vscode-activityBar-foreground);
+	background-color: var(--vscode-foreground);
 }
 
 /* Selected/checked state */
 .monaco-workbench .projectbar .action-item.project-entry.checked .action-label.project-icon {
-	background-color: var(--vscode-activityBar-foreground);
-	color: var(--vscode-activityBar-background);
+	background-color: var(--vscode-foreground);
+	color: var(--vscode-sideBar-background);
 }
 
 /* Active item indicator (vertical bar on the left) */
@@ -160,12 +160,12 @@
 }
 
 .monaco-workbench .projectbar .action-item.project-entry.checked .active-item-indicator {
-	background-color: var(--vscode-activityBar-activeBorder, var(--vscode-activityBar-foreground));
+	background-color: var(--vscode-focusBorder, var(--vscode-foreground));
 }
 
 /* Active background for checked items */
 .monaco-workbench .projectbar .action-item.project-entry.checked {
-	background-color: var(--vscode-activityBar-activeBackground);
+	background-color: var(--vscode-list-activeSelectionBackground);
 }
 
 /* Agent session entries (shown under each project) */
@@ -194,7 +194,7 @@
 
 .monaco-workbench .projectbar .session-entry .session-text {
 	font-size: 10px;
-	color: var(--vscode-activityBar-inactiveForeground);
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -240,7 +240,7 @@
 }
 
 .monaco-workbench .projectbar .session-status-dot.status-idle {
-	background-color: var(--vscode-activityBar-inactiveForeground);
+	background-color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
 	opacity: 0.4;
 }
 
