@@ -87,6 +87,50 @@
 	inset: 0;
 }
 
+/* Drag-and-drop pane rearrangement */
+
+.pane-view.dragging {
+	opacity: 0.4;
+}
+
+.pane-view-header[draggable="true"] {
+	cursor: grab;
+}
+
+.pane-view-header[draggable="true"]:active {
+	cursor: grabbing;
+}
+
+/* Drop indicator: overlay highlighting the half where the pane will land */
+.pane-view.drop-target-top::after,
+.pane-view.drop-target-bottom::after,
+.pane-view.drop-target-left::after,
+.pane-view.drop-target-right::after {
+	content: '';
+	position: absolute;
+	z-index: 1000;
+	pointer-events: none;
+	background: color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 20%, transparent);
+	border: 2px solid var(--vscode-focusBorder, #007fd4);
+	border-radius: 3px;
+}
+
+.pane-view.drop-target-top::after {
+	inset: 0 0 50% 0;
+}
+
+.pane-view.drop-target-bottom::after {
+	inset: 50% 0 0 0;
+}
+
+.pane-view.drop-target-left::after {
+	inset: 0 50% 0 0;
+}
+
+.pane-view.drop-target-right::after {
+	inset: 0 0 0 50%;
+}
+
 /* Focus glow animation — used on panes and workbench areas */
 
 .pane-view {

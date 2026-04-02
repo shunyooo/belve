@@ -6,7 +6,7 @@
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { $, append, clearNode } from '../../../../base/browser/dom.js';
-import { IViewSize, ISerializableView } from '../../../../base/browser/ui/grid/grid.js';
+import { IViewSize, ISerializableView, Direction } from '../../../../base/browser/ui/grid/grid.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 
 /**
@@ -35,6 +35,9 @@ export interface IPaneViewState {
 }
 
 export class PaneView extends Disposable implements ISerializableView {
+
+	/** ID of the pane currently being dragged (shared across all instances) */
+	private static _draggingPaneId: string | undefined;
 
 	/** Unique identifier for this pane, stable across its lifetime */
 	readonly id: string;
@@ -66,6 +69,11 @@ export class PaneView extends Disposable implements ISerializableView {
 	private readonly _onDidFocus = this._register(new Emitter<void>());
 	readonly onDidFocus: Event<void> = this._onDidFocus.event;
 
+	private readonly _onDidRequestDrop = this._register(new Emitter<{ sourceId: string; direction: Direction }>());
+	readonly onDidRequestDrop: Event<{ sourceId: string; direction: Direction }> = this._onDidRequestDrop.event;
+
+	private _currentDropDirection: Direction | undefined;
+
 	constructor(id?: string) {
 		super();
 
@@ -80,6 +88,7 @@ export class PaneView extends Disposable implements ISerializableView {
 		this.contentElement = append(this.element, $('.pane-view-content'));
 
 		this.createHeader();
+		this._setupDropTarget();
 	}
 
 	private readonly _focusInHandler = () => {
@@ -89,6 +98,19 @@ export class PaneView extends Disposable implements ISerializableView {
 
 	private createHeader(): void {
 		clearNode(this.headerElement);
+
+		// Enable drag from header to reposition panes
+		this.headerElement.draggable = true;
+		this.headerElement.addEventListener('dragstart', (e) => {
+			PaneView._draggingPaneId = this.id;
+			e.dataTransfer?.setData('text/x-pane-id', this.id);
+			e.dataTransfer!.effectAllowed = 'move';
+			this.element.classList.add('dragging');
+		});
+		this.headerElement.addEventListener('dragend', () => {
+			PaneView._draggingPaneId = undefined;
+			this.element.classList.remove('dragging');
+		});
 
 		const title = append(this.headerElement, $('span.pane-view-title'));
 		const tmuxSession = `dc-${this.id.substring(0, 8)}`;
@@ -152,6 +174,75 @@ export class PaneView extends Disposable implements ISerializableView {
 
 	focus(): void {
 		this._content?.focus();
+	}
+
+	private _setupDropTarget(): void {
+		this.element.addEventListener('dragover', (e) => {
+			if (!e.dataTransfer?.types.includes('text/x-pane-id')) {
+				return;
+			}
+			// Don't show drop indicator on the pane being dragged
+			if (PaneView._draggingPaneId === this.id) {
+				return;
+			}
+			e.preventDefault();
+			e.dataTransfer!.dropEffect = 'move';
+
+			const direction = this._computeDropDirection(e);
+			this._showDropIndicator(direction);
+		});
+
+		this.element.addEventListener('drop', (e) => {
+			this._clearDropIndicator();
+			const sourceId = e.dataTransfer?.getData('text/x-pane-id');
+			if (!sourceId || sourceId === this.id) {
+				return;
+			}
+			e.preventDefault();
+			const direction = this._computeDropDirection(e);
+			this._onDidRequestDrop.fire({ sourceId, direction });
+		});
+
+		this.element.addEventListener('dragleave', (e) => {
+			// Only clear when leaving the pane entirely (not entering a child)
+			if (!this.element.contains(e.relatedTarget as Node)) {
+				this._clearDropIndicator();
+			}
+		});
+	}
+
+	private _computeDropDirection(e: DragEvent): Direction {
+		const rect = this.element.getBoundingClientRect();
+		const x = (e.clientX - rect.left) / rect.width;   // 0..1
+		const y = (e.clientY - rect.top) / rect.height;    // 0..1
+
+		// Split into 4 quadrants using diagonals
+		const isTop = y < x && y < (1 - x);
+		const isBottom = y > x && y > (1 - x);
+		const isLeft = y > x && y < (1 - x);
+
+		if (isTop) { return Direction.Up; }
+		if (isBottom) { return Direction.Down; }
+		if (isLeft) { return Direction.Left; }
+		return Direction.Right;
+	}
+
+	private _showDropIndicator(direction: Direction): void {
+		if (this._currentDropDirection === direction) {
+			return;
+		}
+		this._clearDropIndicator();
+		this._currentDropDirection = direction;
+		const cls = direction === Direction.Up ? 'drop-target-top'
+			: direction === Direction.Down ? 'drop-target-bottom'
+				: direction === Direction.Left ? 'drop-target-left'
+					: 'drop-target-right';
+		this.element.classList.add(cls);
+	}
+
+	private _clearDropIndicator(): void {
+		this._currentDropDirection = undefined;
+		this.element.classList.remove('drop-target-top', 'drop-target-bottom', 'drop-target-left', 'drop-target-right');
 	}
 
 	private showFocusGlow(): void {

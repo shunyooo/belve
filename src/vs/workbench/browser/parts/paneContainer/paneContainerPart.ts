@@ -123,6 +123,11 @@ export class PaneContainerPart extends Part {
 		// Track active pane on focus (click, keyboard, etc.)
 		disposables.add(pane.onDidFocus(() => this.setActivePane(pane)));
 
+		// Handle drag-and-drop pane rearrangement
+		disposables.add(pane.onDidRequestDrop(({ sourceId, direction }) => {
+			this.movePane(sourceId, pane, direction);
+		}));
+
 		const content = this.createContent(type, pane.id);
 		if (content) {
 			console.warn(`[PaneContainerPart] createPaneFromType: calling setContent on pane ${pane.id}`);
@@ -160,6 +165,14 @@ export class PaneContainerPart extends Part {
 			this.grid.addView(newPane, Sizing.Distribute, referencePane, direction);
 		}
 		return newPane;
+	}
+
+	movePane(sourcePaneId: string, targetPane: PaneView, direction: Direction): void {
+		const sourcePane = this.panes.find(p => p.id === sourcePaneId);
+		if (!sourcePane || sourcePane === targetPane || !this.grid) {
+			return;
+		}
+		this.grid.moveView(sourcePane, Sizing.Distribute, targetPane, direction);
 	}
 
 	closePane(pane: PaneView): void {
