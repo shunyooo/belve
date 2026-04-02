@@ -12,7 +12,7 @@ import { ILogService } from '../../log/common/log.js';
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 const DOCK_CODE_HOOK_MARKER = 'dock-code-agent-events';
 /** Marker for the current hook version. Update when hook commands change to trigger re-registration. */
-const DOCK_CODE_HOOK_VERSION_MARKER = 'dock-code-v7';
+const DOCK_CODE_HOOK_VERSION_MARKER = 'dock-code-v8';
 
 /**
  * Generate the inline node command for a hook.
@@ -49,27 +49,21 @@ function makeUserPromptSubmitCommand(): string {
 		'process.stdin.on("end",()=>{try{const j=JSON.parse(d)',
 		'const fs=require("fs"),p=require("path"),cp=require("child_process")',
 		'const pid=process.env.DOCK_CODE_PANE_ID||""',
-		// Debug: dump raw stdin to file for inspection
-		'fs.writeFileSync("/tmp/dock-code-hook-debug.json",d)',
 		// Write status event
 		'fs.appendFileSync("/tmp/dock-code-agent-events",JSON.stringify({source:"terminal",eventType:"claude-code",status:"running",projectPath:j.cwd,sessionId:j.session_id,paneId:pid,message:"Generating"})+"\\n")',
 		// Label generation (background, first prompt only)
 		'const mk=p.join(require("os").tmpdir(),"dock-code-label-"+j.session_id)',
-		'fs.writeFileSync("/tmp/dock-code-hook-debug2.txt","mk="+mk+" exists="+fs.existsSync(mk)+" prompt="+(j.prompt||"NONE"))',
 		'if(!fs.existsSync(mk)){fs.writeFileSync(mk,"")',
 		'const prompt=j.prompt||""',
 		'if(prompt){const sid=j.session_id,cwd=j.cwd',
 		'const q="Generate a label (max 10 characters, in the same language as the input) that summarizes this task. Output ONLY the label, nothing else: "+prompt.substring(0,500)',
 		'const env=Object.assign({},process.env,{DOCK_CODE_SESSION:""})',
-		'fs.writeFileSync("/tmp/dock-code-hook-debug3.txt","spawning claude")',
 		'const c=cp.spawn("claude",["--model","haiku","-p",q],{stdio:["ignore","pipe","pipe"],env:env})',
 		'let o=""',
 		'c.stdout.on("data",b=>o+=b)',
-		'c.stderr.on("data",b=>fs.appendFileSync("/tmp/dock-code-hook-debug4.txt",b))',
 		'c.on("close",()=>{const label=o.trim().substring(0,15)',
-		'fs.writeFileSync("/tmp/dock-code-hook-debug5.txt","label="+label)',
 		'if(label)fs.appendFileSync("/tmp/dock-code-agent-events",JSON.stringify({source:"terminal",eventType:"claude-code",status:"label",projectPath:cwd,sessionId:sid,paneId:pid,message:label})+"\\n")})}}',
-		'}catch(e){fs.writeFileSync("/tmp/dock-code-hook-error.txt",String(e))}})',
+		'}catch{}})',
 	].join(';');
 	return `node -e '${script}'`;
 }
