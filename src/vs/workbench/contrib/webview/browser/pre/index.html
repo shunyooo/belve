@@ -5,7 +5,7 @@
 	<meta charset="UTF-8">
 
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-TaWGDzV7c9rUH2q/5ygOyYUHSyHIqBMYfucPh3lnKvU=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'self' 'unsafe-inline'; frame-src 'self'; style-src 'unsafe-inline'; font-src data:;">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -991,9 +991,11 @@
 					await workerReady;
 					perfMark('content/workerReady');
 				} catch (e) {
-					console.error(`Webview fatal error: ${e}`);
-					hostMessaging.postMessage('fatal-error', { message: e + '' });
-					return;
+					// dock-code: In WebContentsView projects, service worker registration
+					// may fail. Continue loading content anyway — inline content and
+					// postMessage-based communication still work without the SW.
+					console.warn(`Webview service worker failed (non-fatal): ${e}`);
+					perfMark('content/workerReady');
 				}
 
 				if (currentUpdateId !== updateId) {

@@ -296,6 +296,15 @@ export class CodeApplication extends Disposable {
 				}
 			}
 
+			// Also allow requests from project WebContentsViews
+			if (this.projectMainService) {
+				for (const wc of this.projectMainService.getProjectWebContents()) {
+					if (frame.processId === wc.mainFrame.processId) {
+						return true;
+					}
+				}
+			}
+
 			return false;
 		};
 

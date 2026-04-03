@@ -32,10 +32,15 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 		if (typeof (id as WebviewWindowId).windowId === 'number') {
 			const { windowId } = (id as WebviewWindowId);
 			const window = this.windowsMainService.getWindowById(windowId);
-			if (!window?.win) {
-				throw new Error(`Invalid windowId: ${windowId}`);
+			if (window?.win) {
+				contents = window.win.webContents;
+			} else {
+				// dock-code: windowId may be a WebContentsView's webContents.id
+				contents = webContents.fromId(windowId) ?? undefined;
+				if (!contents) {
+					throw new Error(`Invalid windowId: ${windowId}`);
+				}
 			}
-			contents = window.win.webContents;
 		} else {
 			const { webContentsId } = (id as WebviewWebContentsId);
 			contents = webContents.fromId(webContentsId);
@@ -87,11 +92,18 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 	}
 
 	private getFrameByName(windowId: WebviewWindowId, frameName: string): WebFrameMain {
+		let wc: WebContents | undefined;
 		const window = this.windowsMainService.getWindowById(windowId.windowId);
-		if (!window?.win) {
+		if (window?.win) {
+			wc = window.win.webContents;
+		} else {
+			// dock-code: windowId may be a WebContentsView's webContents.id
+			wc = webContents.fromId(windowId.windowId) ?? undefined;
+		}
+		if (!wc) {
 			throw new Error(`Invalid windowId: ${windowId}`);
 		}
-		const frame = window.win.webContents.mainFrame.framesInSubtree.find(frame => {
+		const frame = wc.mainFrame.framesInSubtree.find(frame => {
 			return frame.name === frameName;
 		});
 		if (!frame) {
