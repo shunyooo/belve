@@ -174,9 +174,53 @@ cd WebEditor && npm install && npm run build
 cd WebMarkdown && npm install && npm run build
 ```
 
+## UI 自動テスト（osascript + screencapture）
+
+Claude Code から直接 UI の確認・操作ができる。Computer Use が使えない環境でも macOS 標準ツールで代替可能。
+
+### スクショ確認
+
+```bash
+# ビルド → 起動 → 前面化 → スクショ
+swift build && open .build/arm64-apple-macosx/debug/Belve
+sleep 2
+osascript -e 'tell app "System Events" to tell process "Belve" to set frontmost to true'
+sleep 1
+screencapture -x /tmp/belve-ui.png
+# Read ツールで /tmp/belve-ui.png を読めば画像として確認できる
+```
+
+### UI 要素の列挙
+
+```bash
+osascript -e 'tell app "System Events" to tell process "Belve" to get entire contents of window 1'
+```
+
+### UI 操作
+
+```bash
+# テキスト要素をクリック
+osascript -e 'tell app "System Events" to tell process "Belve" to click static text "clay-api-flamel" of group 1 of window 1'
+
+# キーボードショートカット
+osascript -e 'tell app "System Events" to tell process "Belve" to keystroke "k" using command down'
+
+# 座標クリック
+osascript -e 'tell app "System Events" to click at {400, 300}'
+
+# ウィンドウリサイズ
+osascript -e 'tell app "System Events" to tell process "Belve" to set size of window 1 to {1200, 800}'
+```
+
+### 注意点
+
+- SPM バイナリは `application "Belve"` では認識されない → `System Events` の `process "Belve"` 経由で操作
+- Accessibility 権限がターミナルに必要（System Settings > Privacy & Security > Accessibility）
+- `screencapture -x` はシャッター音なし
+
 ## 初手の作業
 
-1. 現在の dock-code ソースを `archived/` に移動
-2. `Package.swift` + `BelveApp.swift` + `MainWindow.swift` を作成
-3. SwiftTerm を SPM 依存に追加
+1. ~~現在の dock-code ソースを `archived/` に移動~~ ✅
+2. ~~`Package.swift` + `BelveApp.swift` + `MainWindow.swift` を作成~~ ✅
+3. ~~SwiftTerm を SPM 依存に追加~~ ✅
 4. TerminalView でローカルシェルが動くところまで

@@ -59,3 +59,16 @@ Sources/Belve/
 
 - インデントはタブ
 - Swift naming conventions（PascalCase: 型、camelCase: 変数/関数）
+
+## UI 自動テスト
+
+osascript + screencapture でビルド→起動→スクショ確認→操作テストが可能。詳細は `docs/architecture.md` の「UI 自動テスト」セクション参照。
+
+```bash
+# 基本フロー
+swift build && open .build/arm64-apple-macosx/debug/Belve
+sleep 2
+osascript -e 'tell app "System Events" to tell process "Belve" to set frontmost to true'
+screencapture -x /tmp/belve-ui.png
+# Read ツールで画像確認
+```
