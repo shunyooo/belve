@@ -1,224 +1,61 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Belve とは
 
-## dock-code とは
-
-VS Code をフォークしたデスクトップアプリ。1つの OS ウィンドウ内で複数プロジェクト（各々が独立した workbench/リモート接続/拡張ホスト）を管理し、即座に切り替えられる。Electron の `WebContentsView` を使い、各プロジェクトは独立した renderer プロセスで動作する。
+macOS ネイティブ（Swift/SwiftUI）のマルチプロジェクト開発環境。SSH/DevContainer リモート接続、ターミナル、コードエディタ、Markdown WYSIWYG を統合。
 
 ## ビルドと開発
 
-### 初回セットアップ（clone 直後）
-
 ```bash
-# 1. 依存インストール（dock-code 独自拡張の依存も自動でインストールされる）
-npm install
+# ビルド & 実行
+swift build && swift run Belve
 
-# 2. ビルトイン拡張のコンパイル（dock-code-remote-ssh/containers 含む）
-npx gulp compile-extensions
-
-# 3. 開発用トランスパイル（esbuild ベース、高速。codicon.ttf も自動コピーされる）
-NODE_OPTIONS="--experimental-strip-types" node build/next/index.ts transpile
-
-# 4. 起動
-./scripts/code.sh
+# テスト
+swift test
 ```
 
-### 日常の開発コマンド
+## アーキテクチャ
 
-```bash
-# 型チェック（src/ 配下の変更後、必須）
-npm run compile-check-ts-native
+詳細は `docs/architecture.md` を参照。
 
-# 開発用トランスパイル（esbuild ベース、高速）
-NODE_OPTIONS="--experimental-strip-types" node build/next/index.ts transpile
+### レイアウト
 
-# 起動（開発モード）
-./scripts/code.sh
+- **Sidebar**: プロジェクト一覧
+- **Command エリア（左）**: ターミナルペイン（縦横グリッド分割可能）
+- **Preview エリア（右）**: ファイルツリー + エディタ / Markdown / Web プレビュー
 
-# レイヤー依存チェック
-npm run valid-layers-check
+### 技術スタック
 
-# ユニットテスト
-./scripts/test.sh --grep <pattern>
+- SwiftUI (macOS 14+) — アプリシェル
+- SwiftTerm — ターミナルエミュレーション（NSViewRepresentable）
+- WKWebView + CodeMirror 6 — コードエディタ
+- WKWebView + Milkdown — Markdown WYSIWYG
+- system `ssh` + PTY — SSH 接続
+- `devcontainer` CLI — DevContainer
 
-# 統合テスト
-./scripts/test-integration.sh
-```
-
-**注意事項:**
-- `npm run compile` は使わない（Node 22 で .ts ファイルの直接実行が必要なため失敗する）
-- esbuild の transpile-only モードでは `const enum` がインライン展開されない。renderer 側コードでは `import type` を使い、`const enum` の代わりに `enum` を使うこと
-- 既存インスタンスが残っていると新規起動が即終了する（single-instance lock）。起動しない場合は既存プロセスを kill し `/tmp/vscode-*` と `1.11-main.sock` を削除
-- デバッグログ（`console.log`, `logService.info` 等）は基本的に残す。開発時のトラブルシューティングに重要なため、削除ではなくログレベルで制御する
-
-## dock-code 固有のアーキテクチャ
-
-### プロジェクトシステム
+### プロジェクト構造
 
 ```
-Single BrowserWindow
-├── Main webContents (Project 1 = 最初のプロジェクト)
-├── WebContentsView (Project 2 = 独立した renderer)
-├── WebContentsView (Project 3 = 独立した renderer)
-└── 切り替え: view.setVisible(true/false) + webContents.focus()
+Sources/Belve/
+├── BelveApp.swift          # @main
+├── Models/                # データモデル
+├── Views/
+│   ├── MainWindow.swift   # NavigationSplitView ルート
+│   ├── Sidebar/           # プロジェクト一覧
+│   ├── Command/           # ターミナルペイン（左）
+│   └── Preview/           # エディタ・プレビュー（右）
+├── Services/              # ビジネスロジック
+└── Resources/             # WebView 用 HTML/JS バンドル
 ```
 
-**プラットフォーム層** (`src/vs/platform/projects/`):
-- `common/projects.ts` — `IProjectMainService` インターフェース、`IProject`、`ProjectStatus`
-- `electron-main/projectMainService.ts` — WebContentsView の作成・管理・切り替え・フォルダルーティング・復元
-- `electron-main/projectIpc.ts` — IPC チャネル
-- `common/projectIpcClient.ts` — renderer 側 IPC クライアント
+## 設計原則
 
-**ワークベンチ層**:
-- `workbench/browser/parts/projectbar/projectBarPart.ts` — ProjectBar UI（左サイドバー）
-- `workbench/contrib/projects/` — プロジェクト関連コントリビューション
-- `workbench/services/projects/electron-browser/` — renderer 側サービス登録
+- 1ファイル1責務、200行以下目安
+- Protocol 駆動（Service 層は Protocol で定義）
+- DI はイニシャライザ注入
+- View は `*View`、Service は `*Service`
 
-### ProjectBar
+## コーディング規約
 
-`Parts.PROJECTBAR_PART` として登録。折りたたみ(48px)/展開(200px)の2状態を持つ左端の縦バー。プロジェクト一覧・追加・切り替え・右クリックメニュー(リネーム・削除)を提供。
-
-### フォルダオープンのルーティング
-
-WebContentsView プロジェクトからのフォルダオープンは `NativeHostMainService.doOpenPicked()` / `doOpenWindow()` でインターセプトされ、`ProjectMainService.openFolderInProject()` にルーティングされる。`getSingleFolderWorkspaceIdentifier` を呼ぶ際は `fs.statSync` で stat を渡す必要がある（渡さないと workspace が undefined になる）。
-
-### プロジェクト永続化
-
-`projects.json`（`userDataPath` 内）にプロジェクト一覧と activeProjectId を保存。起動時に `afterWindowOpen()` → `restoreProjects()` で WebContentsView を再作成。
-
-### vscode-file:// セキュリティフィルター
-
-`app.ts` の `isAllowedVsCodeFileRequest()` が WebContentsView の `frame.processId` も許可する必要がある。`ProjectMainService.getProjectWebContents()` で全 WebContentsView の webContents を返す。
-
-### SSH / DevContainer リモート接続
-
-#### アーキテクチャ
-
-```
-ローカル (dock-code)                     リモート (SSH先 / コンテナ)
-┌─────────────────────────┐            ┌──────────────────────┐
-│ BrowserWindow            │            │  REH Server           │
-│ ├── Project 1 (main wc)  │            │  (Remote Extension    │
-│ │   └── Extension Host 1 │            │   Host)               │
-│ ├── Project 2 (WCV)      │   SSH      │  - ファイル操作         │
-│ │   └── Extension Host 2 ──tunnel────→│  - LSP                │
-│ └── Project 3 (WCV)      │            │  - ターミナル (PTY)     │
-│     └── Extension Host 3 │            │  - ワークスペース拡張    │
-└─────────────────────────┘            └──────────────────────┘
-```
-
-**各 WebContentsView は独自の Extension Host を持つ**。これにより各プロジェクトが異なる SSH 先やコンテナに独立して接続できる。
-
-#### 拡張機能
-
-**`extensions/dock-code-remote-ssh/`** — SSH リモート接続
-- `RemoteAuthorityResolver` を `ssh-remote` authority で登録
-- システムの `ssh` コマンドで接続（`~/.ssh/config` 対応）
-- REH サーバーを GitHub Release からリモートにダウンロード・起動
-- SSH ポートフォワードでトンネル確立、TCP 接続確認で準備完了を検証
-- `nativeHostMainService.doOpenEmptyWindow` でインターセプトし、プロジェクトシステムにルーティング
-
-**`extensions/dock-code-remote-containers/`** — DevContainer (SSH 先でコンテナ起動)
-- SSH 接続 → `devcontainer up` → コンテナ内に REH インストール → socat ポートリレー → SSH トンネル
-- SSH ワークスペースで `devcontainer.json` を検出 → 「Reopen in Container」通知
-- 「Reopen without Container」で SSH に戻れる（Dockerfile 編集時等）
-- authority 形式: `dev-container+<hex(host:folderPath)>`
-
-#### REH (Remote Extension Host) サーバー
-
-リモートで動く VS Code のバックエンド。ファイル操作、LSP、ターミナル PTY、拡張機能実行を担う。
-
-**ビルド:**
-```bash
-# ローカルビルド（開発用、macOS のネイティブモジュールが混入するため非推奨）
-NODE_OPTIONS="--experimental-strip-types" node --max-old-space-size=8192 \
-  ./node_modules/gulp/bin/gulp.js vscode-reh-linux-x64
-```
-
-**本番ビルド（GitHub Actions）:**
-- `.github/workflows/build-reh.yml` で Linux ランナー上でビルド
-- `main` push で自動実行、GitHub Release にアップロード
-- ネイティブモジュール（node-pty, @parcel/watcher）が正しい Linux バイナリで含まれる
-- SSH/DevContainer 拡張は Release から `curl` でリモートにダウンロード
-
-**mangling 無効化:** `build/gulpfile.reh.ts` で `compileBuildWithoutManglingTask` を使用（upstream のテストファイルとの互換性問題を回避）
-
-#### remoteAuthority の保持
-
-`vscode-remote://` URI のフォルダを開く際、`remoteAuthority` を失わないことが重要。以下の箇所で対応済み:
-- `projectMainService.openFolderInProject()` — URI scheme から remoteAuthority を抽出
-- `projectMainService.reloadProject()` — 同上
-- `projectMainService.createViewForProject()` — project.folderUri から remoteAuthority を設定
-- `nativeHostMainService.doOpenEmptyWindow()` — remoteAuthority 付きリクエストをプロジェクトにルーティング
-
-#### Extension Host ライフサイクル
-
-`utilityProcess.ts` の `registerWindowListeners()` を修正し、WebContentsView の Extension Host は `webContents.destroyed` イベントに紐づけ。メインウィンドウのリロードで他プロジェクトの Extension Host が kill されない。
-
-**`extensions/dock-code-markdown-editor/`** — WYSIWYG Markdown エディタ
-- Milkdown (Crepe) ベースの `CustomTextEditorProvider`。`priority: "default"` で `.md` のデフォルトエディタ
-- JS/CSS は esbuild でバンドル後、extension が HTML にインライン埋め込み（ServiceWorker 不要にするため）
-- 設定: `markdownEditor.fontSize`, `markdownEditor.lineHeight`, `markdownEditor.h1FontSize`, `markdownEditor.h2FontSize`, `markdownEditor.h3FontSize`
-- ビルド: `node --experimental-strip-types extensions/dock-code-markdown-editor/esbuild.webview.mts && node --experimental-strip-types extensions/dock-code-markdown-editor/esbuild.mts`
-- webview-src/ を変更 → webview esbuild → extension esbuild の順でリビルド必要（CSS/JS がインライン化されるため）
-
-#### WebContentsView での webview 対応
-
-- `app.ts` の `isAllowedWebviewRequest()` に WebContentsView プロセスチェックを追加済み
-- `webviewMainService.ts` で WebContentsView の windowId（= webContents.id）を `webContents.fromId()` でフォールバック
-- `pre/index.html` で ServiceWorker 登録失敗を非致命的に変更（WebContentsView では SW が動かない場合がある）
-- `pre/index.html` の CSP から script hash を削除し `'unsafe-inline'` を許可（`document.write()` で注入される inner frame が outer CSP を継承するため）
-
-#### 既知の問題と判断
-
-| 問題 | 判断 |
-|------|------|
-| Microsoft の Remote SSH/Containers は VSDA チェックで動作不可 | 自前の resolver 拡張を開発 |
-| Open Remote SSH (OSS) はメンテ不活発 + バージョン不一致 | 自前実装を選択 |
-| macOS で REH ビルド → Linux ネイティブモジュールが不正 | GitHub Actions で Linux 上でビルド（根本解決） |
-| VS Code マーケットプレイスの TOS はフォークに対してグレー | 現状は使用、将来 Open VSX も検討 |
-| upstream の mangler がテストファイルのクラス名をリネーム | REH ビルドで mangling を無効化 |
-
-## VS Code 上流のコーディングガイドライン
-
-### 基本ルール
 - インデントはタブ
-- PascalCase: 型名、enum 値 / camelCase: 関数、プロパティ、変数
-- ユーザー向け文字列は `nls.localize()` でローカライズ、ダブルクォート使用
-- それ以外はシングルクォート
-- `async/await` を `Promise.then` より優先
-- Disposable は作成直後に登録（`DisposableStore`, `MutableDisposable`）
-- サービス依存はコンストラクタで宣言、`IInstantiationService` 経由で後から取得しない
-
-### TypeScript
-- 型チェックは変更後に必ず実行してからテスト
-- `any` / `unknown` は最小限に
-- `export` は他コンポーネントと共有する場合のみ
-- アロー関数を匿名関数より優先、ただしトップレベルは `export function` を使用
-
-### レイヤー構造
-`base` → `platform` → `editor` → `workbench` の順。上位から下位への import は禁止。`npm run valid-layers-check` で検証可能。
-
-## TODO
-
-### Markdown WYSIWYG エディタ改善
-
-#### スタイル調整
-- [ ] パディング/マージンの微調整（Crepe 内部の `.ProseMirror` デフォルト `padding: 60px 120px` は `8px 16px` に変更済みだが、まだ大きい可能性）
-- [ ] Milkdown Crepe テーマのカラーを VS Code テーマ変数とより正確に合わせる（コードブロック、引用等）
-- [ ] ダークテーマ/ライトテーマ切り替え時の動的対応
-
-#### 機能改善
-- [ ] 設定変更時のライブリロード（現在はファイル再オープンが必要）
-- [ ] 外部変更時の差分更新（現在は Crepe を destroy/recreate。Milkdown の ProseMirror API で増分更新に変更すべき）
-- [ ] Undo/Redo の統合確認（VS Code の Undo と Milkdown の Undo の競合チェック）
-- [ ] 画像の表示対応（リモートファイルの場合、`vscode-resource` URI の解決が必要。現在 ServiceWorker が動かないため要検討）
-- [ ] テーブル編集の UX 確認（Crepe の Table 機能は有効のまま）
-- [ ] コードブロック内のシンタックスハイライト確認（Crepe の CodeMirror 機能は有効）
-
-#### インフラ
-- [ ] WebContentsView での ServiceWorker 根本修正（現在は失敗を非致命的にする回避策。`vscode-webview://` scheme の SW 登録が WebContentsView renderer で失敗する原因の調査）
-- [ ] webview outer frame CSP の `'unsafe-inline'` をより安全な方式に置き換え（nonce ベース等）
-- [ ] `build/npm/dirs.ts` と `build/gulpfile.extensions.ts` に dock-code-markdown-editor を登録（gulp compile-extensions 対応）
-- [ ] `node_modules/` を `.vscodeignore` に追加しビルド成果物のみ配布
+- Swift naming conventions（PascalCase: 型、camelCase: 変数/関数）

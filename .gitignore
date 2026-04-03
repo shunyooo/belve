@@ -4,6 +4,8 @@ npm-debug.log
 Thumbs.db
 node_modules/
 .build/
+.swiftpm/
+archived/
 .vscode/extensions/**/out/
 extensions/**/dist/
 src/vs/base/browser/ui/codicons/codicon/codicon.ttf
