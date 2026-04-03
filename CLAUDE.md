@@ -156,6 +156,20 @@ NODE_OPTIONS="--experimental-strip-types" node --max-old-space-size=8192 \
 
 `utilityProcess.ts` の `registerWindowListeners()` を修正し、WebContentsView の Extension Host は `webContents.destroyed` イベントに紐づけ。メインウィンドウのリロードで他プロジェクトの Extension Host が kill されない。
 
+**`extensions/dock-code-markdown-editor/`** — WYSIWYG Markdown エディタ
+- Milkdown (Crepe) ベースの `CustomTextEditorProvider`。`priority: "default"` で `.md` のデフォルトエディタ
+- JS/CSS は esbuild でバンドル後、extension が HTML にインライン埋め込み（ServiceWorker 不要にするため）
+- 設定: `markdownEditor.fontSize`, `markdownEditor.lineHeight`, `markdownEditor.h1FontSize`, `markdownEditor.h2FontSize`, `markdownEditor.h3FontSize`
+- ビルド: `node --experimental-strip-types extensions/dock-code-markdown-editor/esbuild.webview.mts && node --experimental-strip-types extensions/dock-code-markdown-editor/esbuild.mts`
+- webview-src/ を変更 → webview esbuild → extension esbuild の順でリビルド必要（CSS/JS がインライン化されるため）
+
+#### WebContentsView での webview 対応
+
+- `app.ts` の `isAllowedWebviewRequest()` に WebContentsView プロセスチェックを追加済み
+- `webviewMainService.ts` で WebContentsView の windowId（= webContents.id）を `webContents.fromId()` でフォールバック
+- `pre/index.html` で ServiceWorker 登録失敗を非致命的に変更（WebContentsView では SW が動かない場合がある）
+- `pre/index.html` の CSP から script hash を削除し `'unsafe-inline'` を許可（`document.write()` で注入される inner frame が outer CSP を継承するため）
+
 #### 既知の問題と判断
 
 | 問題 | 判断 |
@@ -185,3 +199,26 @@ NODE_OPTIONS="--experimental-strip-types" node --max-old-space-size=8192 \
 
 ### レイヤー構造
 `base` → `platform` → `editor` → `workbench` の順。上位から下位への import は禁止。`npm run valid-layers-check` で検証可能。
+
+## TODO
+
+### Markdown WYSIWYG エディタ改善
+
+#### スタイル調整
+- [ ] パディング/マージンの微調整（Crepe 内部の `.ProseMirror` デフォルト `padding: 60px 120px` は `8px 16px` に変更済みだが、まだ大きい可能性）
+- [ ] Milkdown Crepe テーマのカラーを VS Code テーマ変数とより正確に合わせる（コードブロック、引用等）
+- [ ] ダークテーマ/ライトテーマ切り替え時の動的対応
+
+#### 機能改善
+- [ ] 設定変更時のライブリロード（現在はファイル再オープンが必要）
+- [ ] 外部変更時の差分更新（現在は Crepe を destroy/recreate。Milkdown の ProseMirror API で増分更新に変更すべき）
+- [ ] Undo/Redo の統合確認（VS Code の Undo と Milkdown の Undo の競合チェック）
+- [ ] 画像の表示対応（リモートファイルの場合、`vscode-resource` URI の解決が必要。現在 ServiceWorker が動かないため要検討）
+- [ ] テーブル編集の UX 確認（Crepe の Table 機能は有効のまま）
+- [ ] コードブロック内のシンタックスハイライト確認（Crepe の CodeMirror 機能は有効）
+
+#### インフラ
+- [ ] WebContentsView での ServiceWorker 根本修正（現在は失敗を非致命的にする回避策。`vscode-webview://` scheme の SW 登録が WebContentsView renderer で失敗する原因の調査）
+- [ ] webview outer frame CSP の `'unsafe-inline'` をより安全な方式に置き換え（nonce ベース等）
+- [ ] `build/npm/dirs.ts` と `build/gulpfile.extensions.ts` に dock-code-markdown-editor を登録（gulp compile-extensions 対応）
+- [ ] `node_modules/` を `.vscodeignore` に追加しビルド成果物のみ配布
