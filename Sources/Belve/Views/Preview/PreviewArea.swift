@@ -78,9 +78,12 @@ struct PreviewArea: View {
 					Theme.borderSubtle
 						.frame(height: 1)
 
-					if file.path.hasSuffix(".md") {
+					switch FileType.detect(path: file.path) {
+					case .markdown:
 						MarkdownEditorView(content: file.content) { _ in }
-					} else {
+					case .image, .pdf:
+						MediaPreviewView(path: file.path, sshHost: project.sshHost)
+					case .code, .unknown:
 						CodeEditorView(
 							filename: file.path,
 							content: file.content
@@ -103,11 +106,24 @@ struct PreviewArea: View {
 	}
 
 	private func loadFile(at path: String) {
+		NSLog("[Belve] loadFile: \(path)")
+		let fileType = FileType.detect(path: path)
+
+		if fileType == .image || fileType == .pdf {
+			DispatchQueue.main.async {
+				openFile = OpenFile(path: path, content: "")
+			}
+			return
+		}
+
 		DispatchQueue.global().async {
 			if let content = FileService.readFile(path: path, sshHost: project.sshHost) {
+				NSLog("[Belve] File loaded: \(path), \(content.count) chars")
 				DispatchQueue.main.async {
 					openFile = OpenFile(path: path, content: content)
 				}
+			} else {
+				NSLog("[Belve] Failed to read file: \(path)")
 			}
 		}
 	}
