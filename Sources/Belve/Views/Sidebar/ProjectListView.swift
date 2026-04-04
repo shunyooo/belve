@@ -9,7 +9,7 @@ struct ProjectListView: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
-			Spacer().frame(height: 28) // traffic light row height
+			Spacer().frame(height: 34) // traffic light row + breathing room
 			ScrollView {
 				VStack(spacing: 2) {
 					ForEach(projects) { project in
@@ -27,15 +27,14 @@ struct ProjectListView: View {
 				.padding(.horizontal, 8)
 			}
 		}
-		.overlay(alignment: .topLeading) {
-			// Buttons at same height as traffic lights (cmux style)
+		.overlay(alignment: .topTrailing) {
 			HStack(spacing: 4) {
 				SidebarIconButton(icon: "plus", action: { onAddProject?() })
 				SidebarIconButton(icon: "bell", action: { onOpenNotifications?() })
 				SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 			}
-			.padding(.leading, 72)
-			.offset(y: -16)
+			.padding(.trailing, 6)
+			.padding(.top, 4)
 		}
 	}
 }
