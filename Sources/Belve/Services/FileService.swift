@@ -21,8 +21,7 @@ enum FileService {
 			return FileItem(
 				name: name,
 				path: fullPath,
-				isDirectory: isDir.boolValue,
-				children: isDir.boolValue ? [] : nil
+				isDirectory: isDir.boolValue
 			)
 		}
 	}
@@ -62,8 +61,7 @@ enum FileService {
 			return FileItem(
 				name: name,
 				path: fullPath,
-				isDirectory: isDir,
-				children: isDir ? [] : nil
+				isDirectory: isDir
 			)
 		}
 	}

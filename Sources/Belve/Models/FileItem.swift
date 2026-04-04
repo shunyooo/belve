@@ -5,8 +5,6 @@ struct FileItem: Identifiable, Hashable {
 	let name: String
 	let path: String
 	let isDirectory: Bool
-	var children: [FileItem]?
-	var isExpanded: Bool = false
 
 	func hash(into hasher: inout Hasher) {
 		hasher.combine(path)

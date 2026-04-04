@@ -123,21 +123,6 @@ struct MainWindow: View {
 			commandPaletteState.isPresented = true
 		})
 
-		cmds.append(PaletteCommand(title: "Open File (local test)", icon: "doc") {
-			// Test: open CLAUDE.md from the project
-			let testFiles = [
-				NSHomeDirectory() + "/src/dock-code/CLAUDE.md",
-				NSHomeDirectory() + "/src/dock-code/Package.swift",
-			]
-			for path in testFiles {
-				if let content = try? String(contentsOfFile: path) {
-					let filename = (path as NSString).lastPathComponent
-					openFile = OpenFile(path: filename, content: content)
-					break
-				}
-			}
-		})
-
 		cmds.append(PaletteCommand(title: "Split Terminal", icon: "rectangle.split.1x2") {
 			commandAreaState.split()
 		})
@@ -270,16 +255,19 @@ struct TopBar: View {
 
 	var body: some View {
 		HStack(spacing: 8) {
-			Button {
-				showSidebar.toggle()
-			} label: {
-				Image(systemName: "sidebar.left")
-					.font(.system(size: 11, weight: .medium))
-					.foregroundStyle(isHoveringSidebar ? Theme.textPrimary : Theme.textTertiary)
-			}
-			.buttonStyle(.plain)
-			.onHover { hovering in
-				isHoveringSidebar = hovering
+			// Show toggle only when sidebar is hidden
+			if !showSidebar {
+				Button {
+					showSidebar = true
+				} label: {
+					Image(systemName: "sidebar.left")
+						.font(.system(size: 11, weight: .medium))
+						.foregroundStyle(isHoveringSidebar ? Theme.textPrimary : Theme.textTertiary)
+				}
+				.buttonStyle(.plain)
+				.onHover { hovering in
+					isHoveringSidebar = hovering
+				}
 			}
 
 			if let project {
