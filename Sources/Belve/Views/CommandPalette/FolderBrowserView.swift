@@ -90,7 +90,7 @@ struct FolderBrowserView: View {
 					}
 				}
 			}
-			.frame(maxHeight: 300)
+			.frame(maxHeight: 500)
 		}
 		.frame(width: 500)
 		.background(Theme.surface)

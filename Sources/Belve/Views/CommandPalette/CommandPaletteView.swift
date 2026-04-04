@@ -63,7 +63,7 @@ struct CommandPaletteView: View {
 					}
 				}
 			}
-			.frame(maxHeight: 300)
+			.frame(maxHeight: 500)
 		}
 		.frame(width: 400)
 		.background(Theme.surface)
