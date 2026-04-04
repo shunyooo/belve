@@ -120,6 +120,12 @@ struct MainWindow: View {
 			commandPaletteState.isPresented = true
 		})
 
+		if selectedProject?.sshHost != nil {
+			cmds.append(PaletteCommand(title: "Open DevContainer", icon: "shippingbox") {
+				openDevContainer()
+			})
+		}
+
 		cmds.append(PaletteCommand(title: "Split Terminal Vertical", icon: "rectangle.split.1x2") {
 			commandAreaState.splitActive(.vertical)
 		})
@@ -152,6 +158,23 @@ struct MainWindow: View {
 				connectSSH(host: host.name)
 			}
 		}
+	}
+
+	private func openDevContainer() {
+		guard let index = projects.firstIndex(where: { $0.id == selectedProject?.id }),
+			  let sshHost = projects[index].sshHost else { return }
+		// Use remotePath or home directory as workspace
+		let workspacePath = projects[index].remotePath ?? "~"
+		projects[index].devContainerPath = workspacePath
+
+		// Recreate terminal
+		let project = projects[index]
+		selectedProject = nil
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+			selectedProject = project
+			saveProjects()
+		}
+		NSLog("[Belve] DevContainer enabled for \(project.name) at \(sshHost):\(workspacePath)")
 	}
 
 	private func addProject() {

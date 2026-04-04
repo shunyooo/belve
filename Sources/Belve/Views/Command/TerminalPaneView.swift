@@ -41,7 +41,17 @@ struct TerminalPaneView: NSViewRepresentable {
 			guard let tv = terminalView else { return }
 			do {
 				let pty: PTYService
-				if let sshHost = project?.sshHost {
+				if let project = project, project.isDevContainer,
+				   let sshHost = project.sshHost,
+				   let workspacePath = project.devContainerPath {
+					// DevContainer connection
+					let args = DevContainerService.exec(sshHost: sshHost, workspacePath: workspacePath)
+					NSLog("[Belve] Connecting to DevContainer: \(sshHost):\(workspacePath)")
+					pty = try PTYService.spawn(
+						shell: args[0],
+						args: Array(args.dropFirst())
+					)
+				} else if let sshHost = project?.sshHost {
 					// SSH connection
 					NSLog("[Belve] Connecting to SSH host: \(sshHost)")
 					pty = try PTYService.spawn(
