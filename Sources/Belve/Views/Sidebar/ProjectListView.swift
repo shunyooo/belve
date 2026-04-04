@@ -9,19 +9,7 @@ struct ProjectListView: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
-			// Top bar: aligned with traffic lights (same row)
-			HStack(spacing: 4) {
-				Spacer()
-					.frame(width: 68) // space for traffic lights (●●● ~60px + gap)
-				SidebarIconButton(icon: "plus", action: { onAddProject?() })
-				SidebarIconButton(icon: "bell", action: { onOpenNotifications?() })
-				SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
-				Spacer()
-			}
-			.frame(height: 20)
-			.padding(.top, 3) // align vertically with traffic lights
-
-			// Project list
+			Spacer().frame(height: 28) // traffic light row height
 			ScrollView {
 				VStack(spacing: 2) {
 					ForEach(projects) { project in
@@ -38,6 +26,16 @@ struct ProjectListView: View {
 				}
 				.padding(.horizontal, 8)
 			}
+		}
+		.overlay(alignment: .topLeading) {
+			// Buttons at same height as traffic lights (cmux style)
+			HStack(spacing: 4) {
+				SidebarIconButton(icon: "plus", action: { onAddProject?() })
+				SidebarIconButton(icon: "bell", action: { onOpenNotifications?() })
+				SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
+			}
+			.padding(.leading, 72)
+			.offset(y: -16) // pull up into titlebar area to align with traffic lights
 		}
 	}
 }
