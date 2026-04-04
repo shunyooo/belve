@@ -99,7 +99,7 @@ struct MainWindow: View {
 					Spacer()
 				}
 				.onChange(of: commandPaletteState.isPresented) {
-					if commandPaletteState.isPresented && paletteMode != .folderBrowser {
+					if !commandPaletteState.isPresented {
 						paletteMode = .commands
 					}
 				}
