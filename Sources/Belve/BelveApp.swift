@@ -57,8 +57,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 	private func adjustTrafficLights() {
 		guard let window = NSApp.windows.first else { return }
-		let yOffset: CGFloat = 10
-		let xOffset: CGFloat = 6
+		let yOffset = Theme.trafficLightYOffset
+		let xOffset = Theme.trafficLightXOffset
 		for type: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
 			guard let button = window.standardWindowButton(type) else { continue }
 			let defaultX: CGFloat = type == .closeButton ? 7 : (type == .miniaturizeButton ? 27 : 47)

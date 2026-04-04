@@ -24,7 +24,15 @@ enum Theme {
 	static let yellow = Color(red: 0.85, green: 0.70, blue: 0.30)
 	static let red = Color(red: 0.85, green: 0.35, blue: 0.35)
 
-	// Spacing
+	// Layout
+	static let titlebarHeight: CGFloat = 34     // sidebar top row & main header height
+	static let titlebarTopPadding: CGFloat = 28  // space before project list (below titlebar row)
+	static let sidebarWidth: CGFloat = 200
+	static let trafficLightLeading: CGFloat = 72 // right edge of traffic lights
+	static let trafficLightYOffset: CGFloat = 10 // push traffic lights down
+	static let trafficLightXOffset: CGFloat = 6  // push traffic lights right
+
+	// Radius
 	static let radiusSm: CGFloat = 6
 	static let radiusMd: CGFloat = 8
 	static let radiusLg: CGFloat = 12

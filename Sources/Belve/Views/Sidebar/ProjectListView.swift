@@ -9,7 +9,7 @@ struct ProjectListView: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
-			Spacer().frame(height: 34) // traffic light row + breathing room
+			Spacer().frame(height: Theme.titlebarHeight)
 			ScrollView {
 				VStack(spacing: 2) {
 					ForEach(projects) { project in

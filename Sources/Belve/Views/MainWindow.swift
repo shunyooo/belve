@@ -27,7 +27,7 @@ struct MainWindow: View {
 						onToggleSidebar: { showSidebar = false },
 						onOpenNotifications: { /* TODO: notification panel */ }
 					)
-					.frame(width: 200)
+					.frame(width: Theme.sidebarWidth)
 					.background(Theme.bg)
 
 					Theme.border
@@ -287,7 +287,7 @@ struct TopBar: View {
 			Spacer()
 		}
 		.padding(.horizontal, 12)
-		.frame(height: 34)
+		.frame(height: Theme.titlebarHeight)
 		.background(Theme.bg)
 	}
 }
