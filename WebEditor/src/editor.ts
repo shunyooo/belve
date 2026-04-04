@@ -7,6 +7,15 @@ import { html } from "@codemirror/lang-html";
 import { css } from "@codemirror/lang-css";
 import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
+import { rust } from "@codemirror/lang-rust";
+import { go } from "@codemirror/lang-go";
+import { java } from "@codemirror/lang-java";
+import { cpp } from "@codemirror/lang-cpp";
+import { xml } from "@codemirror/lang-xml";
+import { sql } from "@codemirror/lang-sql";
+import { php } from "@codemirror/lang-php";
+import { yaml } from "@codemirror/lang-yaml";
+import { sass } from "@codemirror/lang-sass";
 
 const languageCompartment = new Compartment();
 
@@ -40,6 +49,30 @@ function getLanguageExtension(lang: string) {
 			return json();
 		case "markdown":
 			return markdown();
+		case "rust":
+			return rust();
+		case "go":
+			return go();
+		case "java":
+			return java();
+		case "cpp":
+		case "c":
+			return cpp();
+		case "xml":
+			return xml();
+		case "sql":
+			return sql();
+		case "php":
+			return php();
+		case "yaml":
+			return yaml();
+		case "sass":
+		case "scss":
+			return sass();
+		case "swift":
+			return rust(); // closest syntax match for Swift
+		case "shell":
+			return [] ; // no shell lang package, fall back to plain
 		default:
 			return [];
 	}
@@ -48,23 +81,28 @@ function getLanguageExtension(lang: string) {
 function detectLanguage(filename: string): string {
 	const ext = filename.split(".").pop()?.toLowerCase() || "";
 	const map: Record<string, string> = {
-		js: "javascript",
-		jsx: "jsx",
-		ts: "typescript",
-		tsx: "tsx",
+		js: "javascript", jsx: "jsx", ts: "typescript", tsx: "tsx",
 		py: "python",
-		html: "html",
-		htm: "html",
+		html: "html", htm: "html",
 		css: "css",
 		json: "json",
 		md: "markdown",
-		swift: "javascript", // basic highlighting fallback
-		sh: "javascript",
-		bash: "javascript",
-		zsh: "javascript",
-		yml: "javascript",
-		yaml: "javascript",
-		toml: "javascript",
+		rs: "rust",
+		go: "go",
+		java: "java",
+		c: "c", cpp: "cpp", cc: "cpp", cxx: "cpp", h: "cpp", hpp: "cpp",
+		xml: "xml", svg: "xml", plist: "xml",
+		sql: "sql",
+		php: "php",
+		yaml: "yaml", yml: "yaml",
+		sass: "sass", scss: "scss",
+		swift: "swift",
+		sh: "shell", bash: "shell", zsh: "shell",
+		toml: "yaml", // close enough
+		dockerfile: "shell",
+		makefile: "shell",
+		rb: "python", // rough fallback
+		kt: "java", // rough fallback
 	};
 	return map[ext] || "";
 }

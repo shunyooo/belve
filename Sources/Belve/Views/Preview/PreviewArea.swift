@@ -78,17 +78,20 @@ struct PreviewArea: View {
 					Theme.borderSubtle
 						.frame(height: 1)
 
-					switch FileType.detect(path: file.path) {
-					case .markdown:
-						MarkdownEditorView(content: file.content) { _ in }
-					case .image, .pdf:
-						MediaPreviewView(path: file.path, sshHost: project.sshHost)
-					case .code, .unknown:
-						CodeEditorView(
-							filename: file.path,
-							content: file.content
-						) { _ in }
+					Group {
+						switch FileType.detect(path: file.path) {
+						case .markdown:
+							MarkdownEditorView(content: file.content) { _ in }
+						case .image, .pdf:
+							MediaPreviewView(path: file.path, sshHost: project.sshHost)
+						case .code, .unknown:
+							CodeEditorView(
+								filename: file.path,
+								content: file.content
+							) { _ in }
+						}
 					}
+					.id(file.path)
 				}
 			} else {
 				VStack(spacing: 8) {
