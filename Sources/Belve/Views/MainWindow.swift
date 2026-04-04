@@ -40,9 +40,6 @@ struct MainWindow: View {
 						showSidebar: $showSidebar
 					)
 
-					Theme.borderSubtle
-						.frame(height: 1)
-
 					if let project = selectedProject {
 						GeometryReader { geo in
 							HStack(spacing: 0) {
