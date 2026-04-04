@@ -48,9 +48,9 @@ struct SidebarIconButton: View {
 	var body: some View {
 		Button(action: action) {
 			Image(systemName: icon)
-				.font(.system(size: 11, weight: .medium))
+				.font(.system(size: 14, weight: .medium))
 				.foregroundStyle(isHovering ? Theme.textPrimary : Theme.textTertiary)
-				.frame(width: 22, height: 22)
+				.frame(width: 28, height: 28)
 		}
 		.buttonStyle(.plain)
 		.onHover { hovering in
