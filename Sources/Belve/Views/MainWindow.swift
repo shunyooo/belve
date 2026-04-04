@@ -13,7 +13,9 @@ struct MainWindow: View {
 	enum PaletteMode {
 		case commands
 		case sshHosts
+		case folderBrowser
 	}
+	@State private var browserPath: String = ""
 
 	var body: some View {
 		ZStack {
@@ -108,7 +110,42 @@ struct MainWindow: View {
 			return buildMainCommands()
 		case .sshHosts:
 			return buildSSHHostCommands()
+		case .folderBrowser:
+			return buildFolderBrowserCommands()
 		}
+	}
+
+	private func buildFolderBrowserCommands() -> [PaletteCommand] {
+		let sshHost = selectedProject?.sshHost
+		let currentPath = browserPath.isEmpty ? (selectedProject?.remotePath ?? NSHomeDirectory()) : browserPath
+
+		// Parent directory
+		var cmds: [PaletteCommand] = []
+		let parent = (currentPath as NSString).deletingLastPathComponent
+		if parent != currentPath {
+			cmds.append(PaletteCommand(title: ".. (parent)", icon: "arrow.up") {
+				browserPath = parent
+				paletteMode = .folderBrowser
+				commandPaletteState.isPresented = true
+			})
+		}
+
+		// Select current directory
+		cmds.append(PaletteCommand(title: "📂 Open \((currentPath as NSString).lastPathComponent)", icon: "checkmark.circle") {
+			setProjectFolder(currentPath)
+		})
+
+		// List subdirectories
+		let items = FileService.listDirectory(path: currentPath, sshHost: sshHost)
+		for item in items where item.isDirectory {
+			cmds.append(PaletteCommand(title: item.name, icon: "folder") {
+				browserPath = item.path
+				paletteMode = .folderBrowser
+				commandPaletteState.isPresented = true
+			})
+		}
+
+		return cmds
 	}
 
 	private func buildMainCommands() -> [PaletteCommand] {
@@ -181,28 +218,18 @@ struct MainWindow: View {
 	}
 
 	private func openFolder() {
-		let panel = NSOpenPanel()
-		panel.canChooseFiles = false
-		panel.canChooseDirectories = true
-		panel.allowsMultipleSelection = false
-		panel.message = "Select a folder to open"
+		browserPath = selectedProject?.remotePath ?? NSHomeDirectory()
+		paletteMode = .folderBrowser
+		commandPaletteState.isPresented = true
+	}
 
-		guard panel.runModal() == .OK, let url = panel.url else { return }
-		let path = url.path
-
-		if let index = projects.firstIndex(where: { $0.id == selectedProject?.id }) {
-			// Update current project's path
-			projects[index].remotePath = path
-			let project = projects[index]
-			selectedProject = nil
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-				selectedProject = project
-				saveProjects()
-			}
-		} else {
-			// Create new project with this path
-			let project = Project(name: url.lastPathComponent, remotePath: path)
-			projects.append(project)
+	private func setProjectFolder(_ path: String) {
+		guard let index = projects.firstIndex(where: { $0.id == selectedProject?.id }) else { return }
+		projects[index].remotePath = path
+		projects[index].name = (path as NSString).lastPathComponent
+		let project = projects[index]
+		selectedProject = nil
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
 			selectedProject = project
 			saveProjects()
 		}
