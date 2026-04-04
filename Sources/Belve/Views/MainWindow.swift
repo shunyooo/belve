@@ -80,15 +80,26 @@ struct MainWindow: View {
 					}
 
 				VStack {
-					CommandPaletteView(
-						isPresented: $commandPaletteState.isPresented,
-						commands: buildPaletteCommands()
-					)
-					.padding(.top, 80)
+					if paletteMode == .folderBrowser {
+						FolderBrowserView(
+							isPresented: $commandPaletteState.isPresented,
+							initialPath: browserPath,
+							sshHost: selectedProject?.sshHost
+						) { path in
+							setProjectFolder(path)
+						}
+						.padding(.top, 80)
+					} else {
+						CommandPaletteView(
+							isPresented: $commandPaletteState.isPresented,
+							commands: buildPaletteCommands()
+						)
+						.padding(.top, 80)
+					}
 					Spacer()
 				}
 				.onChange(of: commandPaletteState.isPresented) {
-					if commandPaletteState.isPresented {
+					if commandPaletteState.isPresented && paletteMode != .folderBrowser {
 						paletteMode = .commands
 					}
 				}
@@ -111,37 +122,8 @@ struct MainWindow: View {
 		case .sshHosts:
 			return buildSSHHostCommands()
 		case .folderBrowser:
-			return buildFolderBrowserCommands()
+			return [] // handled by FolderBrowserView
 		}
-	}
-
-	private func buildFolderBrowserCommands() -> [PaletteCommand] {
-		let sshHost = selectedProject?.sshHost
-		let currentPath = browserPath.isEmpty ? (selectedProject?.remotePath ?? NSHomeDirectory()) : browserPath
-
-		// Parent directory
-		var cmds: [PaletteCommand] = []
-		let parent = (currentPath as NSString).deletingLastPathComponent
-		if parent != currentPath {
-			cmds.append(PaletteCommand(title: ".. (parent)", icon: "arrow.up", keepOpen: true) {
-				browserPath = parent
-			})
-		}
-
-		// Select current directory
-		cmds.append(PaletteCommand(title: "Open \((currentPath as NSString).lastPathComponent)", icon: "checkmark.circle") {
-			setProjectFolder(currentPath)
-		})
-
-		// List subdirectories
-		let items = FileService.listDirectory(path: currentPath, sshHost: sshHost)
-		for item in items where item.isDirectory {
-			cmds.append(PaletteCommand(title: item.name, icon: "folder", keepOpen: true) {
-				browserPath = item.path
-			})
-		}
-
-		return cmds
 	}
 
 	private func buildMainCommands() -> [PaletteCommand] {
