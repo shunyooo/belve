@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 @main
 struct BelveApp: App {
@@ -11,7 +12,7 @@ struct BelveApp: App {
 				.ignoresSafeArea()
 				.environmentObject(appDelegate.commandPaletteState)
 		}
-		// Window style configured via AppKit in AppDelegate
+		.windowStyle(.hiddenTitleBar)
 		.defaultSize(width: 1200, height: 800)
 		.commands {
 			CommandGroup(after: .toolbar) {
@@ -33,17 +34,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		NSApp.activate(ignoringOtherApps: true)
-
-		// Configure window like cmux: fullSizeContentView so content starts at y=0
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-			guard let window = NSApp.windows.first else { return }
-			window.styleMask.insert(.fullSizeContentView)
-			window.titlebarAppearsTransparent = true
-			window.titleVisibility = .hidden
-			window.isMovableByWindowBackground = true
-			NSLog("[Belve] Window configured: fullSizeContentView=\(window.styleMask.contains(.fullSizeContentView))")
-		}
-
 		NSLog("[Belve] App launched")
 	}
 

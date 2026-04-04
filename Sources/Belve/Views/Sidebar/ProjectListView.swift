@@ -35,7 +35,7 @@ struct ProjectListView: View {
 				SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 			}
 			.padding(.leading, 72)
-			.padding(.top, 2)
+			.offset(y: -16)
 		}
 	}
 }
