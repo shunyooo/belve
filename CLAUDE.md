@@ -130,3 +130,4 @@ Sources/Belve/
 
 - インデントはタブ
 - Swift naming conventions（PascalCase: 型、camelCase: 変数/関数）
+- デバッグログ（`NSLog("[Belve] ...")`）は残してよい
