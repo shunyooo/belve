@@ -120,8 +120,12 @@ struct MainWindow: View {
 			commandPaletteState.isPresented = true
 		})
 
-		cmds.append(PaletteCommand(title: "Split Terminal", icon: "rectangle.split.1x2") {
-			commandAreaState.split()
+		cmds.append(PaletteCommand(title: "Split Terminal Vertical", icon: "rectangle.split.1x2") {
+			commandAreaState.splitActive(.vertical)
+		})
+
+		cmds.append(PaletteCommand(title: "Split Terminal Horizontal", icon: "rectangle.split.2x1") {
+			commandAreaState.splitActive(.horizontal)
 		})
 
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
