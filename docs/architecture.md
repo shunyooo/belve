@@ -303,6 +303,12 @@ osascript -e 'tell app "System Events" to tell process "Belve" to set size of wi
 - Cmd+Shift+U で未読通知にジャンプ
 - 参考: https://github.com/manaflow-ai/cmux
 
+**技術実装メモ:**
+- 検知方法1: ターミナル出力の OSC エスケープシーケンス（OSC 9 / 99 / 777）を監視。SwiftTerm の TerminalViewDelegate にハンドラーあり
+- 検知方法2: CLI コマンド（`belve notify "message"`）をエージェントが明示的に呼ぶ
+- Claude Code 連携: `hooks.Notification` で `belve notify` を実行するよう設定
+- 表示: PTY 出力 → SwiftTerm が OSC パース → delegate コールバック → サイドバー/ペイン UI 更新
+
 #### ファイルツリーのキーボード操作
 - 矢印キー上下でフォーカス移動
 - 右矢印でフォルダ展開、左矢印で折りたたみ
