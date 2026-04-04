@@ -20,20 +20,6 @@ struct PreviewArea: View {
 			// File tree
 			if showFileTree {
 				VStack(spacing: 0) {
-					// Header
-					HStack {
-						Text("FILES")
-							.font(.system(size: 10, weight: .semibold))
-							.foregroundStyle(Theme.textTertiary)
-							.tracking(0.8)
-						Spacer()
-					}
-					.padding(.horizontal, 10)
-					.padding(.vertical, 5)
-					.background(Theme.bg)
-
-					Theme.borderSubtle
-						.frame(height: 1)
 
 					FileTreeView(
 						project: project,
