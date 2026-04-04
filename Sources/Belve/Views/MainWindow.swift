@@ -123,25 +123,21 @@ struct MainWindow: View {
 		var cmds: [PaletteCommand] = []
 		let parent = (currentPath as NSString).deletingLastPathComponent
 		if parent != currentPath {
-			cmds.append(PaletteCommand(title: ".. (parent)", icon: "arrow.up") {
+			cmds.append(PaletteCommand(title: ".. (parent)", icon: "arrow.up", keepOpen: true) {
 				browserPath = parent
-				paletteMode = .folderBrowser
-				commandPaletteState.isPresented = true
 			})
 		}
 
 		// Select current directory
-		cmds.append(PaletteCommand(title: "📂 Open \((currentPath as NSString).lastPathComponent)", icon: "checkmark.circle") {
+		cmds.append(PaletteCommand(title: "Open \((currentPath as NSString).lastPathComponent)", icon: "checkmark.circle") {
 			setProjectFolder(currentPath)
 		})
 
 		// List subdirectories
 		let items = FileService.listDirectory(path: currentPath, sshHost: sshHost)
 		for item in items where item.isDirectory {
-			cmds.append(PaletteCommand(title: item.name, icon: "folder") {
+			cmds.append(PaletteCommand(title: item.name, icon: "folder", keepOpen: true) {
 				browserPath = item.path
-				paletteMode = .folderBrowser
-				commandPaletteState.isPresented = true
 			})
 		}
 

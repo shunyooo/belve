@@ -4,7 +4,15 @@ struct PaletteCommand: Identifiable {
 	let id = UUID()
 	let title: String
 	let icon: String
+	let keepOpen: Bool
 	let action: () -> Void
+
+	init(title: String, icon: String, keepOpen: Bool = false, action: @escaping () -> Void) {
+		self.title = title
+		self.icon = icon
+		self.keepOpen = keepOpen
+		self.action = action
+	}
 }
 
 struct CommandPaletteView: View {
@@ -95,8 +103,11 @@ struct CommandPaletteView: View {
 	}
 
 	private func execute(_ command: PaletteCommand) {
-		isPresented = false
+		if !command.keepOpen {
+			isPresented = false
+		}
 		query = ""
+		selectedIndex = 0
 		command.action()
 	}
 }
