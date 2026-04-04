@@ -303,6 +303,12 @@ osascript -e 'tell app "System Events" to tell process "Belve" to set size of wi
 - Cmd+Shift+U で未読通知にジャンプ
 - 参考: https://github.com/manaflow-ai/cmux
 
+#### ファイルツリーのキーボード操作
+- 矢印キー上下でフォーカス移動
+- 右矢印でフォルダ展開、左矢印で折りたたみ
+- Enter でファイルを開く
+- フォーカス中のアイテムをハイライト表示
+
 #### DevContainer 対応
 - コマンドパレットから「Open in DevContainer」
 - `devcontainer` CLI 連携（`devcontainer up` / `exec`）
