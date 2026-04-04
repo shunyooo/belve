@@ -9,17 +9,17 @@ struct ProjectListView: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
-			// Top bar: traffic light space + buttons
+			// Top bar: aligned with traffic lights (same row)
 			HStack(spacing: 4) {
 				Spacer()
-					.frame(width: 60) // space for traffic lights
+					.frame(width: 68) // space for traffic lights (●●● ~60px + gap)
 				SidebarIconButton(icon: "plus", action: { onAddProject?() })
 				SidebarIconButton(icon: "bell", action: { onOpenNotifications?() })
 				SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 				Spacer()
 			}
-			.frame(height: 28)
-			.padding(.bottom, 4)
+			.frame(height: 20)
+			.padding(.top, 3) // align vertically with traffic lights
 
 			// Project list
 			ScrollView {
