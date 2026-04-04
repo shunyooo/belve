@@ -1,25 +1,44 @@
 import SwiftUI
 
+class FileTreeState: ObservableObject {
+	@Published var items: [FileItem] = []
+	@Published var expandedPaths: Set<String> = []
+	@Published var childrenCache: [String: [FileItem]] = [:]
+
+	func toggle(path: String, project: Project) {
+		if expandedPaths.contains(path) {
+			expandedPaths.remove(path)
+		} else {
+			expandedPaths.insert(path)
+			if childrenCache[path] == nil {
+				DispatchQueue.global().async {
+					let children = FileService.listDirectory(path: path, sshHost: project.sshHost)
+					DispatchQueue.main.async {
+						NSLog("[Belve] Loaded \(children.count) children for \(path)")
+						self.childrenCache[path] = children
+					}
+				}
+			}
+		}
+	}
+}
+
 struct FileTreeView: View {
 	let project: Project
 	let rootPath: String
 	let onFileSelect: (String) -> Void
-	@State private var items: [FileItem] = []
-	@State private var expandedPaths: Set<String> = []
+	@StateObject private var state = FileTreeState()
 
 	var body: some View {
 		ScrollView {
 			VStack(alignment: .leading, spacing: 0) {
-				ForEach(items) { item in
+				ForEach(state.items) { item in
 					FileTreeRow(
 						item: item,
 						depth: 0,
-						expandedPaths: $expandedPaths,
+						state: state,
 						project: project,
-						onFileSelect: onFileSelect,
-						onToggleExpand: { path in
-							toggleExpand(item: item, path: path)
-						}
+						onFileSelect: onFileSelect
 					)
 				}
 			}
@@ -27,43 +46,11 @@ struct FileTreeView: View {
 		}
 		.background(Theme.surface)
 		.onAppear {
-			loadRoot()
-		}
-	}
-
-	private func loadRoot() {
-		DispatchQueue.global().async {
-			let result = FileService.listDirectory(path: rootPath, sshHost: project.sshHost)
-			DispatchQueue.main.async {
-				items = result
-			}
-		}
-	}
-
-	private func toggleExpand(item: FileItem, path: String) {
-		if expandedPaths.contains(path) {
-			expandedPaths.remove(path)
-		} else {
-			expandedPaths.insert(path)
-			// Load children
 			DispatchQueue.global().async {
-				let children = FileService.listDirectory(path: path, sshHost: project.sshHost)
+				let result = FileService.listDirectory(path: rootPath, sshHost: project.sshHost)
 				DispatchQueue.main.async {
-					updateChildren(for: path, children: children, in: &items)
+					state.items = result
 				}
-			}
-		}
-	}
-
-	private func updateChildren(for path: String, children: [FileItem], in items: inout [FileItem]) {
-		for i in items.indices {
-			if items[i].path == path {
-				items[i].children = children
-				return
-			}
-			if var sub = items[i].children {
-				updateChildren(for: path, children: children, in: &sub)
-				items[i].children = sub
 			}
 		}
 	}
@@ -72,21 +59,24 @@ struct FileTreeView: View {
 struct FileTreeRow: View {
 	let item: FileItem
 	let depth: Int
-	@Binding var expandedPaths: Set<String>
+	@ObservedObject var state: FileTreeState
 	let project: Project
 	let onFileSelect: (String) -> Void
-	let onToggleExpand: (String) -> Void
 	@State private var isHovering = false
 
 	private var isExpanded: Bool {
-		expandedPaths.contains(item.path)
+		state.expandedPaths.contains(item.path)
+	}
+
+	private var children: [FileItem] {
+		state.childrenCache[item.path] ?? []
 	}
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
 			Button {
 				if item.isDirectory {
-					onToggleExpand(item.path)
+					state.toggle(path: item.path, project: project)
 				} else {
 					onFileSelect(item.path)
 				}
@@ -125,15 +115,14 @@ struct FileTreeRow: View {
 			}
 
 			// Children
-			if item.isDirectory, isExpanded, let children = item.children {
+			if item.isDirectory, isExpanded {
 				ForEach(children) { child in
 					FileTreeRow(
 						item: child,
 						depth: depth + 1,
-						expandedPaths: $expandedPaths,
+						state: state,
 						project: project,
-						onFileSelect: onFileSelect,
-						onToggleExpand: onToggleExpand
+						onFileSelect: onFileSelect
 					)
 				}
 			}
