@@ -84,41 +84,44 @@ struct FileTreeRow: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
-			HStack(spacing: 4) {
-				if item.isDirectory {
-					Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-						.font(.system(size: 8, weight: .bold))
-						.foregroundStyle(Theme.textTertiary)
-						.frame(width: 12)
-				} else {
-					Spacer()
-						.frame(width: 12)
-				}
-
-				Image(systemName: item.isDirectory ? "folder.fill" : fileIcon(item.name))
-					.font(.system(size: 11))
-					.foregroundStyle(item.isDirectory ? Theme.yellow : Theme.textSecondary)
-
-				Text(item.name)
-					.font(.system(size: 12))
-					.foregroundStyle(Theme.textPrimary)
-					.lineLimit(1)
-
-				Spacer()
-			}
-			.padding(.leading, CGFloat(depth) * 14 + 6)
-			.padding(.vertical, 3)
-			.padding(.trailing, 6)
-			.background(isHovering ? Theme.surfaceHover : Color.clear)
-			.onHover { hovering in
-				isHovering = hovering
-			}
-			.onTapGesture {
+			Button {
 				if item.isDirectory {
 					onToggleExpand(item.path)
 				} else {
 					onFileSelect(item.path)
 				}
+			} label: {
+				HStack(spacing: 4) {
+					if item.isDirectory {
+						Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+							.font(.system(size: 8, weight: .bold))
+							.foregroundStyle(Theme.textTertiary)
+							.frame(width: 12)
+					} else {
+						Spacer()
+							.frame(width: 12)
+					}
+
+					Image(systemName: item.isDirectory ? "folder.fill" : fileIcon(item.name))
+						.font(.system(size: 11))
+						.foregroundStyle(item.isDirectory ? Theme.yellow : Theme.textSecondary)
+
+					Text(item.name)
+						.font(.system(size: 12))
+						.foregroundStyle(Theme.textPrimary)
+						.lineLimit(1)
+
+					Spacer()
+				}
+				.padding(.leading, CGFloat(depth) * 14 + 6)
+				.padding(.vertical, 3)
+				.padding(.trailing, 6)
+				.background(isHovering ? Theme.surfaceHover : Color.clear)
+			}
+			.buttonStyle(.plain)
+			.accessibilityLabel(item.name)
+			.onHover { hovering in
+				isHovering = hovering
 			}
 
 			// Children
