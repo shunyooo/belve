@@ -120,10 +120,17 @@ struct MainWindow: View {
 		})
 
 		cmds.append(PaletteCommand(title: "Open File (local test)", icon: "doc") {
-			// Quick test: open this project's own Package.swift
-			let path = FileManager.default.currentDirectoryPath + "/Package.swift"
-			if let content = try? String(contentsOfFile: path) {
-				openFile = OpenFile(path: "Package.swift", content: content)
+			// Test: open CLAUDE.md from the project
+			let testFiles = [
+				NSHomeDirectory() + "/src/dock-code/CLAUDE.md",
+				NSHomeDirectory() + "/src/dock-code/Package.swift",
+			]
+			for path in testFiles {
+				if let content = try? String(contentsOfFile: path) {
+					let filename = (path as NSString).lastPathComponent
+					openFile = OpenFile(path: filename, content: content)
+					break
+				}
 			}
 		})
 
