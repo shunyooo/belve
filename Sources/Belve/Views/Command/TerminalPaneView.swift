@@ -1,164 +1,95 @@
 import SwiftUI
-import WebKit
+import SwiftTerm
+import AppKit
 
+/// Terminal view using SwiftTerm for rendering + custom PTYService for process.
 struct TerminalPaneView: NSViewRepresentable {
-	func makeNSView(context: Context) -> WKWebView {
-		let config = WKWebViewConfiguration()
-		config.userContentController.add(context.coordinator, name: "terminalHandler")
+	func makeNSView(context: Context) -> NSView {
+		let container = NSView()
+		container.wantsLayer = true
+		container.layer?.masksToBounds = true
 
-		let webView = WKWebView(frame: .zero, configuration: config)
-		webView.setValue(false, forKey: "drawsBackground")
-		context.coordinator.webView = webView
+		let tv = TerminalView(frame: .zero)
+		tv.translatesAutoresizingMaskIntoConstraints = false
+		tv.wantsLayer = true
+		tv.layer?.masksToBounds = true
+		tv.terminalDelegate = context.coordinator
 
-		if let html = context.coordinator.buildHTML() {
-			webView.loadHTMLString(html, baseURL: nil)
+		// Dark theme
+		tv.nativeBackgroundColor = NSColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 1)
+		tv.nativeForegroundColor = NSColor(red: 0.88, green: 0.89, blue: 0.92, alpha: 1)
+
+		container.addSubview(tv)
+
+		NSLayoutConstraint.activate([
+			tv.topAnchor.constraint(equalTo: container.topAnchor),
+			tv.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+			tv.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+			tv.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+		])
+
+		context.coordinator.terminalView = tv
+
+		DispatchQueue.main.async {
+			context.coordinator.startShell()
+			tv.window?.makeFirstResponder(tv)
 		}
 
-		return webView
+		return container
 	}
 
-	func updateNSView(_ nsView: WKWebView, context: Context) {
+	func updateNSView(_ nsView: NSView, context: Context) {
 	}
 
 	func makeCoordinator() -> Coordinator {
 		Coordinator()
 	}
 
-	class Coordinator: NSObject, WKScriptMessageHandler {
-		weak var webView: WKWebView?
-		private var masterFd: Int32 = -1
-		private var readSource: DispatchSourceRead?
+	class Coordinator: NSObject, TerminalViewDelegate {
+		weak var terminalView: TerminalView?
+		var ptyService: PTYService?
 
-		func buildHTML() -> String? {
-			// Find resources relative to executable
-			let execDir = Bundle.main.executableURL!.deletingLastPathComponent()
+		func startShell() {
+			do {
+				let pty = try PTYService.spawn()
+				self.ptyService = pty
 
-			// SPM puts resources in Belve_Belve.bundle
-			let bundlePath = execDir.appendingPathComponent("Belve_Belve.bundle/Contents/Resources/Resources")
-			let fallbackPath = execDir
-				.deletingLastPathComponent()
-				.deletingLastPathComponent()
-				.deletingLastPathComponent()
-				.appendingPathComponent("Sources/Belve/Resources")
-
-			let resourceDir: URL
-			if FileManager.default.fileExists(atPath: bundlePath.path) {
-				resourceDir = bundlePath
-			} else {
-				resourceDir = fallbackPath
-			}
-
-			guard let htmlTemplate = try? String(contentsOf: resourceDir.appendingPathComponent("terminal.html")),
-				  let js = try? String(contentsOf: resourceDir.appendingPathComponent("terminal-bundle.js")),
-				  let css = try? String(contentsOf: resourceDir.appendingPathComponent("terminal.css"))
-			else {
-				NSLog("[Belve] Failed to load terminal resources from \(resourceDir.path)")
-				return nil
-			}
-
-			var html = htmlTemplate
-			html = html.replacingOccurrences(of: "/* injected at runtime */</style>\n</head>", with: "\(css)</style>\n</head>")
-			html = html.replacingOccurrences(of: "/* injected at runtime */</script>", with: "\(js)</script>")
-			return html
-		}
-
-		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-			guard let body = message.body as? [String: Any],
-				  let type = body["type"] as? String else { return }
-
-			switch type {
-			case "ready":
-				startPTY()
-			case "input":
-				if let data = body["data"] as? String,
-				   let bytes = data.data(using: .utf8) {
-					bytes.withUnsafeBytes { ptr in
-						let _ = write(masterFd, ptr.baseAddress!, ptr.count)
-					}
+				pty.onData = { [weak self] data in
+					let bytes = Array(data)
+					self?.terminalView?.feed(byteArray: bytes[0..<bytes.count])
 				}
-			case "resize":
-				if let cols = body["cols"] as? Int,
-				   let rows = body["rows"] as? Int {
-					var size = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
-					let _ = ioctl(masterFd, TIOCSWINSZ, &size)
+
+				if let tv = terminalView {
+					let terminal = tv.getTerminal()
+					pty.setSize(cols: terminal.cols, rows: terminal.rows)
 				}
-			default:
-				break
+			} catch {
+				NSLog("[Belve] Failed to start PTY: \(error)")
 			}
 		}
 
-		private func startPTY() {
-			var master: Int32 = 0
-			var slave: Int32 = 0
+		// MARK: - TerminalViewDelegate
 
-			guard openpty(&master, &slave, nil, nil, nil) == 0 else {
-				NSLog("[Belve] Failed to openpty")
-				return
-			}
-			self.masterFd = master
-
-			// posix_spawn with file actions
-			var fileActions: posix_spawn_file_actions_t?
-			posix_spawn_file_actions_init(&fileActions)
-			posix_spawn_file_actions_adddup2(&fileActions, slave, STDIN_FILENO)
-			posix_spawn_file_actions_adddup2(&fileActions, slave, STDOUT_FILENO)
-			posix_spawn_file_actions_adddup2(&fileActions, slave, STDERR_FILENO)
-			posix_spawn_file_actions_addclose(&fileActions, master)
-
-			let home = NSHomeDirectory()
-			let envStrings = [
-				"HOME=\(home)",
-				"TERM=xterm-256color",
-				"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-				"LANG=en_US.UTF-8",
-			]
-
-			// Convert to C strings
-			let cEnv = envStrings.map { strdup($0) } + [nil]
-			let cArgs = [strdup("/bin/zsh"), strdup("-l"), nil]
-
-			var pid: pid_t = 0
-			let result = cArgs.withUnsafeBufferPointer { argsPtr in
-				cEnv.withUnsafeBufferPointer { envPtr in
-					posix_spawn(
-						&pid, "/bin/zsh", &fileActions, nil,
-						UnsafeMutablePointer(mutating: argsPtr.baseAddress!),
-						UnsafeMutablePointer(mutating: envPtr.baseAddress!)
-					)
-				}
-			}
-
-			// Free C strings
-			cArgs.forEach { if let p = $0 { free(p) } }
-			cEnv.forEach { if let p = $0 { free(p) } }
-			posix_spawn_file_actions_destroy(&fileActions)
-			close(slave)
-
-			if result != 0 {
-				NSLog("[Belve] posix_spawn failed: \(result)")
-				return
-			}
-
-			// Read from PTY → WebView
-			let source = DispatchSource.makeReadSource(fileDescriptor: master, queue: .global())
-			source.setEventHandler { [weak self] in
-				var buf = [UInt8](repeating: 0, count: 8192)
-				let n = read(master, &buf, buf.count)
-				if n > 0 {
-					let data = Data(buf[0..<n])
-					let b64 = data.base64EncodedString()
-					DispatchQueue.main.async {
-						self?.webView?.evaluateJavaScript("terminalWrite(atob('\(b64)'))")
-					}
-				}
-			}
-			source.resume()
-			self.readSource = source
+		func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+			ptyService?.setSize(cols: newCols, rows: newRows)
 		}
 
-		deinit {
-			readSource?.cancel()
-			if masterFd >= 0 { close(masterFd) }
+		func send(source: TerminalView, data: ArraySlice<UInt8>) {
+			ptyService?.send(Data(data))
 		}
+
+		func scrolled(source: TerminalView, position: Double) {}
+		func setTerminalTitle(source: TerminalView, title: String) {}
+		func setTerminalIconTitle(source: TerminalView, title: String) {}
+		func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+		func clipboardCopy(source: TerminalView, content: Data) {
+			if let str = String(data: content, encoding: .utf8) {
+				NSPasteboard.general.clearContents()
+				NSPasteboard.general.setString(str, forType: .string)
+			}
+		}
+		func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+		func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+		func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
 	}
 }
