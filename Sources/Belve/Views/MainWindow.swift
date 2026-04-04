@@ -111,7 +111,11 @@ struct MainWindow: View {
 			loadProjects()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveOpenFolder)) { _ in
-			openFolder()
+			if commandPaletteState.isPresented && paletteMode == .folderBrowser {
+				commandPaletteState.isPresented = false
+			} else {
+				openFolder()
+			}
 		}
 	}
 
