@@ -9,15 +9,16 @@ struct ProjectListView: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
-			// Top bar: add + notification + toggle
+			// Top bar: traffic light space + buttons
 			HStack(spacing: 4) {
+				Spacer()
+					.frame(width: 60) // space for traffic lights
 				SidebarIconButton(icon: "plus", action: { onAddProject?() })
 				SidebarIconButton(icon: "bell", action: { onOpenNotifications?() })
-				Spacer()
 				SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
+				Spacer()
 			}
-			.padding(.horizontal, 8)
-			.padding(.top, 6)
+			.frame(height: 28)
 			.padding(.bottom, 4)
 
 			// Project list
