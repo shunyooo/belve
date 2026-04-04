@@ -21,8 +21,18 @@ struct BelveApp: App {
 				}
 				.keyboardShortcut("p", modifiers: [.command, .shift])
 			}
+			CommandGroup(replacing: .saveItem) {
+				Button("Save") {
+					NotificationCenter.default.post(name: .belveFileSave, object: nil)
+				}
+				.keyboardShortcut("s", modifiers: .command)
+			}
 		}
 	}
+}
+
+extension Notification.Name {
+	static let belveFileSave = Notification.Name("belveFileSave")
 }
 
 class CommandPaletteState: ObservableObject {

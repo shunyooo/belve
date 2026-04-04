@@ -10,6 +10,8 @@ struct PreviewArea: View {
 	@Binding var openFile: OpenFile?
 	@State private var showFileTree = true
 	@State private var fileTreeWidth: CGFloat = 200
+	@State private var isDirty = false
+	@State private var editedContent: String = ""
 
 	private var rootPath: String {
 		project.remotePath ?? NSHomeDirectory()
@@ -19,16 +21,13 @@ struct PreviewArea: View {
 		HStack(spacing: 0) {
 			// File tree
 			if showFileTree {
-				VStack(spacing: 0) {
-
-					FileTreeView(
-						project: project,
-						rootPath: rootPath,
-						onFileSelect: { path in
-							loadFile(at: path)
-						}
-					)
-				}
+				FileTreeView(
+					project: project,
+					rootPath: rootPath,
+					onFileSelect: { path in
+						loadFile(at: path)
+					}
+				)
 				.frame(width: fileTreeWidth)
 
 				Theme.borderSubtle
@@ -47,9 +46,15 @@ struct PreviewArea: View {
 							.font(.system(size: 11, weight: .medium))
 							.foregroundStyle(Theme.textPrimary)
 							.lineLimit(1)
+						if isDirty {
+							Circle()
+								.fill(Theme.textSecondary)
+								.frame(width: 6, height: 6)
+						}
 						Spacer()
 						Button {
 							openFile = nil
+							isDirty = false
 						} label: {
 							Image(systemName: "xmark")
 								.font(.system(size: 9, weight: .medium))
@@ -67,14 +72,20 @@ struct PreviewArea: View {
 					Group {
 						switch FileType.detect(path: file.path) {
 						case .markdown:
-							MarkdownEditorView(content: file.content) { _ in }
+							MarkdownEditorView(content: file.content) { newContent in
+								editedContent = newContent
+								isDirty = newContent != file.content
+							}
 						case .image, .pdf:
 							MediaPreviewView(path: file.path, sshHost: project.sshHost)
 						case .code, .unknown:
 							CodeEditorView(
 								filename: file.path,
 								content: file.content
-							) { _ in }
+							) { newContent in
+								editedContent = newContent
+								isDirty = newContent != file.content
+							}
 						}
 					}
 					.id(file.path)
@@ -91,6 +102,13 @@ struct PreviewArea: View {
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.background(Theme.surface)
 			}
+		}
+		.onChange(of: openFile) {
+			isDirty = false
+			editedContent = openFile?.content ?? ""
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveFileSave)) { _ in
+			saveCurrentFile()
 		}
 	}
 
@@ -113,6 +131,19 @@ struct PreviewArea: View {
 				}
 			} else {
 				NSLog("[Belve] Failed to read file: \(path)")
+			}
+		}
+	}
+
+	func saveCurrentFile() {
+		guard let file = openFile, isDirty else { return }
+		DispatchQueue.global().async {
+			let success = FileService.writeFile(path: file.path, content: editedContent, sshHost: project.sshHost)
+			DispatchQueue.main.async {
+				if success {
+					openFile = OpenFile(path: file.path, content: editedContent)
+					isDirty = false
+				}
 			}
 		}
 	}

@@ -98,4 +98,48 @@ enum FileService {
 		let data = pipe.fileHandleForReading.readDataToEndOfFile()
 		return String(data: data, encoding: .utf8)
 	}
+
+	static func writeFile(path: String, content: String, sshHost: String? = nil) -> Bool {
+		if let host = sshHost {
+			return writeRemoteFile(path: path, content: content, host: host)
+		}
+		do {
+			try content.write(toFile: path, atomically: true, encoding: .utf8)
+			NSLog("[Belve] File saved: \(path)")
+			return true
+		} catch {
+			NSLog("[Belve] Failed to save file: \(error)")
+			return false
+		}
+	}
+
+	private static func writeRemoteFile(path: String, content: String, host: String) -> Bool {
+		let process = Process()
+		process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+		process.arguments = [
+			"-o", "StrictHostKeyChecking=accept-new",
+			"-o", "ConnectTimeout=5",
+			host,
+			"cat > \(path)"
+		]
+
+		let inputPipe = Pipe()
+		process.standardInput = inputPipe
+		process.standardOutput = FileHandle.nullDevice
+		process.standardError = FileHandle.nullDevice
+
+		do {
+			try process.run()
+			if let data = content.data(using: .utf8) {
+				inputPipe.fileHandleForWriting.write(data)
+			}
+			inputPipe.fileHandleForWriting.closeFile()
+			process.waitUntilExit()
+			NSLog("[Belve] Remote file saved: \(host):\(path)")
+			return process.terminationStatus == 0
+		} catch {
+			NSLog("[Belve] Failed to save remote file: \(error)")
+			return false
+		}
+	}
 }
