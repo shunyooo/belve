@@ -271,9 +271,82 @@ osascript -e 'tell app "System Events" to tell process "Belve" to set size of wi
 - Accessibility 権限がターミナルに必要（System Settings > Privacy & Security > Accessibility）
 - `screencapture -x` はシャッター音なし
 
-## 初手の作業
+## 完了した作業
 
-1. ~~現在の dock-code ソースを `archived/` に移動~~ ✅
-2. ~~`Package.swift` + `BelveApp.swift` + `MainWindow.swift` を作成~~ ✅
-3. ~~SwiftTerm を SPM 依存に追加~~ ✅
-4. TerminalView でローカルシェルが動くところまで
+- ✅ アプリシェル（SwiftUI + ダークテーマ + タイトルバー非表示）
+- ✅ サイドバー（プロジェクト一覧 + トグル）
+- ✅ ローカルターミナル（SwiftTerm + PTYService + .app バンドル）
+- ✅ Command / Preview 分割レイアウト（カスタムドラッグ分割）
+- ✅ コマンドパレット（Cmd+Shift+P）
+- ✅ プロジェクト管理（追加/削除 + JSON 永続化）
+- ✅ SSH 接続（~/.ssh/config 読み取り + コマンドパレットから選択）
+- ✅ コードエディタ（CodeMirror 6、15言語対応）
+- ✅ ファイルツリー（ローカル + SSH リモート対応）
+- ✅ Markdown WYSIWYG（Milkdown Crepe）
+- ✅ 画像プレビュー（NSImage）
+- ✅ ターミナルペイン分割（縦分割）
+- ✅ UI 自動テスト基盤（osascript + screencapture）
+
+## TODO / ロードマップ
+
+### 高優先度
+
+#### ターミナルペイン縦横分割
+- 現状は縦分割のみ。縦横自由なグリッド分割に対応する
+- cmux のような柔軟なペイン管理を目指す
+- ペインごとに独立した PTY セッション
+
+#### 通知システム（cmux 参考）
+- AI エージェント（Claude Code 等）の実行状態を通知
+- ペインに通知リング（視覚的インジケーター）
+- サイドバーに git ブランチ、PR 情報、最新通知を表示
+- Cmd+Shift+U で未読通知にジャンプ
+- 参考: https://github.com/manaflow-ai/cmux
+
+#### DevContainer 対応
+- コマンドパレットから「Open in DevContainer」
+- `devcontainer` CLI 連携（`devcontainer up` / `exec`）
+- SSH ホスト上のコンテナに接続
+
+#### ファイル保存
+- エディタでの変更をローカル/SSH 先に書き戻す
+- Cmd+S ショートカット
+- 未保存状態のインジケーター（ドット付きタブ）
+
+### 中優先度
+
+#### ターミナルエンジン差し替え検討
+- 現在: SwiftTerm（Pure Swift、組み込みやすい）
+- 候補: libghostty（GPU 120fps、Ghostty config 互換）
+- Protocol で抽象化済みなので差し替え可能
+- libghostty は Zig ビルドが必要、導入コスト高
+- パフォーマンス問題が出てから検討で OK
+
+#### Web プレビュー
+- Preview エリアでの Web ページ表示
+- ポートフォワード先のローカルサーバー確認用
+- cmux の agent-browser のような scriptable API も検討
+
+#### プロジェクト名編集
+- サイドバーでダブルクリック or コマンドパレットで名前変更
+
+### 低優先度
+
+#### hiddenTitleBar の復活
+- 現在は `unifiedCompact` + `.hiddenTitleBar` 使用中
+- SwiftTerm の AutoLayout クラッシュは解決済み
+- よりクリーンなウィンドウクロムを目指す
+
+#### tmux 連携
+- SSH 先の tmux セッションにアタッチ
+- ペイン状態の保持・復元
+
+## 競合・参考プロダクト
+
+| プロダクト | 特徴 | Belve との差分 |
+|---|---|---|
+| [cmux](https://github.com/manaflow-ai/cmux) | AI エージェント管理特化、libghostty、通知システム | Belve はエディタ + ファイルツリー + マルチプロジェクト。cmux は DevContainer 非対応 |
+| VS Code | フル IDE、拡張機能エコシステム | Belve は軽量ネイティブ、余計な機能なし |
+| Cursor | AI エディタ | Belve はターミナル中心、マルチプロジェクト |
+| Zed | ネイティブ高速エディタ | Belve は SSH/DevContainer + ターミナルが主軸 |
+| Warp | モダンターミナル | Belve はエディタ + ファイルツリー + プロジェクト管理 |
