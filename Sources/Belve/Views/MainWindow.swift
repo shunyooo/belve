@@ -6,6 +6,7 @@ struct MainWindow: View {
 	@EnvironmentObject var commandPaletteState: CommandPaletteState
 	@State private var splitPosition: CGFloat = 500
 	@State private var projects: [Project] = []
+	@State private var openFile: OpenFile?
 	@State private var paletteMode: PaletteMode = .commands
 
 	enum PaletteMode {
@@ -51,7 +52,7 @@ struct MainWindow: View {
 									minRight: 250
 								)
 
-								PreviewArea(project: project)
+								PreviewArea(project: project, openFile: $openFile)
 									.frame(maxWidth: .infinity)
 							}
 							.onAppear {
@@ -116,6 +117,14 @@ struct MainWindow: View {
 		cmds.append(PaletteCommand(title: "SSH Connect", icon: "link") {
 			paletteMode = .sshHosts
 			commandPaletteState.isPresented = true
+		})
+
+		cmds.append(PaletteCommand(title: "Open File (local test)", icon: "doc") {
+			// Quick test: open this project's own Package.swift
+			let path = FileManager.default.currentDirectoryPath + "/Package.swift"
+			if let content = try? String(contentsOfFile: path) {
+				openFile = OpenFile(path: "Package.swift", content: content)
+			}
 		})
 
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {

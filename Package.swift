@@ -11,7 +11,10 @@ let package = Package(
 		.executableTarget(
 			name: "Belve",
 			dependencies: ["SwiftTerm"],
-			path: "Sources/Belve"
+			path: "Sources/Belve",
+			resources: [
+				.copy("Resources"),
+			]
 		),
 		.testTarget(
 			name: "BelveTests",
