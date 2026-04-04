@@ -22,6 +22,12 @@ struct BelveApp: App {
 				}
 				.keyboardShortcut("p", modifiers: [.command, .shift])
 			}
+			CommandGroup(after: .newItem) {
+				Button("Open Folder...") {
+					NotificationCenter.default.post(name: .belveOpenFolder, object: nil)
+				}
+				.keyboardShortcut("o", modifiers: .command)
+			}
 			CommandGroup(replacing: .saveItem) {
 				Button("Save") {
 					NotificationCenter.default.post(name: .belveFileSave, object: nil)
@@ -34,6 +40,7 @@ struct BelveApp: App {
 
 extension Notification.Name {
 	static let belveFileSave = Notification.Name("belveFileSave")
+	static let belveOpenFolder = Notification.Name("belveOpenFolder")
 }
 
 class CommandPaletteState: ObservableObject {

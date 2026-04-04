@@ -97,6 +97,9 @@ struct MainWindow: View {
 		.onAppear {
 			loadProjects()
 		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveOpenFolder)) { _ in
+			openFolder()
+		}
 	}
 
 	private func buildPaletteCommands() -> [PaletteCommand] {
@@ -175,6 +178,35 @@ struct MainWindow: View {
 			saveProjects()
 		}
 		NSLog("[Belve] DevContainer enabled for \(project.name) at \(sshHost):\(workspacePath)")
+	}
+
+	private func openFolder() {
+		let panel = NSOpenPanel()
+		panel.canChooseFiles = false
+		panel.canChooseDirectories = true
+		panel.allowsMultipleSelection = false
+		panel.message = "Select a folder to open"
+
+		guard panel.runModal() == .OK, let url = panel.url else { return }
+		let path = url.path
+
+		if let index = projects.firstIndex(where: { $0.id == selectedProject?.id }) {
+			// Update current project's path
+			projects[index].remotePath = path
+			let project = projects[index]
+			selectedProject = nil
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+				selectedProject = project
+				saveProjects()
+			}
+		} else {
+			// Create new project with this path
+			let project = Project(name: url.lastPathComponent, remotePath: path)
+			projects.append(project)
+			selectedProject = project
+			saveProjects()
+		}
+		NSLog("[Belve] Opened folder: \(path)")
 	}
 
 	private func addProject() {
