@@ -87,7 +87,7 @@ struct TopBar: View {
 				showSidebar.toggle()
 			} label: {
 				Image(systemName: "sidebar.left")
-					.font(.system(size: 13, weight: .medium))
+					.font(.system(size: 11, weight: .medium))
 					.foregroundStyle(isHoveringSidebar ? Theme.textPrimary : Theme.textTertiary)
 			}
 			.buttonStyle(.plain)
@@ -97,22 +97,22 @@ struct TopBar: View {
 
 			if let project {
 				Text(project.name)
-					.font(Theme.fontHeading)
+					.font(.system(size: 11, weight: .semibold))
 					.foregroundStyle(Theme.textPrimary)
 
 				if let host = project.sshHost {
 					Text("·")
 						.foregroundStyle(Theme.textTertiary)
 					Text(host)
-						.font(.system(size: 11, weight: .regular, design: .monospaced))
+						.font(.system(size: 10, weight: .regular, design: .monospaced))
 						.foregroundStyle(Theme.textTertiary)
 				}
 			}
 
 			Spacer()
 		}
-		.padding(.horizontal, 12)
-		.frame(height: 28)
+		.padding(.horizontal, 10)
+		.frame(height: 22)
 		.background(Theme.surface)
 	}
 }
