@@ -35,7 +35,7 @@ struct ProjectListView: View {
 				SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 			}
 			.padding(.leading, 72)
-			.offset(y: -16) // pull up into titlebar area to align with traffic lights
+			.padding(.top, 2)
 		}
 	}
 }

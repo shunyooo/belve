@@ -8,9 +8,10 @@ struct BelveApp: App {
 		WindowGroup {
 			MainWindow()
 				.frame(minWidth: 900, minHeight: 500)
+				.ignoresSafeArea()
 				.environmentObject(appDelegate.commandPaletteState)
 		}
-		.windowStyle(.hiddenTitleBar)
+		// Window style configured via AppKit in AppDelegate
 		.defaultSize(width: 1200, height: 800)
 		.commands {
 			CommandGroup(after: .toolbar) {
@@ -32,6 +33,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		NSApp.activate(ignoringOtherApps: true)
+
+		// Configure window like cmux: fullSizeContentView so content starts at y=0
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+			guard let window = NSApp.windows.first else { return }
+			window.styleMask.insert(.fullSizeContentView)
+			window.titlebarAppearsTransparent = true
+			window.titleVisibility = .hidden
+			window.isMovableByWindowBackground = true
+			NSLog("[Belve] Window configured: fullSizeContentView=\(window.styleMask.contains(.fullSizeContentView))")
+		}
+
 		NSLog("[Belve] App launched")
 	}
 
