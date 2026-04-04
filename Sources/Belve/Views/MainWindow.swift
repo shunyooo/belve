@@ -286,8 +286,8 @@ struct TopBar: View {
 
 			Spacer()
 		}
-		.padding(.horizontal, 10)
-		.frame(height: 22)
-		.background(Theme.surface)
+		.padding(.horizontal, 12)
+		.frame(height: 34)
+		.background(Theme.bg)
 	}
 }
