@@ -3,47 +3,59 @@ import SwiftUI
 struct ProjectListView: View {
 	let projects: [Project]
 	@Binding var selectedProject: Project?
+	var onAddProject: (() -> Void)?
+	var onToggleSidebar: (() -> Void)?
+	var onOpenNotifications: (() -> Void)?
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
-			// Section label (with traffic light clearance)
-			Text("PROJECTS")
-				.font(.system(size: 10, weight: .semibold))
-				.foregroundStyle(Theme.textTertiary)
-				.tracking(1.2)
-				.padding(.horizontal, 16)
-				.padding(.top, 12)
-				.padding(.bottom, 6)
-
-			// Project list
-			VStack(spacing: 2) {
-				ForEach(projects) { project in
-					Button {
-						selectedProject = project
-					} label: {
-						ProjectRow(
-							project: project,
-							isSelected: selectedProject == project
-						)
-					}
-					.buttonStyle(.plain)
-				}
+			// Top bar: add + notification + toggle
+			HStack(spacing: 4) {
+				SidebarIconButton(icon: "plus", action: { onAddProject?() })
+				SidebarIconButton(icon: "bell", action: { onOpenNotifications?() })
+				Spacer()
+				SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 			}
 			.padding(.horizontal, 8)
+			.padding(.top, 6)
+			.padding(.bottom, 4)
 
-			Spacer()
-
-			// Bottom status
-			HStack(spacing: 6) {
-				Circle()
-					.fill(Theme.green)
-					.frame(width: 6, height: 6)
-				Text("Connected")
-					.font(.system(size: 10, weight: .medium))
-					.foregroundStyle(Theme.textTertiary)
+			// Project list
+			ScrollView {
+				VStack(spacing: 2) {
+					ForEach(projects) { project in
+						Button {
+							selectedProject = project
+						} label: {
+							ProjectRow(
+								project: project,
+								isSelected: selectedProject == project
+							)
+						}
+						.buttonStyle(.plain)
+					}
+				}
+				.padding(.horizontal, 8)
 			}
-			.padding(.horizontal, 16)
-			.padding(.vertical, 10)
+		}
+	}
+}
+
+struct SidebarIconButton: View {
+	let icon: String
+	let action: () -> Void
+	@State private var isHovering = false
+
+	var body: some View {
+		Button(action: action) {
+			Image(systemName: icon)
+				.font(.system(size: 11, weight: .medium))
+				.foregroundStyle(isHovering ? Theme.textPrimary : Theme.textTertiary)
+				.frame(width: 22, height: 22)
+		}
+		.buttonStyle(.plain)
+		.onHover { hovering in
+			isHovering = hovering
 		}
 	}
 }
@@ -85,9 +97,7 @@ struct ProjectRow: View {
 		)
 		.contentShape(Rectangle())
 		.onHover { hovering in
-			withAnimation(.easeInOut(duration: 0.12)) {
-				isHovering = hovering
-			}
+			isHovering = hovering
 		}
 	}
 }

@@ -22,7 +22,10 @@ struct MainWindow: View {
 				if showSidebar {
 					ProjectListView(
 						projects: projects,
-						selectedProject: $selectedProject
+						selectedProject: $selectedProject,
+						onAddProject: { addProject() },
+						onToggleSidebar: { showSidebar = false },
+						onOpenNotifications: { /* TODO: notification panel */ }
 					)
 					.frame(width: 200)
 					.background(Theme.bg)
