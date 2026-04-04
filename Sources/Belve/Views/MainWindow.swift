@@ -8,6 +8,7 @@ struct MainWindow: View {
 	@State private var projects: [Project] = []
 	@State private var openFile: OpenFile?
 	@State private var paletteMode: PaletteMode = .commands
+	@StateObject private var commandAreaState = CommandAreaState()
 
 	enum PaletteMode {
 		case commands
@@ -42,7 +43,7 @@ struct MainWindow: View {
 					if let project = selectedProject {
 						GeometryReader { geo in
 							HStack(spacing: 0) {
-								CommandArea(project: project)
+								CommandArea(project: project, state: commandAreaState)
 									.id(project.id)
 									.frame(width: splitPosition)
 
@@ -132,6 +133,10 @@ struct MainWindow: View {
 					break
 				}
 			}
+		})
+
+		cmds.append(PaletteCommand(title: "Split Terminal", icon: "rectangle.split.1x2") {
+			commandAreaState.split()
 		})
 
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {

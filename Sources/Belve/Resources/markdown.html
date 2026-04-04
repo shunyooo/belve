@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+html, body {
+	margin: 0;
+	padding: 0;
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	background: #1a1a1f;
+	color: #e0e3eb;
+}
+#editor {
+	height: 100vh;
+	overflow-y: auto;
+	padding: 8px 16px;
+	box-sizing: border-box;
+}
+.milkdown { padding: 0 !important; margin: 0 !important; }
+.milkdown .ProseMirror { padding: 8px 16px !important; }
+.milkdown * { font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }
+.milkdown code, .milkdown pre { font-family: 'SF Mono', Menlo, monospace !important; }
+.milkdown .ProseMirror h1 { font-size: 1.6em !important; font-weight: 600 !important; }
+.milkdown .ProseMirror h2 { font-size: 1.35em !important; font-weight: 600 !important; }
+.milkdown .ProseMirror h3 { font-size: 1.15em !important; font-weight: 600 !important; }
+.milkdown .ProseMirror p { font-size: 14px !important; line-height: 1.6 !important; }
+</style>
+<style>/* MARKDOWN_CSS */</style>
+</head>
+<body>
+<div id="editor"></div>
+<script>/* MARKDOWN_JS */</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "belve-web-markdown",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --outfile=../Sources/Belve/Resources/markdown-bundle.js --format=iife --minify --loader:.woff=dataurl --loader:.woff2=dataurl --loader:.ttf=dataurl"
+  },
+  "dependencies": {
+    "@milkdown/crepe": "^7.20.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
