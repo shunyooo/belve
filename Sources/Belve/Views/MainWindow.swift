@@ -6,6 +6,12 @@ struct MainWindow: View {
 	@EnvironmentObject var commandPaletteState: CommandPaletteState
 	@State private var splitPosition: CGFloat = 500
 	@State private var projects: [Project] = []
+	@State private var paletteMode: PaletteMode = .commands
+
+	enum PaletteMode {
+		case commands
+		case sshHosts
+	}
 
 	var body: some View {
 		ZStack {
@@ -72,10 +78,15 @@ struct MainWindow: View {
 				VStack {
 					CommandPaletteView(
 						isPresented: $commandPaletteState.isPresented,
-						commands: buildCommands()
+						commands: buildPaletteCommands()
 					)
 					.padding(.top, 80)
 					Spacer()
+				}
+				.onChange(of: commandPaletteState.isPresented) {
+					if commandPaletteState.isPresented {
+						paletteMode = .commands
+					}
 				}
 			}
 		}
@@ -86,7 +97,16 @@ struct MainWindow: View {
 		}
 	}
 
-	private func buildCommands() -> [PaletteCommand] {
+	private func buildPaletteCommands() -> [PaletteCommand] {
+		switch paletteMode {
+		case .commands:
+			return buildMainCommands()
+		case .sshHosts:
+			return buildSSHHostCommands()
+		}
+	}
+
+	private func buildMainCommands() -> [PaletteCommand] {
 		var cmds: [PaletteCommand] = []
 
 		cmds.append(PaletteCommand(title: "New Project", icon: "plus.circle") {
@@ -94,7 +114,8 @@ struct MainWindow: View {
 		})
 
 		cmds.append(PaletteCommand(title: "SSH Connect", icon: "link") {
-			// TODO: SSH host selection
+			paletteMode = .sshHosts
+			commandPaletteState.isPresented = true
 		})
 
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
@@ -110,12 +131,44 @@ struct MainWindow: View {
 		return cmds
 	}
 
+	private func buildSSHHostCommands() -> [PaletteCommand] {
+		let hosts = SSHConfigParser.parse()
+		return hosts.map { host in
+			let subtitle = [host.user, host.hostname].compactMap { $0 }.joined(separator: "@")
+			return PaletteCommand(
+				title: "\(host.name)" + (subtitle.isEmpty ? "" : " (\(subtitle))"),
+				icon: "network"
+			) {
+				connectSSH(host: host.name)
+			}
+		}
+	}
+
 	private func addProject() {
 		let name = "Project \(projects.count + 1)"
 		let project = Project(name: name)
 		projects.append(project)
 		selectedProject = project
 		saveProjects()
+	}
+
+	private func connectSSH(host: String) {
+		guard let index = projects.firstIndex(where: { $0.id == selectedProject?.id }) else {
+			// No project selected, create one
+			let project = Project(name: host, sshHost: host)
+			projects.append(project)
+			selectedProject = project
+			saveProjects()
+			return
+		}
+		projects[index].sshHost = host
+		// Force terminal recreation by updating selectedProject
+		let project = projects[index]
+		selectedProject = nil
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+			selectedProject = project
+			saveProjects()
+		}
 	}
 
 	private func deleteSelectedProject() {
