@@ -85,17 +85,25 @@ dock/                              # リポジトリルート
 4. `TerminalView.swift` — SwiftTerm を NSViewRepresentable でラップ、ローカルシェル起動
 5. **検証**: `swift build && swift run` でアプリ起動、ターミナルで `ls` 等が動く
 
-### Phase 2: SSH 接続
+### Phase 2: コマンドパレット + プロジェクト管理
 
-**ゴール**: SSH 先のリモートシェルが使える
+**ゴール**: プロジェクトの追加/削除、コマンドパレットで操作
 
-1. `SSHService.swift` — `Process` で `ssh` コマンドを PTY 経由で起動
-2. `PTYService.swift` — `forkpty` / `openpty` ラッパー
-3. `TerminalView` に SSH セッション接続機能を追加
-4. プロジェクトモデルに SSH ホスト情報を追加
-5. **検証**: サイドバーからプロジェクト選択 → SSH 接続 → リモートシェル操作
+1. コマンドパレット UI（Cmd+Shift+P でオーバーレイ表示）
+2. プロジェクト追加/削除（名前入力 → ローカルシェルで起動）
+3. プロジェクト永続化（JSON ファイル）
+4. **検証**: Cmd+Shift+P → 「New Project」→ 名前入力 → サイドバーに追加
 
-### Phase 3: コードエディタ
+### Phase 3: SSH 接続
+
+**ゴール**: コマンドパレットから SSH 接続
+
+1. `~/.ssh/config` 読み取り → ホスト一覧取得
+2. コマンドパレット → 「SSH Connect」→ ホスト選択 → PTYService で ssh 起動
+3. プロジェクトの接続状態を更新
+4. **検証**: コマンドパレット → SSH Connect → ホスト選択 → リモートシェル操作
+
+### Phase 4: コードエディタ
 
 **ゴール**: リモートファイルを開いて編集・保存
 
@@ -106,7 +114,7 @@ dock/                              # リポジトリルート
 5. ファイル保存（`ssh` 経由で書き込み）
 6. **検証**: ファイルツリーからファイル選択 → 編集 → 保存 → 再度開いて反映確認
 
-### Phase 4: Markdown WYSIWYG
+### Phase 5: Markdown WYSIWYG
 
 **ゴール**: `.md` ファイルを WYSIWYG で編集
 
@@ -115,7 +123,7 @@ dock/                              # リポジトリルート
 3. `.md` ファイルは自動的に Markdown エディタで開く
 4. **検証**: `.md` ファイル開く → WYSIWYG 編集 → 保存
 
-### Phase 5: DevContainer + プロジェクト永続化
+### Phase 6: DevContainer
 
 **ゴール**: devcontainer.json があるプロジェクトでコンテナ内開発
 
@@ -151,9 +159,54 @@ dock/                              # リポジトリルート
 **Command エリア（左）**: ターミナルペイン。縦横自由にグリッド分割可能。tmux 連携で SSH 先のシェルを操作
 **Preview エリア（右）**: ファイルツリー + コードエディタ / Markdown WYSIWYG / Web プレビューをタブ切り替え。ファイルの中身を確認・編集する場所
 
+### プロジェクトモデル
+
+**プロジェクト = 空の箱**。作成時は名前だけ。接続先はコマンドパレットから後で設定。
+
+```
+Project {
+    id: UUID
+    name: String
+    connectionType: .local | .ssh(host) | .devContainer(host, containerPath)
+    remotePath: String?     // リモートのワークスペースパス
+}
+```
+
+**ライフサイクル:**
+1. 「+ New Project」→ 名前入力 → ローカルシェルで起動
+2. コマンドパレット（Cmd+Shift+P）→「SSH Connect」→ `~/.ssh/config` のホスト一覧から選択
+3. コマンドパレット → 「Open in DevContainer」→ devcontainer.json のあるパスを指定
+4. プロジェクトの接続状態はサイドバーのドットで表示（緑=接続中、青=ローカル）
+
+**初期画面（プロジェクトゼロの時）:**
+```
+┌──────────────────────────────┐
+│                              │
+│     Welcome to Belve         │
+│                              │
+│  [📁 Open Local Folder]     │
+│  [🔗 Connect via SSH]       │
+│  [📦 Open DevContainer]     │
+│                              │
+└──────────────────────────────┘
+```
+
+### コマンドパレット（Cmd+Shift+P）
+
+VS Code の Cmd+Shift+P に相当。プロジェクト内の全操作のエントリポイント。
+
+**コマンド一覧:**
+- `SSH Connect` — `~/.ssh/config` のホスト一覧 → 選択 → SSH 接続
+- `Open DevContainer` — リモートパス指定 → `devcontainer up` → コンテナ接続
+- `Open File` — ファイルツリーからファイルを開く（Preview エリア）
+- `Split Terminal` — ターミナルペインを分割
+- `Switch Project` — Cmd+1/2/3 でも可
+
+**UI:** ウィンドウ中央にオーバーレイ表示。テキスト入力 + フィルタリングされたコマンドリスト。
+
 ### UX 原則
 
-- **キーボードファースト**: Cmd+K でコマンドパレット、Cmd+P でファイル検索
+- **キーボードファースト**: Cmd+Shift+P でコマンドパレット、Cmd+P でファイル検索
 - **高速切り替え**: Cmd+1/2/3 でプロジェクト切り替え
 - **ネイティブ感**: macOS 標準のショートカット遵守、spring アニメーション
 - **ミニマル**: 不要な UI 要素は出さない。Typora / Linear のような体験
