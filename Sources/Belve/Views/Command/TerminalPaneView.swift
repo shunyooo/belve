@@ -4,6 +4,7 @@ import AppKit
 
 struct TerminalPaneView: NSViewRepresentable {
 	let project: Project
+	@EnvironmentObject var notificationStore: NotificationStore
 
 	func makeNSView(context: Context) -> TerminalView {
 		let tv = TerminalView(frame: .zero)
@@ -13,6 +14,7 @@ struct TerminalPaneView: NSViewRepresentable {
 
 		context.coordinator.terminalView = tv
 		context.coordinator.project = project
+		context.coordinator.notificationStore = notificationStore
 
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
 			context.coordinator.startShell()
@@ -33,6 +35,7 @@ struct TerminalPaneView: NSViewRepresentable {
 		weak var terminalView: TerminalView?
 		var ptyService: PTYService?
 		var project: Project?
+		var notificationStore: NotificationStore?
 
 		func startShell() {
 			guard let tv = terminalView else { return }
@@ -59,6 +62,11 @@ struct TerminalPaneView: NSViewRepresentable {
 				pty.onData = { [weak self] data in
 					let bytes = Array(data)
 					self?.terminalView?.feed(byteArray: bytes[0..<bytes.count])
+				}
+
+				pty.onNotification = { [weak self] title, body in
+					guard let projectId = self?.project?.id else { return }
+					self?.notificationStore?.add(projectId: projectId, title: title, body: body)
 				}
 
 				let terminal = tv.getTerminal()

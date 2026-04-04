@@ -3,6 +3,7 @@ import SwiftUI
 struct ProjectListView: View {
 	let projects: [Project]
 	@Binding var selectedProject: Project?
+	@EnvironmentObject var notificationStore: NotificationStore
 	var onAddProject: (() -> Void)?
 	var onToggleSidebar: (() -> Void)?
 	var onOpenNotifications: (() -> Void)?
@@ -18,7 +19,8 @@ struct ProjectListView: View {
 						} label: {
 							ProjectRow(
 								project: project,
-								isSelected: selectedProject == project
+								isSelected: selectedProject == project,
+								unreadCount: notificationStore.unreadCount(for: project.id)
 							)
 						}
 						.buttonStyle(.plain)
@@ -30,7 +32,15 @@ struct ProjectListView: View {
 		.overlay(alignment: .topTrailing) {
 			HStack(spacing: 4) {
 				SidebarIconButton(icon: "plus", action: { onAddProject?() })
-				SidebarIconButton(icon: "bell", action: { onOpenNotifications?() })
+				ZStack(alignment: .topTrailing) {
+					SidebarIconButton(icon: "bell", action: { onOpenNotifications?() })
+					if notificationStore.totalUnreadCount() > 0 {
+						Circle()
+							.fill(Theme.red)
+							.frame(width: 8, height: 8)
+							.offset(x: 2, y: -2)
+					}
+				}
 				SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 			}
 			.padding(.trailing, 6)
@@ -61,6 +71,7 @@ struct SidebarIconButton: View {
 struct ProjectRow: View {
 	let project: Project
 	let isSelected: Bool
+	var unreadCount: Int = 0
 	@State private var isHovering = false
 
 	var body: some View {
@@ -75,6 +86,16 @@ struct ProjectRow: View {
 				.lineLimit(1)
 
 			Spacer()
+
+			if unreadCount > 0 {
+				Text("\(unreadCount)")
+					.font(.system(size: 9, weight: .bold))
+					.foregroundStyle(.white)
+					.padding(.horizontal, 5)
+					.padding(.vertical, 1)
+					.background(Theme.accent)
+					.cornerRadius(6)
+			}
 		}
 		.padding(.horizontal, 10)
 		.padding(.vertical, 7)

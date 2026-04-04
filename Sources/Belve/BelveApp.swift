@@ -11,6 +11,7 @@ struct BelveApp: App {
 				.frame(minWidth: 900, minHeight: 500)
 				.ignoresSafeArea()
 				.environmentObject(appDelegate.commandPaletteState)
+				.environmentObject(appDelegate.notificationStore)
 		}
 		.windowStyle(.hiddenTitleBar)
 		.defaultSize(width: 1200, height: 800)
@@ -41,6 +42,7 @@ class CommandPaletteState: ObservableObject {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
 	let commandPaletteState = CommandPaletteState()
+	let notificationStore = NotificationStore()
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		NSApp.activate(ignoringOtherApps: true)

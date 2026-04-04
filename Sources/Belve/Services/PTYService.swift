@@ -8,6 +8,8 @@ class PTYService {
 	private var readSource: DispatchSourceRead?
 
 	var onData: ((Data) -> Void)?
+	var onNotification: ((String, String) -> Void)? // (title, body)
+	private var oscBuffer = Data()
 
 	private init(masterFd: Int32, pid: pid_t) {
 		self.masterFd = masterFd
@@ -115,6 +117,7 @@ class PTYService {
 			let n = read(fd, &buf, buf.count)
 			if n > 0 {
 				let data = Data(buf[0..<n])
+				self?.scanForOSC(data)
 				DispatchQueue.main.async {
 					self?.onData?(data)
 				}
@@ -122,6 +125,44 @@ class PTYService {
 		}
 		source.resume()
 		self.readSource = source
+	}
+
+	/// Scan for OSC 9/99/777 notification sequences: \e]9;text\a or \e]9;text\e\\
+	private func scanForOSC(_ data: Data) {
+		guard let str = String(data: data, encoding: .utf8) else { return }
+		// Pattern: \x1b]9;...\x07  or  \x1b]99;...\x07  or  \x1b]777;...\x07
+		let patterns = [
+			try? NSRegularExpression(pattern: "\u{1b}\\]9;([^\u{07}\u{1b}]*)\u{07}"),
+			try? NSRegularExpression(pattern: "\u{1b}\\]99;([^\u{07}\u{1b}]*)\u{07}"),
+			try? NSRegularExpression(pattern: "\u{1b}\\]777;notify;([^;]*);([^\u{07}\u{1b}]*)\u{07}"),
+		]
+		let nsStr = str as NSString
+		let range = NSRange(location: 0, length: nsStr.length)
+
+		// OSC 9 and 99: body only
+		for pattern in patterns.prefix(2) {
+			pattern?.enumerateMatches(in: str, range: range) { match, _, _ in
+				if let match, let bodyRange = Range(match.range(at: 1), in: str) {
+					let body = String(str[bodyRange])
+					DispatchQueue.main.async { [weak self] in
+						self?.onNotification?("Terminal", body)
+					}
+				}
+			}
+		}
+
+		// OSC 777: title and body
+		patterns[2]?.enumerateMatches(in: str, range: range) { match, _, _ in
+			if let match,
+			   let titleRange = Range(match.range(at: 1), in: str),
+			   let bodyRange = Range(match.range(at: 2), in: str) {
+				let title = String(str[titleRange])
+				let body = String(str[bodyRange])
+				DispatchQueue.main.async { [weak self] in
+					self?.onNotification?(title, body)
+				}
+			}
+		}
 	}
 
 	deinit {
