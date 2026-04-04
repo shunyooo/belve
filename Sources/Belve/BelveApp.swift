@@ -9,7 +9,7 @@ struct BelveApp: App {
 			MainWindow()
 				.frame(minWidth: 900, minHeight: 500)
 		}
-		.windowToolbarStyle(.unifiedCompact)
+		.windowStyle(.hiddenTitleBar)
 		.defaultSize(width: 1200, height: 800)
 	}
 }
