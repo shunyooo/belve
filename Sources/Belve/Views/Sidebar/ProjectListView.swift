@@ -18,15 +18,15 @@ struct ProjectListView: View {
 			// Project list
 			VStack(spacing: 2) {
 				ForEach(projects) { project in
-					ProjectRow(
-						project: project,
-						isSelected: selectedProject == project
-					)
-					.onTapGesture {
-						withAnimation(.easeInOut(duration: 0.15)) {
-							selectedProject = project
-						}
+					Button {
+						selectedProject = project
+					} label: {
+						ProjectRow(
+							project: project,
+							isSelected: selectedProject == project
+						)
 					}
+					.buttonStyle(.plain)
 				}
 			}
 			.padding(.horizontal, 8)

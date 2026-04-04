@@ -3,6 +3,8 @@ import SwiftTerm
 import AppKit
 
 struct TerminalPaneView: NSViewRepresentable {
+	let project: Project
+
 	func makeNSView(context: Context) -> TerminalView {
 		let tv = TerminalView(frame: .zero)
 		tv.terminalDelegate = context.coordinator
@@ -10,6 +12,7 @@ struct TerminalPaneView: NSViewRepresentable {
 		tv.nativeForegroundColor = NSColor(Theme.textPrimary)
 
 		context.coordinator.terminalView = tv
+		context.coordinator.project = project
 
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
 			context.coordinator.startShell()
@@ -29,11 +32,28 @@ struct TerminalPaneView: NSViewRepresentable {
 	class Coordinator: NSObject, TerminalViewDelegate {
 		weak var terminalView: TerminalView?
 		var ptyService: PTYService?
+		var project: Project?
 
 		func startShell() {
 			guard let tv = terminalView else { return }
 			do {
-				let pty = try PTYService.spawn()
+				let pty: PTYService
+				if let sshHost = project?.sshHost {
+					// SSH connection
+					NSLog("[Belve] Connecting to SSH host: \(sshHost)")
+					pty = try PTYService.spawn(
+						shell: "/usr/bin/ssh",
+						args: [
+							"-o", "StrictHostKeyChecking=accept-new",
+							"-o", "ServerAliveInterval=30",
+							"-t",
+							sshHost,
+						]
+					)
+				} else {
+					// Local shell
+					pty = try PTYService.spawn()
+				}
 				self.ptyService = pty
 
 				pty.onData = { [weak self] data in
@@ -43,7 +63,7 @@ struct TerminalPaneView: NSViewRepresentable {
 
 				let terminal = tv.getTerminal()
 				pty.setSize(cols: terminal.cols, rows: terminal.rows)
-				NSLog("[Belve] Shell started, cols=\(terminal.cols) rows=\(terminal.rows)")
+				NSLog("[Belve] Shell started for '\(project?.name ?? "unknown")', cols=\(terminal.cols) rows=\(terminal.rows)")
 			} catch {
 				NSLog("[Belve] Failed to start PTY: \(error)")
 			}

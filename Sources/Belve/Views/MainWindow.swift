@@ -6,8 +6,8 @@ struct MainWindow: View {
 	@State private var splitPosition: CGFloat = 500
 	@State private var projects: [Project] = [
 		Project(name: "Local Shell"),
-		Project(name: "clay-api-flamel", sshHost: "kawamoto-clay-dev-v2"),
-		Project(name: "clay-app-playground", sshHost: "kawamoto-clay-dev-v2"),
+		Project(name: "clay-api-flamel", sshHost: "kawamoto-clay-dev-v2.asia-northeast1-a.aitech-kiwami-cole-dev"),
+		Project(name: "clay-app-playground", sshHost: "kawamoto-clay-dev-v2.asia-northeast1-a.aitech-kiwami-cole-dev"),
 	]
 
 	var body: some View {
@@ -39,6 +39,7 @@ struct MainWindow: View {
 					GeometryReader { geo in
 						HStack(spacing: 0) {
 							CommandArea(project: project)
+								.id(project.id)
 								.frame(width: splitPosition)
 
 							SplitDivider(

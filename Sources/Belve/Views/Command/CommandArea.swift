@@ -4,7 +4,7 @@ struct CommandArea: View {
 	let project: Project
 
 	var body: some View {
-		TerminalPaneView()
+		TerminalPaneView(project: project)
 			.background(Theme.bg)
 	}
 }
