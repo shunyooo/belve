@@ -4,41 +4,33 @@ import AppKit
 
 /// Terminal view using SwiftTerm for rendering + custom PTYService for process.
 struct TerminalPaneView: NSViewRepresentable {
-	func makeNSView(context: Context) -> NSView {
-		let container = NSView()
-		container.wantsLayer = true
-		container.layer?.masksToBounds = true
-
+	func makeNSView(context: Context) -> TerminalView {
 		let tv = TerminalView(frame: .zero)
-		tv.translatesAutoresizingMaskIntoConstraints = false
-		tv.wantsLayer = true
-		tv.layer?.masksToBounds = true
 		tv.terminalDelegate = context.coordinator
 
 		// Dark theme
 		tv.nativeBackgroundColor = NSColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 1)
 		tv.nativeForegroundColor = NSColor(red: 0.88, green: 0.89, blue: 0.92, alpha: 1)
 
-		container.addSubview(tv)
-
-		NSLayoutConstraint.activate([
-			tv.topAnchor.constraint(equalTo: container.topAnchor),
-			tv.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-			tv.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-			tv.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-		])
-
 		context.coordinator.terminalView = tv
 
-		DispatchQueue.main.async {
-			context.coordinator.startShell()
-			tv.window?.makeFirstResponder(tv)
+		// Monitor key events to debug
+		NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+			let isFirstResponder = tv.window?.firstResponder === tv
+			NSLog("[Belve] keyDown monitor: '\(event.characters ?? "")' firstResponder=\(isFirstResponder) responder=\(type(of: tv.window?.firstResponder ?? tv))")
+			return event
 		}
 
-		return container
+		DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+			context.coordinator.startShell()
+			let result = tv.window?.makeFirstResponder(tv)
+			NSLog("[Belve] makeFirstResponder: \(String(describing: result)), actual: \(type(of: tv.window?.firstResponder ?? tv))")
+		}
+
+		return tv
 	}
 
-	func updateNSView(_ nsView: NSView, context: Context) {
+	func updateNSView(_ nsView: TerminalView, context: Context) {
 	}
 
 	func makeCoordinator() -> Coordinator {
@@ -63,6 +55,7 @@ struct TerminalPaneView: NSViewRepresentable {
 					let terminal = tv.getTerminal()
 					pty.setSize(cols: terminal.cols, rows: terminal.rows)
 				}
+				NSLog("[Belve] Shell started successfully")
 			} catch {
 				NSLog("[Belve] Failed to start PTY: \(error)")
 			}
@@ -75,6 +68,7 @@ struct TerminalPaneView: NSViewRepresentable {
 		}
 
 		func send(source: TerminalView, data: ArraySlice<UInt8>) {
+			NSLog("[Belve] send called, \(data.count) bytes")
 			ptyService?.send(Data(data))
 		}
 
