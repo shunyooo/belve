@@ -36,20 +36,19 @@ final class GhosttyRuntime {
 		ghostty_config_load_default_files(cfg)
 		ghostty_config_load_recursive_files(cfg)
 
-		// Inject Belve's bin dir into PATH after shell rc files.
-		// Uses ZDOTDIR for zsh, --rcfile for bash.
+		// Launcher script injects Belve env + claude function, then execs user's shell.
+		// Ghostty env_vars alone isn't enough because shell rc files (nvm, pyenv)
+		// reorder PATH. Shell function (export -f / ZDOTDIR) ensures claude wrapper
+		// takes priority regardless of PATH order.
 		if let execDir = Bundle.main.executableURL?.deletingLastPathComponent() {
 			let belveBin = execDir
 				.deletingLastPathComponent()
 				.appendingPathComponent("Resources/bin").path
-			let home = NSHomeDirectory()
 			let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
 			let shellName = (shell as NSString).lastPathComponent
 			let tmpDir = "/tmp/belve-shell"
 			try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
 
-			// Launcher: set env vars + claude function, detect shell for correct syntax.
-			// Shell function is necessary because nvm/pyenv etc reorder PATH after init.
 			let launcher = "\(tmpDir)/belve-launcher.sh"
 			try? #"""
 			#!/bin/sh
@@ -58,12 +57,10 @@ final class GhosttyRuntime {
 			SHELL_NAME="$(basename "\#(shell)")"
 			case "$SHELL_NAME" in
 			  bash)
-			    # bash: export -f makes function available in child process
 			    claude() { "\#(belveBin)/claude" "$@"; }
 			    export -f claude
 			    exec \#(shell) -l -i ;;
 			  zsh)
-			    # zsh: ZDOTDIR trick to source function after .zshrc
 			    mkdir -p "\#(tmpDir)/zdotdir"
 			    cat > "\#(tmpDir)/zdotdir/.zshenv" << 'ZENV'
 			[ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"
@@ -85,12 +82,11 @@ final class GhosttyRuntime {
 			"""#.write(toFile: launcher, atomically: true, encoding: .utf8)
 			try? FileManager.default.setAttributes(
 				[.posixPermissions: 0o755], ofItemAtPath: launcher)
-			let command = launcher
 
 			let tmpConf = "\(tmpDir)/ghostty.conf"
-			try? "command = \(command)\n".write(toFile: tmpConf, atomically: true, encoding: .utf8)
+			try? "command = \(launcher)\n".write(toFile: tmpConf, atomically: true, encoding: .utf8)
 			ghostty_config_load_file(cfg, tmpConf)
-			NSLog("[Belve] Ghostty command (\(shellName)): \(command)")
+			NSLog("[Belve] Ghostty launcher (\(shellName)): \(launcher)")
 		}
 
 		ghostty_config_finalize(cfg)
