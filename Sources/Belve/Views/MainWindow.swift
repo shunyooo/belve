@@ -110,6 +110,12 @@ struct MainWindow: View {
 		.onAppear {
 			loadProjects()
 		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notification in
+			if let index = notification.userInfo?["index"] as? Int,
+			   index >= 0, index < projects.count {
+				selectedProject = projects[index]
+			}
+		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveOpenFolder)) { _ in
 			if commandPaletteState.isPresented && paletteMode == .folderBrowser {
 				commandPaletteState.isPresented = false

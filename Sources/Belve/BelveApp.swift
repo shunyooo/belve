@@ -34,6 +34,18 @@ struct BelveApp: App {
 				}
 				.keyboardShortcut("s", modifiers: .command)
 			}
+			CommandGroup(after: .toolbar) {
+				ForEach(1...9, id: \.self) { index in
+					Button("Switch to Project \(index)") {
+						NotificationCenter.default.post(
+							name: .belveSwitchProject,
+							object: nil,
+							userInfo: ["index": index - 1]
+						)
+					}
+					.keyboardShortcut(KeyEquivalent(Character("\(index)")), modifiers: .command)
+				}
+			}
 		}
 	}
 }
@@ -41,6 +53,7 @@ struct BelveApp: App {
 extension Notification.Name {
 	static let belveFileSave = Notification.Name("belveFileSave")
 	static let belveOpenFolder = Notification.Name("belveOpenFolder")
+	static let belveSwitchProject = Notification.Name("belveSwitchProject")
 }
 
 class CommandPaletteState: ObservableObject {
@@ -55,6 +68,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		NSApp.activate(ignoringOtherApps: true)
 		adjustTrafficLights()
+
+		// Global hotkey: Cmd+' to toggle app visibility
+		NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+			if event.modifierFlags.contains(.command),
+			   event.charactersIgnoringModifiers == "'" {
+				DispatchQueue.main.async {
+					if NSApp.isHidden {
+						NSApp.unhide(nil)
+						NSApp.activate(ignoringOtherApps: true)
+					} else if NSApp.isActive {
+						NSApp.hide(nil)
+					} else {
+						NSApp.activate(ignoringOtherApps: true)
+					}
+				}
+			}
+		}
 
 		// Start monitoring agent events file
 		agentFileMonitor.onEvent = { [weak self] paneId, status, message in
