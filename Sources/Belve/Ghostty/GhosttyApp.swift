@@ -44,7 +44,7 @@ final class GhosttyRuntime {
 			let belveBin = execDir
 				.deletingLastPathComponent()
 				.appendingPathComponent("Resources/bin").path
-			let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+			let shell = GhosttyRuntime.resolveUserShell()
 			let shellName = (shell as NSString).lastPathComponent
 			let tmpDir = "/tmp/belve-shell"
 			try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
@@ -212,5 +212,24 @@ final class GhosttyRuntime {
 		default:
 			return false
 		}
+	}
+
+	/// Resolve user's login shell via Directory Services (not $SHELL, which may be inherited from parent).
+	static func resolveUserShell() -> String {
+		let username = NSUserName()
+		let process = Process()
+		process.executableURL = URL(fileURLWithPath: "/usr/bin/dscl")
+		process.arguments = [".", "-read", "/Users/\(username)", "UserShell"]
+		let pipe = Pipe()
+		process.standardOutput = pipe
+		try? process.run()
+		process.waitUntilExit()
+		let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+		// Output: "UserShell: /bin/zsh"
+		if let shell = output.components(separatedBy: ": ").last?.trimmingCharacters(in: .whitespacesAndNewlines),
+		   !shell.isEmpty {
+			return shell
+		}
+		return "/bin/zsh"
 	}
 }
