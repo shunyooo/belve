@@ -110,6 +110,12 @@ struct MainWindow: View {
 		.onAppear {
 			loadProjects()
 		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveSplitVertical)) { _ in
+			commandAreaState.splitActive(.vertical)
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveSplitHorizontal)) { _ in
+			commandAreaState.splitActive(.horizontal)
+		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notification in
 			if let index = notification.userInfo?["index"] as? Int,
 			   index >= 0, index < projects.count {

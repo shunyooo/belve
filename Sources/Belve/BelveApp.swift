@@ -35,6 +35,16 @@ struct BelveApp: App {
 				.keyboardShortcut("s", modifiers: .command)
 			}
 			CommandGroup(after: .toolbar) {
+				Button("Split Vertical") {
+					NotificationCenter.default.post(name: .belveSplitVertical, object: nil)
+				}
+				.keyboardShortcut("d", modifiers: .command)
+				Button("Split Horizontal") {
+					NotificationCenter.default.post(name: .belveSplitHorizontal, object: nil)
+				}
+				.keyboardShortcut("d", modifiers: [.command, .shift])
+			}
+			CommandGroup(after: .toolbar) {
 				ForEach(1...9, id: \.self) { index in
 					Button("Switch to Project \(index)") {
 						NotificationCenter.default.post(
@@ -54,6 +64,8 @@ extension Notification.Name {
 	static let belveFileSave = Notification.Name("belveFileSave")
 	static let belveOpenFolder = Notification.Name("belveOpenFolder")
 	static let belveSwitchProject = Notification.Name("belveSwitchProject")
+	static let belveSplitVertical = Notification.Name("belveSplitVertical")
+	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
 }
 
 class CommandPaletteState: ObservableObject {
