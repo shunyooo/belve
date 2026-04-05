@@ -18,8 +18,9 @@ class PTYService {
 	}
 
 	/// Spawn a shell in a new PTY session.
+	/// Defaults to $SHELL (user's login shell) or /bin/zsh as fallback.
 	static func spawn(
-		shell: String = "/bin/zsh",
+		shell: String? = nil,
 		args: [String] = ["-l"],
 		environment: [String: String]? = nil
 	) throws -> PTYService {
@@ -44,6 +45,11 @@ class PTYService {
 		posix_spawnattr_init(&spawnAttr)
 		posix_spawnattr_setflags(&spawnAttr, Int16(POSIX_SPAWN_SETSID))
 
+		// Resolve shell: explicit arg > $SHELL > /bin/zsh fallback
+		let resolvedShell = shell
+			?? ProcessInfo.processInfo.environment["SHELL"]
+			?? "/bin/zsh"
+
 		// Build environment
 		let home = NSHomeDirectory()
 		var envDict = [
@@ -51,7 +57,7 @@ class PTYService {
 			"TERM": "xterm-256color",
 			"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
 			"LANG": "en_US.UTF-8",
-			"SHELL": shell,
+			"SHELL": resolvedShell,
 		]
 		if let extra = environment {
 			envDict.merge(extra) { _, new in new }
@@ -59,7 +65,7 @@ class PTYService {
 		let envStrings = envDict.map { "\($0.key)=\($0.value)" }
 
 		// Convert to C strings
-		let cArgs = ([shell] + args).map { strdup($0) } + [nil]
+		let cArgs = ([resolvedShell] + args).map { strdup($0) } + [nil]
 		let cEnv = envStrings.map { strdup($0) } + [nil]
 
 		var pid: pid_t = 0

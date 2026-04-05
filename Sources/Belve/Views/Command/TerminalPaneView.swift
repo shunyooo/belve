@@ -76,7 +76,9 @@ struct TerminalPaneView: NSViewRepresentable {
 					// Local shell with Belve environment
 					let belveEnv = buildBelveEnvironment()
 					pty = try PTYService.spawn(environment: belveEnv)
-					// .zshrc overrides PATH, so re-inject Belve bin after shell init
+					// Shell rc files (.zshrc, .bashrc) often override PATH, so
+					// re-inject Belve bin dir after shell init completes.
+					// Leading space prevents adding to shell history (HISTCONTROL=ignorespace).
 					if let binDir = belveEnv["PATH"]?.components(separatedBy: ":").first {
 						DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
 							pty.send(" export PATH=\"\(binDir):$PATH\" && clear\n")
