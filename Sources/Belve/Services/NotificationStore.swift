@@ -1,5 +1,19 @@
 import Foundation
 
+enum AgentStatus: String {
+	case idle
+	case sessionStart = "session_start"
+	case running
+	case waiting
+	case completed
+	case sessionEnd = "session_end"
+}
+
+struct AgentState {
+	var status: AgentStatus
+	var message: String
+}
+
 struct TerminalNotification: Identifiable {
 	let id = UUID()
 	let projectId: UUID
@@ -11,6 +25,30 @@ struct TerminalNotification: Identifiable {
 
 class NotificationStore: ObservableObject {
 	@Published var notifications: [TerminalNotification] = []
+	@Published var agentStatus: [UUID: AgentState] = [:] // keyed by projectId
+
+	// Mapping: paneId → projectId (set by TerminalPaneView)
+	var paneToProject: [String: UUID] = [:]
+
+	func registerPane(paneId: String, projectId: UUID) {
+		paneToProject[paneId] = projectId
+	}
+
+	func updateAgentStatus(paneId: String, status: String, message: String) {
+		guard let projectId = paneToProject[paneId],
+			  let agentStatus = AgentStatus(rawValue: status) else {
+			NSLog("[Belve] Unknown agent status: \(status) for pane \(paneId)")
+			return
+		}
+
+		self.agentStatus[projectId] = AgentState(status: agentStatus, message: message)
+		NSLog("[Belve] Agent status: \(status) - \(message) (project: \(projectId))")
+
+		// Add notification for waiting state
+		if agentStatus == .waiting {
+			add(projectId: projectId, title: "Claude Code", body: message)
+		}
+	}
 
 	func add(projectId: UUID, title: String, body: String) {
 		let notification = TerminalNotification(

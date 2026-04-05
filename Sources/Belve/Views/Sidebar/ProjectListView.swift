@@ -20,7 +20,8 @@ struct ProjectListView: View {
 							ProjectRow(
 								project: project,
 								isSelected: selectedProject == project,
-								unreadCount: notificationStore.unreadCount(for: project.id)
+								unreadCount: notificationStore.unreadCount(for: project.id),
+								agentState: notificationStore.agentStatus[project.id]
 							)
 						}
 						.buttonStyle(.plain)
@@ -72,12 +73,23 @@ struct ProjectRow: View {
 	let project: Project
 	let isSelected: Bool
 	var unreadCount: Int = 0
+	var agentState: AgentState?
 	@State private var isHovering = false
+
+	private var statusColor: Color {
+		switch agentState?.status {
+		case .running: return Theme.accent
+		case .waiting: return Theme.yellow
+		case .completed: return Theme.green
+		case .sessionStart: return Theme.accent
+		default: return project.sshHost != nil ? Theme.accent : Theme.green
+		}
+	}
 
 	var body: some View {
 		HStack(spacing: 10) {
 			Circle()
-				.fill(project.sshHost != nil ? Theme.accent : Theme.green)
+				.fill(statusColor)
 				.frame(width: 7, height: 7)
 
 			Text(project.name)

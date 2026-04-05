@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Belve claude wrapper - injects hooks for notification integration
+#
+# When running inside a Belve terminal (BELVE_SESSION is set), this wrapper
+# intercepts `claude` invocations to inject --settings flags so that
+# Claude Code hooks emit OSC escape sequences back to Belve.
+# Outside Belve, it passes through to the real claude binary unchanged.
+
+set -euo pipefail
+
+# Find the real claude binary, skipping our own directory.
+find_real_claude() {
+    local self_dir
+    self_dir="$(cd "$(dirname "$0")" && pwd)"
+    local IFS=:
+    for d in $PATH; do
+        [[ "$d" == "$self_dir" ]] && continue
+        [[ -x "$d/claude" ]] && printf '%s' "$d/claude" && return 0
+    done
+    return 1
+}
+
+# Pass through if not in a Belve terminal.
+if [[ -z "${BELVE_SESSION:-}" ]]; then
+    REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+    exec "$REAL_CLAUDE" "$@"
+fi
+
+# Find real claude.
+REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+
+# Pass through subcommands that don't support hook flags.
+case "${1:-}" in
+    mcp|config|api-key) exec "$REAL_CLAUDE" "$@" ;;
+esac
+
+PANE_ID="${BELVE_PANE_ID:-unknown}"
+
+# Hook command template: read stdin JSON, emit OSC 9 to /dev/tty
+# Format: \033]9;BELVE:<pane_id>:<status>:<message>\007
+make_hook() {
+    local status="$1"
+    local message_expr="${2:-}"
+    if [[ -z "$message_expr" ]]; then
+        echo "node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c);process.stdin.on(\"end\",()=>{try{require(\"fs\").writeFileSync(\"/dev/tty\",\"\\x1b]9;BELVE:${PANE_ID}:${status}:${status}\\x07\")}catch{}})'"
+    else
+        echo "node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c);process.stdin.on(\"end\",()=>{try{const j=JSON.parse(d);const m=${message_expr};require(\"fs\").writeFileSync(\"/dev/tty\",\"\\x1b]9;BELVE:${PANE_ID}:${status}:\"+m+\"\\x07\")}catch{}})'"
+    fi
+}
+
+NOTIFY_CMD=$(make_hook "waiting" 'j.notification_type||"input needed"')
+PROMPT_CMD=$(make_hook "running" '"Generating"')
+STOP_CMD=$(make_hook "completed" '"Done"')
+START_CMD=$(make_hook "session_start" '"started"')
+END_CMD=$(make_hook "session_end" '"ended"')
+
+HOOKS_JSON="{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${START_CMD}\",\"timeout\":5}]}],\"Notification\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${NOTIFY_CMD}\",\"timeout\":5}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${PROMPT_CMD}\",\"timeout\":5}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${STOP_CMD}\",\"timeout\":5}]}],\"SessionEnd\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${END_CMD}\",\"timeout\":1}]}]}}"
+
+exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"

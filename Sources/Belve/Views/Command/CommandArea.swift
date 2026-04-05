@@ -47,7 +47,7 @@ struct PaneTreeView: View {
 
 	var body: some View {
 		if node.isLeaf {
-			TerminalPaneView(project: project)
+			TerminalPaneView(project: project, paneId: node.id.uuidString)
 				.id(node.id)
 		} else if let children = node.children, let direction = node.splitDirection {
 			switch direction {

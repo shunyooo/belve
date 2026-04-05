@@ -4,6 +4,7 @@ import AppKit
 
 struct TerminalPaneView: NSViewRepresentable {
 	let project: Project
+	var paneId: String?
 	@EnvironmentObject var notificationStore: NotificationStore
 
 	func makeNSView(context: Context) -> TerminalView {
@@ -14,6 +15,7 @@ struct TerminalPaneView: NSViewRepresentable {
 
 		context.coordinator.terminalView = tv
 		context.coordinator.project = project
+		context.coordinator.paneId = paneId
 		context.coordinator.notificationStore = notificationStore
 
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -35,6 +37,7 @@ struct TerminalPaneView: NSViewRepresentable {
 		weak var terminalView: TerminalView?
 		var ptyService: PTYService?
 		var project: Project?
+		var paneId: String?
 		var notificationStore: NotificationStore?
 
 		func startShell() {
@@ -64,8 +67,9 @@ struct TerminalPaneView: NSViewRepresentable {
 						]
 					)
 				} else {
-					// Local shell
-					pty = try PTYService.spawn()
+					// Local shell with Belve environment
+					let belveEnv = buildBelveEnvironment()
+					pty = try PTYService.spawn(environment: belveEnv)
 				}
 				self.ptyService = pty
 
@@ -79,12 +83,42 @@ struct TerminalPaneView: NSViewRepresentable {
 					self?.notificationStore?.add(projectId: projectId, title: title, body: body)
 				}
 
+				// Agent status via OSC transport
+				if let paneId = paneId, let projectId = project?.id {
+					notificationStore?.registerPane(paneId: paneId, projectId: projectId)
+					pty.agentTransport.onAgentStatus = { [weak self] pId, status, message in
+						self?.notificationStore?.updateAgentStatus(paneId: pId, status: status, message: message)
+					}
+				}
+
 				let terminal = tv.getTerminal()
 				pty.setSize(cols: terminal.cols, rows: terminal.rows)
 				NSLog("[Belve] Shell started for '\(project?.name ?? "unknown")', cols=\(terminal.cols) rows=\(terminal.rows)")
 			} catch {
 				NSLog("[Belve] Failed to start PTY: \(error)")
 			}
+		}
+
+		private func buildBelveEnvironment() -> [String: String] {
+			var env: [String: String] = [
+				"BELVE_SESSION": "1",
+			]
+			if let paneId = paneId {
+				env["BELVE_PANE_ID"] = paneId
+			}
+			if let projectId = project?.id {
+				env["BELVE_PROJECT_ID"] = projectId.uuidString
+			}
+			// Add Belve's bin directory to PATH for claude wrapper
+			let execDir = Bundle.main.executableURL?.deletingLastPathComponent()
+			let resourceBin = execDir?
+				.deletingLastPathComponent()
+				.appendingPathComponent("Resources/bin")
+			if let binPath = resourceBin?.path {
+				let currentPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
+				env["PATH"] = "\(binPath):\(currentPath)"
+			}
+			return env
 		}
 
 		func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {

@@ -9,6 +9,7 @@ class PTYService {
 
 	var onData: ((Data) -> Void)?
 	var onNotification: ((String, String) -> Void)? // (title, body)
+	var agentTransport = OSCAgentTransport()
 	private var oscBuffer = Data()
 
 	private init(masterFd: Int32, pid: pid_t) {
@@ -117,6 +118,7 @@ class PTYService {
 			let n = read(fd, &buf, buf.count)
 			if n > 0 {
 				let data = Data(buf[0..<n])
+				self?.agentTransport.scan(data)
 				self?.scanForOSC(data)
 				DispatchQueue.main.async {
 					self?.onData?(data)
