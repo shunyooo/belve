@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Belve CLI - receives hook events from Claude Code and emits OSC to /dev/tty
+#
+# Usage: belve claude-hook <subcommand>
+# Subcommands: session-start, notification, prompt-submit, stop, session-end
+
+set -euo pipefail
+
+PANE_ID="${BELVE_PANE_ID:-unknown}"
+
+emit_osc() {
+    local status="$1"
+    local message="$2"
+    # Write OSC 9 with BELVE protocol to /dev/tty
+    printf '\033]9;BELVE:%s:%s:%s\007' "$PANE_ID" "$status" "$message" > /dev/tty 2>/dev/null || true
+}
+
+# Read and consume stdin (Claude Code sends JSON)
+read_stdin() {
+    cat > /dev/null 2>&1 || true
+}
+
+case "${1:-}" in
+    claude-hook)
+        case "${2:-}" in
+            session-start)
+                read_stdin
+                emit_osc "session_start" "started"
+                ;;
+            notification)
+                # Parse notification type from stdin JSON
+                local_msg="input needed"
+                if command -v node > /dev/null 2>&1; then
+                    local_msg=$(node -e '
+                        let d="";
+                        process.stdin.on("data",c=>d+=c);
+                        process.stdin.on("end",()=>{
+                            try{const j=JSON.parse(d);process.stdout.write(j.notification_type||"input needed")}
+                            catch{process.stdout.write("input needed")}
+                        })
+                    ' 2>/dev/null) || local_msg="input needed"
+                else
+                    read_stdin
+                fi
+                emit_osc "waiting" "$local_msg"
+                ;;
+            prompt-submit)
+                read_stdin
+                emit_osc "running" "Generating"
+                ;;
+            stop)
+                read_stdin
+                emit_osc "completed" "Done"
+                ;;
+            session-end)
+                read_stdin
+                emit_osc "session_end" "ended"
+                ;;
+            *)
+                read_stdin
+                ;;
+        esac
+        ;;
+    *)
+        echo "Usage: belve claude-hook <subcommand>" >&2
+        exit 1
+        ;;
+esac

@@ -47,15 +47,19 @@ struct TerminalPaneView: NSViewRepresentable {
 				if let project = project, project.isDevContainer,
 				   let sshHost = project.sshHost,
 				   let workspacePath = project.devContainerPath {
-					// DevContainer connection
+					// DevContainer connection - deploy Belve CLI first
+					BelveRemoteInstaller.deploy(to: sshHost)
 					let args = DevContainerService.exec(sshHost: sshHost, workspacePath: workspacePath)
 					NSLog("[Belve] Connecting to DevContainer: \(sshHost):\(workspacePath)")
 					pty = try PTYService.spawn(
 						shell: args[0],
 						args: Array(args.dropFirst())
 					)
+					// Inject Belve environment on remote
+					sendRemoteBelveEnv(pty: pty)
 				} else if let sshHost = project?.sshHost {
-					// SSH connection
+					// SSH connection - deploy Belve CLI first
+					BelveRemoteInstaller.deploy(to: sshHost)
 					NSLog("[Belve] Connecting to SSH host: \(sshHost)")
 					pty = try PTYService.spawn(
 						shell: "/usr/bin/ssh",
@@ -66,6 +70,8 @@ struct TerminalPaneView: NSViewRepresentable {
 							sshHost,
 						]
 					)
+					// Inject Belve environment on remote
+					sendRemoteBelveEnv(pty: pty)
 				} else {
 					// Local shell with Belve environment
 					let belveEnv = buildBelveEnvironment()
@@ -96,6 +102,15 @@ struct TerminalPaneView: NSViewRepresentable {
 				NSLog("[Belve] Shell started for '\(project?.name ?? "unknown")', cols=\(terminal.cols) rows=\(terminal.rows)")
 			} catch {
 				NSLog("[Belve] Failed to start PTY: \(error)")
+			}
+		}
+
+		private func sendRemoteBelveEnv(pty: PTYService) {
+			// Send environment setup command after SSH connects
+			let pId = paneId ?? "unknown"
+			let projectId = project?.id.uuidString ?? "unknown"
+			DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+				pty.send("export BELVE_SESSION=1 BELVE_PANE_ID=\(pId) BELVE_PROJECT_ID=\(projectId) PATH=~/.belve/bin:$PATH\n")
 			}
 		}
 

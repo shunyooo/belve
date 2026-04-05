@@ -32,9 +32,10 @@ cat > Belve.app/Contents/Info.plist << 'PLIST'
 </plist>
 PLIST
 
-# Copy Resources (bin/claude wrapper, etc.)
+# Copy Resources (belve CLI + claude wrapper)
 mkdir -p Belve.app/Contents/Resources/bin
+cp Sources/Belve/Resources/bin/belve Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp Sources/Belve/Resources/bin/claude Belve.app/Contents/Resources/bin/ 2>/dev/null || true
-chmod +x Belve.app/Contents/Resources/bin/claude 2>/dev/null || true
+chmod +x Belve.app/Contents/Resources/bin/belve Belve.app/Contents/Resources/bin/claude 2>/dev/null || true
 
 echo "Belve.app built successfully"
