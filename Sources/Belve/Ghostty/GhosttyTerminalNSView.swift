@@ -207,10 +207,15 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 
 	override var acceptsFirstResponder: Bool { true }
 
+	var onBecomeFirstResponder: (() -> Void)?
+
 	override func becomeFirstResponder() -> Bool {
 		let result = super.becomeFirstResponder()
 		if result, let surface {
 			ghostty_surface_set_focus(surface, true)
+		}
+		if result {
+			onBecomeFirstResponder?()
 		}
 		return result
 	}

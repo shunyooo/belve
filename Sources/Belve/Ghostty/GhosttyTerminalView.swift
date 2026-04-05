@@ -7,6 +7,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
 	let project: Project
 	var paneId: String?
 	@EnvironmentObject var notificationStore: NotificationStore
+	@EnvironmentObject var commandAreaState: CommandAreaState
 
 	func makeNSView(context: Context) -> GhosttyTerminalNSView {
 		// Ensure the Ghostty runtime is initialized (lazy singleton)
@@ -41,9 +42,22 @@ struct GhosttyTerminalView: NSViewRepresentable {
 			notificationStore.registerPane(paneId: paneId, projectId: project.id)
 		}
 
-		// Handle surface close (shell exit)
-		view.onSurfaceClosed = {
+		// Track active pane on focus
+		if let paneId, let paneUUID = UUID(uuidString: paneId) {
+			view.onBecomeFirstResponder = { [weak commandAreaState] in
+				commandAreaState?.activePaneId = paneUUID
+			}
+		}
+
+		// Handle surface close (shell exit) — remove pane from tree
+		let closePaneId = paneId
+		view.onSurfaceClosed = { [weak commandAreaState] in
 			NSLog("[Belve] Terminal surface closed for project: \(project.name)")
+			if let closePaneId, let paneUUID = UUID(uuidString: closePaneId) {
+				DispatchQueue.main.async {
+					commandAreaState?.removePane(paneUUID)
+				}
+			}
 		}
 
 		// Request first responder after layout settles

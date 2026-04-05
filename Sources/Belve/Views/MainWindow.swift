@@ -49,6 +49,7 @@ struct MainWindow: View {
 								CommandArea(project: project, state: commandAreaState)
 									.id(project.id)
 									.frame(width: splitPosition)
+									.environmentObject(commandAreaState)
 
 								SplitDivider(
 									position: $splitPosition,

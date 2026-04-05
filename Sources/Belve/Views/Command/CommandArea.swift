@@ -22,13 +22,65 @@ class PaneNode: ObservableObject, Identifiable {
 
 class CommandAreaState: ObservableObject {
 	@Published var root = PaneNode()
+	@Published var activePaneId: UUID?
 
 	func splitActive(_ direction: SplitDirection) {
-		// For now, split the root or first leaf
-		if root.isLeaf {
-			root.split(direction)
+		// Split the active pane, or fall back to first leaf
+		let targetId = activePaneId ?? firstLeaf(root)?.id
+		guard let targetId else { return }
+		if splitNode(targetId, direction: direction, in: root) {
 			objectWillChange.send()
 		}
+	}
+
+	private func splitNode(_ id: UUID, direction: SplitDirection, in node: PaneNode) -> Bool {
+		if node.id == id && node.isLeaf {
+			node.split(direction)
+			return true
+		}
+		for child in node.children ?? [] {
+			if splitNode(id, direction: direction, in: child) {
+				return true
+			}
+		}
+		return false
+	}
+
+	func removePane(_ id: UUID) {
+		if root.id == id && root.isLeaf {
+			// Last pane — don't remove, just reset
+			return
+		}
+		if removeNode(id, from: root, parent: nil) {
+			objectWillChange.send()
+		}
+	}
+
+	private func removeNode(_ id: UUID, from node: PaneNode, parent: PaneNode?) -> Bool {
+		guard let children = node.children else { return false }
+		for (index, child) in children.enumerated() {
+			if child.id == id && child.isLeaf {
+				// Replace parent with the sibling
+				let sibling = children[1 - index]
+				node.children = sibling.children
+				node.splitDirection = sibling.splitDirection
+				node.splitRatio = sibling.splitRatio
+				// If sibling was a leaf, this node becomes a leaf
+				return true
+			}
+			if removeNode(id, from: child, parent: node) {
+				return true
+			}
+		}
+		return false
+	}
+
+	private func firstLeaf(_ node: PaneNode) -> PaneNode? {
+		if node.isLeaf { return node }
+		for child in node.children ?? [] {
+			if let leaf = firstLeaf(child) { return leaf }
+		}
+		return nil
 	}
 }
 
