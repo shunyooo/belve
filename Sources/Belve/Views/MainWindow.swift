@@ -138,6 +138,9 @@ struct MainWindow: View {
 				selectedProject = project
 			}
 		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveNewProject)) { _ in
+			addProject()
+		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveOpenFolder)) { _ in
 			if commandPaletteState.isPresented && paletteMode == .folderBrowser {
 				commandPaletteState.isPresented = false

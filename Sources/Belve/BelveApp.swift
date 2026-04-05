@@ -23,7 +23,11 @@ struct BelveApp: App {
 				}
 				.keyboardShortcut("p", modifiers: [.command, .shift])
 			}
-			CommandGroup(after: .newItem) {
+			CommandGroup(replacing: .newItem) {
+				Button("New Project") {
+					NotificationCenter.default.post(name: .belveNewProject, object: nil)
+				}
+				.keyboardShortcut("n", modifiers: .command)
 				Button("Open Folder...") {
 					NotificationCenter.default.post(name: .belveOpenFolder, object: nil)
 				}
@@ -73,6 +77,7 @@ extension Notification.Name {
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
 	static let belveFocusProject = Notification.Name("belveFocusProject")
 	static let belveClosePane = Notification.Name("belveClosePane")
+	static let belveNewProject = Notification.Name("belveNewProject")
 }
 
 class CommandPaletteState: ObservableObject {
