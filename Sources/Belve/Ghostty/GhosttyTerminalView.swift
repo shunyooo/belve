@@ -36,6 +36,11 @@ struct GhosttyTerminalView: NSViewRepresentable {
 
 		view.environmentVariables = env
 
+		// Register pane → project mapping for agent notifications
+		if let paneId {
+			notificationStore.registerPane(paneId: paneId, projectId: project.id)
+		}
+
 		// Handle surface close (shell exit)
 		view.onSurfaceClosed = {
 			NSLog("[Belve] Terminal surface closed for project: \(project.name)")
