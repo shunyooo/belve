@@ -100,3 +100,25 @@ Theme.trafficLightLeading  // トラフィックライトの右端位置
 | Cmd+Shift+D | ペイン横分割 |
 | Cmd+1-9 | プロジェクト切替 |
 | Cmd+' | アプリ表示/非表示（グローバル） |
+
+## Claude Code Hook 連携の既知の制約
+
+### ラッパー (Resources/bin/claude)
+- `BELVE_SESSION` 環境変数がない場合はパススルー（Belve 外では無害）
+- `BELVE_BIN` は `$(dirname "$0")/belve` で相対解決するため環境依存なし
+- `--settings` でインラインに hooks JSON を注入。ユーザーの `~/.claude/settings.json` には触らない
+
+### belve CLI (Resources/bin/belve)
+- **`node` 依存**: `notification` hook で stdin JSON をパースするために使用。`node` がなければ `"input needed"` 固定でフォールバック
+- **`/tmp/belve-agent-events` ハードコード**: ファイル監視はローカル専用。SSH/DevContainer ではこのファイルに書いても Belve アプリ側で読めない
+- **OSC (`/dev/tty`) はリモートでも動く**: SSH/DevContainer では OSC 経由が唯一の通信手段。ファイル監視はローカルのフォールバック
+
+### シェル関数注入
+- **bash**: ランチャースクリプト (`/tmp/belve-shell/bash-launcher.sh`) で `claude()` 関数を定義してから `exec bash -l -i`。ログインシェルでは `--rcfile` が無視されるためこの方式が必要
+- **zsh**: ZDOTDIR の `.zshrc` で関数定義（未テスト）
+- **fish**: `--init-command` で PATH 追加のみ（関数未定義）
+
+### SSH/DevContainer 対応状況
+- ローカル: ✅ ファイル監視 + OSC 両方で動作
+- SSH: ⚠️ OSC のみ。`BelveRemoteInstaller` でラッパーをデプロイ + `sendRemoteBelveEnv` で環境変数注入が必要（SwiftTerm ベースの TerminalPaneView でのみ実装済み。Ghostty ベースでは未対応）
+- DevContainer: ⚠️ 同上
