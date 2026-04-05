@@ -68,17 +68,20 @@ final class GhosttyRuntime {
 				command = "env ZDOTDIR=\(zdotdir) \(shell) -l"
 
 			case "bash":
-				// --rcfile: custom bashrc that sources originals then re-prepends PATH
-				let bashrc = "\(tmpDir)/bashrc"
+				// Launcher script: source user's profile, then inject Belve env + claude function.
+				// Can't use --rcfile because Ghostty starts bash as login shell which ignores it.
+				let launcher = "\(tmpDir)/bash-launcher.sh"
 				try? """
-				[ -f /etc/profile ] && source /etc/profile
-				[ -f "\(home)/.bash_profile" ] && source "\(home)/.bash_profile"
-				[ -f "\(home)/.bashrc" ] && source "\(home)/.bashrc"
+				#!/bin/bash
+				export BELVE_SESSION=1
 				export PATH="\(belveBin):$PATH"
 				claude() { "\(belveBin)/claude" "$@"; }
 				export -f claude
-				""".write(toFile: bashrc, atomically: true, encoding: .utf8)
-				command = "\(shell) --rcfile \(bashrc) -i"
+				exec \(shell) -l -i
+				""".write(toFile: launcher, atomically: true, encoding: .utf8)
+				try? FileManager.default.setAttributes(
+					[.posixPermissions: 0o755], ofItemAtPath: launcher)
+				command = launcher
 
 			case "fish":
 				// Fish: use --init-command
