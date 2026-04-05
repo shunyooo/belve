@@ -124,14 +124,11 @@ struct GhosttyConfig {
             }
         }
 
-        let releasePaths = paths(for: cmuxReleaseBundleIdentifier)
         guard let currentBundleIdentifier, !currentBundleIdentifier.isEmpty else {
-            return releasePaths
-        }
-        if currentBundleIdentifier == cmuxReleaseBundleIdentifier {
-            return releasePaths
+            return []
         }
 
+        // Only return app-specific config paths for the current bundle
         let currentPaths = paths(for: currentBundleIdentifier)
         if hasConfig(currentPaths) {
             return currentPaths
