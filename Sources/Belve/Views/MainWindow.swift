@@ -118,6 +118,14 @@ struct MainWindow: View {
 		.onReceive(NotificationCenter.default.publisher(for: .belveSplitHorizontal)) { _ in
 			commandAreaState.splitActive(.horizontal)
 		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveClosePane)) { _ in
+			if commandAreaState.root.isLeaf {
+				// Last pane — close window
+				NSApp.keyWindow?.close()
+			} else {
+				commandAreaState.closeActivePane()
+			}
+		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notification in
 			if let index = notification.userInfo?["index"] as? Int,
 			   index >= 0, index < projects.count {

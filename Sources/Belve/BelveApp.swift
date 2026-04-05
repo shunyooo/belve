@@ -44,6 +44,10 @@ struct BelveApp: App {
 					NotificationCenter.default.post(name: .belveSplitHorizontal, object: nil)
 				}
 				.keyboardShortcut("d", modifiers: [.command, .shift])
+				Button("Close Pane") {
+					NotificationCenter.default.post(name: .belveClosePane, object: nil)
+				}
+				.keyboardShortcut("w", modifiers: .command)
 			}
 			CommandGroup(after: .toolbar) {
 				ForEach(1...9, id: \.self) { index in
@@ -68,6 +72,7 @@ extension Notification.Name {
 	static let belveSplitVertical = Notification.Name("belveSplitVertical")
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
 	static let belveFocusProject = Notification.Name("belveFocusProject")
+	static let belveClosePane = Notification.Name("belveClosePane")
 }
 
 class CommandPaletteState: ObservableObject {

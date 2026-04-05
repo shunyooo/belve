@@ -46,6 +46,12 @@ class CommandAreaState: ObservableObject {
 		return false
 	}
 
+	func closeActivePane() {
+		let targetId = activePaneId ?? firstLeaf(root)?.id
+		guard let targetId else { return }
+		removePane(targetId)
+	}
+
 	func removePane(_ id: UUID) {
 		if root.id == id && root.isLeaf {
 			// Last pane — don't remove, just reset
