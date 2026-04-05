@@ -8,14 +8,15 @@ class PaneNode: ObservableObject, Identifiable {
 	let id = UUID()
 	@Published var children: [PaneNode]?
 	@Published var splitDirection: SplitDirection?
+	@Published var splitRatio: CGFloat = 0.5
 
 	var isLeaf: Bool { children == nil }
 
 	func split(_ direction: SplitDirection) {
 		guard isLeaf else { return }
 		splitDirection = direction
+		splitRatio = 0.5
 		children = [PaneNode(), PaneNode()]
-		// Move this terminal's identity to first child
 	}
 }
 
@@ -49,29 +50,76 @@ struct PaneTreeView: View {
 		if node.isLeaf {
 			GhosttyTerminalView(project: project, paneId: node.id.uuidString)
 				.id(node.id)
-		} else if let children = node.children, let direction = node.splitDirection {
-			switch direction {
-			case .vertical:
-				VStack(spacing: 0) {
-					ForEach(Array(children.enumerated()), id: \.element.id) { index, child in
-						if index > 0 {
-							Theme.border
-								.frame(height: 1)
+		} else if let children = node.children, children.count == 2,
+				  let direction = node.splitDirection {
+			GeometryReader { geo in
+				let totalSize = direction == .vertical ? geo.size.height : geo.size.width
+				let dividerThickness: CGFloat = 1
+				let available = totalSize - dividerThickness
+				let firstSize = available * node.splitRatio
+				let secondSize = available * (1 - node.splitRatio)
+
+				switch direction {
+				case .vertical:
+					VStack(spacing: 0) {
+						PaneTreeView(node: children[0], project: project)
+							.frame(height: firstSize)
+						PaneDivider(direction: .vertical) { delta in
+							let newRatio = node.splitRatio + delta / available
+							node.splitRatio = max(0.15, min(0.85, newRatio))
 						}
-						PaneTreeView(node: child, project: project)
+						PaneTreeView(node: children[1], project: project)
+							.frame(height: secondSize)
 					}
-				}
-			case .horizontal:
-				HStack(spacing: 0) {
-					ForEach(Array(children.enumerated()), id: \.element.id) { index, child in
-						if index > 0 {
-							Theme.border
-								.frame(width: 1)
+				case .horizontal:
+					HStack(spacing: 0) {
+						PaneTreeView(node: children[0], project: project)
+							.frame(width: firstSize)
+						PaneDivider(direction: .horizontal) { delta in
+							let newRatio = node.splitRatio + delta / available
+							node.splitRatio = max(0.15, min(0.85, newRatio))
 						}
-						PaneTreeView(node: child, project: project)
+						PaneTreeView(node: children[1], project: project)
+							.frame(width: secondSize)
 					}
 				}
 			}
 		}
+	}
+}
+
+struct PaneDivider: View {
+	let direction: SplitDirection
+	let onDrag: (CGFloat) -> Void
+	@State private var isDragging = false
+	@State private var lastDragValue: CGFloat = 0
+
+	var body: some View {
+		let isVertical = direction == .vertical
+		Rectangle()
+			.fill(isDragging ? Theme.border : Theme.borderSubtle)
+			.frame(width: isVertical ? nil : 1, height: isVertical ? 1 : nil)
+			.contentShape(Rectangle().inset(by: -3))
+			.onHover { hovering in
+				if hovering {
+					(isVertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).push()
+				} else {
+					NSCursor.pop()
+				}
+			}
+			.gesture(
+				DragGesture(minimumDistance: 1)
+					.onChanged { value in
+						isDragging = true
+						let current = isVertical ? value.translation.height : value.translation.width
+						let delta = current - lastDragValue
+						lastDragValue = current
+						onDrag(delta)
+					}
+					.onEnded { _ in
+						isDragging = false
+						lastDragValue = 0
+					}
+			)
 	}
 }

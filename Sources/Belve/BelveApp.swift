@@ -67,6 +67,7 @@ extension Notification.Name {
 	static let belveSwitchProject = Notification.Name("belveSwitchProject")
 	static let belveSplitVertical = Notification.Name("belveSplitVertical")
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
+	static let belveFocusProject = Notification.Name("belveFocusProject")
 }
 
 class CommandPaletteState: ObservableObject {
@@ -139,6 +140,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 	) {
 		// Show banner + sound even when app is in foreground
 		completionHandler([.banner, .sound])
+	}
+
+	func userNotificationCenter(
+		_ center: UNUserNotificationCenter,
+		didReceive response: UNNotificationResponse,
+		withCompletionHandler completionHandler: @escaping () -> Void
+	) {
+		let userInfo = response.notification.request.content.userInfo
+		if let projectIdString = userInfo["projectId"] as? String,
+		   let projectId = UUID(uuidString: projectIdString) {
+			NSLog("[Belve] Notification clicked for project: \(projectId)")
+			NSApp.activate(ignoringOtherApps: true)
+			NotificationCenter.default.post(
+				name: .belveFocusProject,
+				object: nil,
+				userInfo: ["projectId": projectId]
+			)
+		}
+		completionHandler()
 	}
 
 	private func adjustTrafficLights() {

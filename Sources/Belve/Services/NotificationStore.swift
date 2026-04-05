@@ -27,9 +27,11 @@ struct TerminalNotification: Identifiable {
 class NotificationStore: ObservableObject {
 	@Published var notifications: [TerminalNotification] = []
 	@Published var agentStatus: [UUID: AgentState] = [:] // keyed by projectId
+	@Published var sessionLabels: [UUID: String] = [:] // keyed by projectId
 
 	// Mapping: paneId → projectId (set by TerminalPaneView)
 	var paneToProject: [String: UUID] = [:]
+	private var hasSessionLabel: Set<UUID> = [] // track if first prompt was captured
 
 	func registerPane(paneId: String, projectId: UUID) {
 		paneToProject[paneId] = projectId
@@ -46,10 +48,22 @@ class NotificationStore: ObservableObject {
 		self.agentStatus[projectId] = AgentState(status: agentStatus, message: message)
 		NSLog("[Belve] Agent status: \(status) - \(message) (project: \(projectId))")
 
+		// Capture first prompt as session label
+		if agentStatus == .running && !hasSessionLabel.contains(projectId) && message != "Generating" {
+			sessionLabels[projectId] = message
+			hasSessionLabel.insert(projectId)
+			NSLog("[Belve] Session label: \(message) (project: \(projectId))")
+		}
+
+		// Reset session label tracking on session end
+		if agentStatus == .sessionEnd {
+			hasSessionLabel.remove(projectId)
+		}
+
 		// Add notification + desktop notification for waiting state
 		if agentStatus == .waiting {
 			add(projectId: projectId, title: "Claude Code", body: message)
-			sendDesktopNotification(title: "Claude Code", body: message)
+			sendDesktopNotification(title: "Claude Code", body: message, projectId: projectId)
 		}
 	}
 
@@ -90,11 +104,14 @@ class NotificationStore: ObservableObject {
 		}
 	}
 
-	private func sendDesktopNotification(title: String, body: String) {
+	func sendDesktopNotification(title: String, body: String, projectId: UUID? = nil) {
 		let content = UNMutableNotificationContent()
 		content.title = title
 		content.body = body
 		content.sound = .default
+		if let projectId {
+			content.userInfo = ["projectId": projectId.uuidString]
+		}
 
 		let request = UNNotificationRequest(
 			identifier: UUID().uuidString,

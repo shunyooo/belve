@@ -50,8 +50,27 @@ case "${1:-}" in
                 emit_event "waiting" "$local_msg"
                 ;;
             prompt-submit)
-                read_stdin
-                emit_event "running" "Generating"
+                # Capture prompt text for session label
+                local_prompt=""
+                if command -v node > /dev/null 2>&1; then
+                    local_prompt=$(node -e '
+                        let d="";
+                        process.stdin.on("data",c=>d+=c);
+                        process.stdin.on("end",()=>{
+                            try{const j=JSON.parse(d);
+                                const p=j.prompt||j.message||"";
+                                process.stdout.write(p.substring(0,100).replace(/[\n\r"\\]/g," ").trim())}
+                            catch{process.stdout.write("")}
+                        })
+                    ' 2>/dev/null) || local_prompt=""
+                else
+                    read_stdin
+                fi
+                if [ -n "$local_prompt" ]; then
+                    emit_event "running" "$local_prompt"
+                else
+                    emit_event "running" "Generating"
+                fi
                 ;;
             stop)
                 read_stdin

@@ -21,20 +21,21 @@ struct MainWindow: View {
 		ZStack {
 			// Main layout
 			HStack(spacing: 0) {
-				if showSidebar {
-					ProjectListView(
+				ProjectListView(
 						projects: projects,
 						selectedProject: $selectedProject,
 						onAddProject: { addProject() },
-						onToggleSidebar: { showSidebar = false },
+						onToggleSidebar: { withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() } },
 						onOpenNotifications: { /* TODO: notification panel */ }
 					)
-					.frame(width: Theme.sidebarWidth)
+					.frame(width: showSidebar ? Theme.sidebarWidth : 0)
+					.clipped()
 					.background(Theme.bg)
 
-					Theme.border
-						.frame(width: 1)
-				}
+					if showSidebar {
+						Theme.border
+							.frame(width: 1)
+					}
 
 				VStack(spacing: 0) {
 					TopBar(
@@ -122,6 +123,12 @@ struct MainWindow: View {
 				selectedProject = projects[index]
 			}
 		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveFocusProject)) { notification in
+			if let projectId = notification.userInfo?["projectId"] as? UUID,
+			   let project = projects.first(where: { $0.id == projectId }) {
+				selectedProject = project
+			}
+		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveOpenFolder)) { _ in
 			if commandPaletteState.isPresented && paletteMode == .folderBrowser {
 				commandPaletteState.isPresented = false
@@ -169,7 +176,7 @@ struct MainWindow: View {
 		})
 
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
-			showSidebar.toggle()
+			withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() }
 		})
 
 		if selectedProject != nil {
@@ -328,6 +335,7 @@ struct WelcomeView: View {
 struct TopBar: View {
 	let project: Project?
 	@Binding var showSidebar: Bool
+	@EnvironmentObject var notificationStore: NotificationStore
 	@State private var isHoveringSidebar = false
 
 	var body: some View {
@@ -335,7 +343,7 @@ struct TopBar: View {
 			// Show toggle only when sidebar is hidden
 			if !showSidebar {
 				Button {
-					showSidebar = true
+					withAnimation(.easeInOut(duration: 0.2)) { showSidebar = true }
 				} label: {
 					Image(systemName: "sidebar.left")
 						.font(.system(size: 11, weight: .medium))
@@ -358,6 +366,15 @@ struct TopBar: View {
 					Text(host)
 						.font(.system(size: 10, weight: .regular, design: .monospaced))
 						.foregroundStyle(Theme.textTertiary)
+				}
+
+				if let label = notificationStore.sessionLabels[project.id] {
+					Text("·")
+						.foregroundStyle(Theme.textTertiary)
+					Text(label)
+						.font(.system(size: 10, weight: .regular))
+						.foregroundStyle(Theme.textTertiary)
+						.lineLimit(1)
 				}
 			}
 
