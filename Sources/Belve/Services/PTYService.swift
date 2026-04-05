@@ -72,7 +72,7 @@ class PTYService {
 		let result = cArgs.withUnsafeBufferPointer { argsPtr in
 			cEnv.withUnsafeBufferPointer { envPtr in
 				posix_spawn(
-					&pid, shell, &fileActions, &spawnAttr,
+					&pid, resolvedShell, &fileActions, &spawnAttr,
 					UnsafeMutablePointer(mutating: argsPtr.baseAddress!),
 					UnsafeMutablePointer(mutating: envPtr.baseAddress!)
 				)
