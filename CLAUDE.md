@@ -4,6 +4,13 @@
 
 macOS ネイティブ（Swift/SwiftUI）のマルチプロジェクト開発環境。SSH/DevContainer リモート接続、ターミナル、コードエディタ、Markdown WYSIWYG を統合。
 
+## ドキュメント
+
+- [docs/TODO.md](docs/TODO.md) — タスク一覧・ロードマップ
+- [docs/architecture.md](docs/architecture.md) — アーキテクチャ設計
+- [docs/DESIGN.md](docs/DESIGN.md) — デザイン方針
+- [docs/development-guide.md](docs/development-guide.md) — 開発ガイド（セットアップ、スクショ、ワークフロー、ショートカット）
+
 ## ビルドと開発
 
 ```bash
