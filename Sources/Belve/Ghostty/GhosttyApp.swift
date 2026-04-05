@@ -36,40 +36,60 @@ final class GhosttyRuntime {
 		ghostty_config_load_default_files(cfg)
 		ghostty_config_load_recursive_files(cfg)
 
-		// Use ZDOTDIR trick to inject Belve's bin dir into PATH after .zshrc.
-		// Creates a temporary .zshrc that sources the user's original then re-prepends PATH.
+		// Inject Belve's bin dir into PATH after shell rc files.
+		// Uses ZDOTDIR for zsh, --rcfile for bash.
 		if let execDir = Bundle.main.executableURL?.deletingLastPathComponent() {
 			let belveBin = execDir
 				.deletingLastPathComponent()
 				.appendingPathComponent("Resources/bin").path
 			let home = NSHomeDirectory()
-			let zdotdir = "/tmp/belve-zdotdir"
-			try? FileManager.default.createDirectory(atPath: zdotdir, withIntermediateDirectories: true)
+			let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+			let shellName = (shell as NSString).lastPathComponent
+			let tmpDir = "/tmp/belve-shell"
+			try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
 
-			// .zshenv — runs before .zshrc, sources user's .zshenv
-			let zshenv = """
-			[ -f "\(home)/.zshenv" ] && source "\(home)/.zshenv"
-			"""
-			try? zshenv.write(toFile: "\(zdotdir)/.zshenv", atomically: true, encoding: .utf8)
+			let command: String
+			switch shellName {
+			case "zsh":
+				// ZDOTDIR trick: custom rc files that source originals then re-prepend PATH
+				let zdotdir = "\(tmpDir)/zdotdir"
+				try? FileManager.default.createDirectory(atPath: zdotdir, withIntermediateDirectories: true)
+				try? """
+				[ -f "\(home)/.zshenv" ] && source "\(home)/.zshenv"
+				""".write(toFile: "\(zdotdir)/.zshenv", atomically: true, encoding: .utf8)
+				try? """
+				[ -f "\(home)/.zshrc" ] && source "\(home)/.zshrc"
+				export PATH="\(belveBin):$PATH"
+				""".write(toFile: "\(zdotdir)/.zshrc", atomically: true, encoding: .utf8)
+				try? """
+				[ -f "\(home)/.zprofile" ] && source "\(home)/.zprofile"
+				""".write(toFile: "\(zdotdir)/.zprofile", atomically: true, encoding: .utf8)
+				command = "env ZDOTDIR=\(zdotdir) \(shell) -l"
 
-			// .zshrc — sources user's .zshrc then re-prepends Belve bin
-			let zshrc = """
-			[ -f "\(home)/.zshrc" ] && source "\(home)/.zshrc"
-			export PATH="\(belveBin):$PATH"
-			"""
-			try? zshrc.write(toFile: "\(zdotdir)/.zshrc", atomically: true, encoding: .utf8)
+			case "bash":
+				// --rcfile: custom bashrc that sources originals then re-prepends PATH
+				let bashrc = "\(tmpDir)/bashrc"
+				try? """
+				[ -f /etc/profile ] && source /etc/profile
+				[ -f "\(home)/.bash_profile" ] && source "\(home)/.bash_profile"
+				[ -f "\(home)/.bashrc" ] && source "\(home)/.bashrc"
+				export PATH="\(belveBin):$PATH"
+				""".write(toFile: bashrc, atomically: true, encoding: .utf8)
+				command = "\(shell) --rcfile \(bashrc) -i"
 
-			// .zprofile — sources user's .zprofile
-			let zprofile = """
-			[ -f "\(home)/.zprofile" ] && source "\(home)/.zprofile"
-			"""
-			try? zprofile.write(toFile: "\(zdotdir)/.zprofile", atomically: true, encoding: .utf8)
+			case "fish":
+				// Fish: use --init-command
+				command = "\(shell) --init-command 'set -gx PATH \(belveBin) $PATH'"
 
-			let command = "/bin/zsh -l"
-			let tmpConf = "/tmp/belve-ghostty.conf"
-			try? "command = env ZDOTDIR=\(zdotdir) \(command)\n".write(toFile: tmpConf, atomically: true, encoding: .utf8)
+			default:
+				// Fallback: sh wrapper that sets PATH then execs login shell
+				command = "/bin/sh -c 'export PATH=\"\(belveBin):$PATH\"; exec \(shell) -l'"
+			}
+
+			let tmpConf = "\(tmpDir)/ghostty.conf"
+			try? "command = \(command)\n".write(toFile: tmpConf, atomically: true, encoding: .utf8)
 			ghostty_config_load_file(cfg, tmpConf)
-			NSLog("[Belve] Ghostty command with ZDOTDIR=\(zdotdir)")
+			NSLog("[Belve] Ghostty command (\(shellName)): \(command)")
 		}
 
 		ghostty_config_finalize(cfg)
