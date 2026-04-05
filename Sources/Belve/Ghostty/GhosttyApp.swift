@@ -48,49 +48,44 @@ final class GhosttyRuntime {
 			let tmpDir = "/tmp/belve-shell"
 			try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
 
-			let command: String
-			switch shellName {
-			case "zsh":
-				// ZDOTDIR trick: custom rc files that source originals then re-prepend PATH
-				let zdotdir = "\(tmpDir)/zdotdir"
-				try? FileManager.default.createDirectory(atPath: zdotdir, withIntermediateDirectories: true)
-				try? """
-				[ -f "\(home)/.zshenv" ] && source "\(home)/.zshenv"
-				""".write(toFile: "\(zdotdir)/.zshenv", atomically: true, encoding: .utf8)
-				try? """
-				[ -f "\(home)/.zshrc" ] && source "\(home)/.zshrc"
-				export PATH="\(belveBin):$PATH"
-				claude() { "\(belveBin)/claude" "$@"; }
-				""".write(toFile: "\(zdotdir)/.zshrc", atomically: true, encoding: .utf8)
-				try? """
-				[ -f "\(home)/.zprofile" ] && source "\(home)/.zprofile"
-				""".write(toFile: "\(zdotdir)/.zprofile", atomically: true, encoding: .utf8)
-				command = "env ZDOTDIR=\(zdotdir) \(shell) -l"
-
-			case "bash":
-				// Launcher script: source user's profile, then inject Belve env + claude function.
-				// Can't use --rcfile because Ghostty starts bash as login shell which ignores it.
-				let launcher = "\(tmpDir)/bash-launcher.sh"
-				try? """
-				#!/bin/bash
-				export BELVE_SESSION=1
-				export PATH="\(belveBin):$PATH"
-				claude() { "\(belveBin)/claude" "$@"; }
-				export -f claude
-				exec \(shell) -l -i
-				""".write(toFile: launcher, atomically: true, encoding: .utf8)
-				try? FileManager.default.setAttributes(
-					[.posixPermissions: 0o755], ofItemAtPath: launcher)
-				command = launcher
-
-			case "fish":
-				// Fish: use --init-command
-				command = "\(shell) --init-command 'set -gx PATH \(belveBin) $PATH'"
-
-			default:
-				// Fallback: sh wrapper that sets PATH then execs login shell
-				command = "/bin/sh -c 'export PATH=\"\(belveBin):$PATH\"; exec \(shell) -l'"
-			}
+			// Launcher: set env vars + claude function, detect shell for correct syntax.
+			// Shell function is necessary because nvm/pyenv etc reorder PATH after init.
+			let launcher = "\(tmpDir)/belve-launcher.sh"
+			try? #"""
+			#!/bin/sh
+			export BELVE_SESSION=1
+			export PATH="\#(belveBin):$PATH"
+			SHELL_NAME="$(basename "\#(shell)")"
+			case "$SHELL_NAME" in
+			  bash)
+			    # bash: export -f makes function available in child process
+			    claude() { "\#(belveBin)/claude" "$@"; }
+			    export -f claude
+			    exec \#(shell) -l -i ;;
+			  zsh)
+			    # zsh: ZDOTDIR trick to source function after .zshrc
+			    mkdir -p "\#(tmpDir)/zdotdir"
+			    cat > "\#(tmpDir)/zdotdir/.zshenv" << 'ZENV'
+			[ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"
+			ZENV
+			    cat > "\#(tmpDir)/zdotdir/.zprofile" << 'ZPROF'
+			[ -f "$HOME/.zprofile" ] && source "$HOME/.zprofile"
+			ZPROF
+			    cat > "\#(tmpDir)/zdotdir/.zshrc" << ZSHRC
+			[ -f "\$HOME/.zshrc" ] && source "\$HOME/.zshrc"
+			export PATH="\#(belveBin):\$PATH"
+			claude() { "\#(belveBin)/claude" "\$@"; }
+			ZSHRC
+			    ZDOTDIR="\#(tmpDir)/zdotdir" exec \#(shell) -l -i ;;
+			  fish)
+			    exec \#(shell) --init-command 'set -gx PATH \#(belveBin) $PATH; function claude; \#(belveBin)/claude $argv; end' ;;
+			  *)
+			    exec \#(shell) -l -i ;;
+			esac
+			"""#.write(toFile: launcher, atomically: true, encoding: .utf8)
+			try? FileManager.default.setAttributes(
+				[.posixPermissions: 0o755], ofItemAtPath: launcher)
+			let command = launcher
 
 			let tmpConf = "\(tmpDir)/ghostty.conf"
 			try? "command = \(command)\n".write(toFile: tmpConf, atomically: true, encoding: .utf8)
