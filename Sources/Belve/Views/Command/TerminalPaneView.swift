@@ -13,6 +13,34 @@ struct TerminalPaneView: NSViewRepresentable {
 		tv.nativeBackgroundColor = NSColor(Theme.bg)
 		tv.nativeForegroundColor = NSColor(Theme.textPrimary)
 
+		// Install a brighter ANSI color palette (One Dark theme).
+		// SwiftTerm.Color uses UInt16 in 0-65535 range, so multiply 8-bit values by 257.
+		func c(_ r: UInt16, _ g: UInt16, _ b: UInt16) -> SwiftTerm.Color {
+			SwiftTerm.Color(red: r * 257, green: g * 257, blue: b * 257)
+		}
+		let palette: [SwiftTerm.Color] = [
+			c(0x28, 0x2c, 0x34),  // black
+			c(0xe0, 0x6c, 0x75),  // red
+			c(0x98, 0xc3, 0x79),  // green
+			c(0xf0, 0xa0, 0x50),  // yellow (warm orange)
+			c(0x61, 0xaf, 0xef),  // blue
+			c(0xc6, 0x78, 0xdd),  // magenta
+			c(0x56, 0xb6, 0xc2),  // cyan
+			c(0xab, 0xb2, 0xbf),  // white
+			c(0x54, 0x58, 0x62),  // bright black
+			c(0xe0, 0x6c, 0x75),  // bright red
+			c(0x98, 0xc3, 0x79),  // bright green
+			c(0xf5, 0xb0, 0x60),  // bright yellow (warm orange)
+			c(0x61, 0xaf, 0xef),  // bright blue
+			c(0xc6, 0x78, 0xdd),  // bright magenta
+			c(0x56, 0xb6, 0xc2),  // bright cyan
+			c(0xe6, 0xe6, 0xe6),  // bright white
+		]
+		tv.installColors(palette)
+
+		// Use a compact monospace font
+		tv.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+
 		context.coordinator.terminalView = tv
 		context.coordinator.project = project
 		context.coordinator.paneId = paneId
