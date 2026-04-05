@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 
 enum AgentStatus: String {
 	case idle
@@ -44,9 +45,10 @@ class NotificationStore: ObservableObject {
 		self.agentStatus[projectId] = AgentState(status: agentStatus, message: message)
 		NSLog("[Belve] Agent status: \(status) - \(message) (project: \(projectId))")
 
-		// Add notification for waiting state
+		// Add notification + desktop notification for waiting state
 		if agentStatus == .waiting {
 			add(projectId: projectId, title: "Claude Code", body: message)
+			sendDesktopNotification(title: "Claude Code", body: message)
 		}
 	}
 
@@ -79,5 +81,25 @@ class NotificationStore: ObservableObject {
 
 	func latestNotification(for projectId: UUID) -> TerminalNotification? {
 		notifications.first { $0.projectId == projectId }
+	}
+
+	func requestNotificationPermission() {
+		UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+			NSLog("[Belve] Notification permission: \(granted), error: \(String(describing: error))")
+		}
+	}
+
+	private func sendDesktopNotification(title: String, body: String) {
+		let content = UNMutableNotificationContent()
+		content.title = title
+		content.body = body
+		content.sound = .default
+
+		let request = UNNotificationRequest(
+			identifier: UUID().uuidString,
+			content: content,
+			trigger: nil
+		)
+		UNUserNotificationCenter.current().add(request)
 	}
 }

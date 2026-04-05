@@ -69,6 +69,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 		NSApp.activate(ignoringOtherApps: true)
 		adjustTrafficLights()
 
+		// Request notification permission
+		notificationStore.requestNotificationPermission()
+
 		// Global hotkey: Cmd+' to toggle app visibility
 		NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
 			if event.modifierFlags.contains(.command),
