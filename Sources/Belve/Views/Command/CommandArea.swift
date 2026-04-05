@@ -64,10 +64,11 @@ struct PaneTreeView: View {
 					VStack(spacing: 0) {
 						PaneTreeView(node: children[0], project: project)
 							.frame(height: firstSize)
-						PaneDivider(direction: .vertical) { delta in
-							let newRatio = node.splitRatio + delta / available
-							node.splitRatio = max(0.15, min(0.85, newRatio))
-						}
+						PaneDivider(
+							direction: .vertical,
+							availableSize: available,
+							ratio: $node.splitRatio
+						)
 						PaneTreeView(node: children[1], project: project)
 							.frame(height: secondSize)
 					}
@@ -75,10 +76,11 @@ struct PaneTreeView: View {
 					HStack(spacing: 0) {
 						PaneTreeView(node: children[0], project: project)
 							.frame(width: firstSize)
-						PaneDivider(direction: .horizontal) { delta in
-							let newRatio = node.splitRatio + delta / available
-							node.splitRatio = max(0.15, min(0.85, newRatio))
-						}
+						PaneDivider(
+							direction: .horizontal,
+							availableSize: available,
+							ratio: $node.splitRatio
+						)
 						PaneTreeView(node: children[1], project: project)
 							.frame(width: secondSize)
 					}
@@ -90,9 +92,10 @@ struct PaneTreeView: View {
 
 struct PaneDivider: View {
 	let direction: SplitDirection
-	let onDrag: (CGFloat) -> Void
+	let availableSize: CGFloat
+	@Binding var ratio: CGFloat
 	@State private var isDragging = false
-	@State private var lastDragValue: CGFloat = 0
+	@State private var ratioAtDragStart: CGFloat = 0
 
 	var body: some View {
 		let isVertical = direction == .vertical
@@ -108,17 +111,18 @@ struct PaneDivider: View {
 				}
 			}
 			.gesture(
-				DragGesture(minimumDistance: 1)
+				DragGesture(minimumDistance: 1, coordinateSpace: .global)
 					.onChanged { value in
-						isDragging = true
-						let current = isVertical ? value.translation.height : value.translation.width
-						let delta = current - lastDragValue
-						lastDragValue = current
-						onDrag(delta)
+						if !isDragging {
+							isDragging = true
+							ratioAtDragStart = ratio
+						}
+						let translation = isVertical ? value.translation.height : value.translation.width
+						let newRatio = ratioAtDragStart + translation / availableSize
+						ratio = max(0.15, min(0.85, newRatio))
 					}
 					.onEnded { _ in
 						isDragging = false
-						lastDragValue = 0
 					}
 			)
 	}

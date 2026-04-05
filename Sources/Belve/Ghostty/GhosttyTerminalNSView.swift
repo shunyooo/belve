@@ -346,6 +346,11 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 	override func performKeyEquivalent(with event: NSEvent) -> Bool {
 		guard let surface else { return false }
 
+		// Let the main menu handle shortcuts first (Cmd+Shift+P, Cmd+D, etc.)
+		if let menu = NSApp.mainMenu, menu.performKeyEquivalent(with: event) {
+			return true
+		}
+
 		var keyEvent = ghostty_input_key_s()
 		keyEvent.action = GHOSTTY_ACTION_PRESS
 		keyEvent.keycode = UInt32(event.keyCode)
