@@ -52,6 +52,10 @@ final class GhosttyRuntime {
 			let launcher = "\(tmpDir)/belve-launcher.sh"
 			try? #"""
 			#!/bin/sh
+			# SSH mode: connect to remote host
+			if [ -n "$BELVE_SSH_HOST" ]; then
+			    exec /usr/bin/ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -t "$BELVE_SSH_HOST"
+			fi
 			export BELVE_SESSION=1
 			export PATH="\#(belveBin):$PATH"
 			SHELL_NAME="$(basename "\#(shell)")"

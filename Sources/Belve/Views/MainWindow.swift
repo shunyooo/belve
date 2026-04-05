@@ -273,13 +273,16 @@ struct MainWindow: View {
 	private func connectSSH(host: String) {
 		guard let index = projects.firstIndex(where: { $0.id == selectedProject?.id }) else {
 			// No project selected, create one
-			let project = Project(name: host, sshHost: host)
+			let project = Project(name: host, sshHost: host, remotePath: "~")
 			projects.append(project)
 			selectedProject = project
 			saveProjects()
 			return
 		}
 		projects[index].sshHost = host
+		if projects[index].remotePath == nil {
+			projects[index].remotePath = "~"
+		}
 		// Force terminal recreation by updating selectedProject
 		let project = projects[index]
 		selectedProject = nil

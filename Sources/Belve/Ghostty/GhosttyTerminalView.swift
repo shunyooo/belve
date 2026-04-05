@@ -14,8 +14,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
 		_ = GhosttyRuntime.shared
 
 		let view = GhosttyTerminalNSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-		// Ghostty will use the user's home directory if no working directory is set.
-		// For remote projects we leave it nil and let the shell handle it.
 
 		// Build environment
 		var env: [String: String] = [
@@ -33,6 +31,12 @@ struct GhosttyTerminalView: NSViewRepresentable {
 				.appendingPathComponent("Resources/bin")
 			let currentPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
 			env["PATH"] = "\(resourceBin.path):\(currentPath)"
+		}
+
+		// SSH: tell the launcher to connect via SSH
+		if let sshHost = project.sshHost {
+			env["BELVE_SSH_HOST"] = sshHost
+			NSLog("[Belve] SSH mode for \(sshHost)")
 		}
 
 		view.environmentVariables = env
