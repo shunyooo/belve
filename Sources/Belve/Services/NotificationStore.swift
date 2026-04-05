@@ -37,7 +37,7 @@ class NotificationStore: ObservableObject {
 	func updateAgentStatus(paneId: String, status: String, message: String) {
 		guard let projectId = paneToProject[paneId],
 			  let agentStatus = AgentStatus(rawValue: status) else {
-			NSLog("[Belve] Unknown agent status: \(status) for pane \(paneId)")
+			NSLog("[Belve] Agent status ignored: pane \(paneId) not mapped or unknown status \(status)")
 			return
 		}
 

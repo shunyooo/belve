@@ -76,6 +76,12 @@ struct TerminalPaneView: NSViewRepresentable {
 					// Local shell with Belve environment
 					let belveEnv = buildBelveEnvironment()
 					pty = try PTYService.spawn(environment: belveEnv)
+					// .zshrc overrides PATH, so re-inject Belve bin after shell init
+					if let binDir = belveEnv["PATH"]?.components(separatedBy: ":").first {
+						DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+							pty.send(" export PATH=\"\(binDir):$PATH\" && clear\n")
+						}
+					}
 				}
 				self.ptyService = pty
 

@@ -8,10 +8,15 @@ set -euo pipefail
 
 PANE_ID="${BELVE_PANE_ID:-unknown}"
 
-emit_osc() {
+EVENTS_FILE="/tmp/belve-agent-events"
+
+emit_event() {
     local status="$1"
     local message="$2"
-    # Write OSC 9 with BELVE protocol to /dev/tty
+    # Write JSON event to file (monitored by Belve app)
+    printf '{"paneId":"%s","status":"%s","message":"%s","timestamp":%d}\n' \
+        "$PANE_ID" "$status" "$message" "$(date +%s)" >> "$EVENTS_FILE"
+    # Also try OSC to /dev/tty (works when tty is available)
     printf '\033]9;BELVE:%s:%s:%s\007' "$PANE_ID" "$status" "$message" > /dev/tty 2>/dev/null || true
 }
 
@@ -25,7 +30,7 @@ case "${1:-}" in
         case "${2:-}" in
             session-start)
                 read_stdin
-                emit_osc "session_start" "started"
+                emit_event "session_start" "started"
                 ;;
             notification)
                 # Parse notification type from stdin JSON
@@ -42,19 +47,19 @@ case "${1:-}" in
                 else
                     read_stdin
                 fi
-                emit_osc "waiting" "$local_msg"
+                emit_event "waiting" "$local_msg"
                 ;;
             prompt-submit)
                 read_stdin
-                emit_osc "running" "Generating"
+                emit_event "running" "Generating"
                 ;;
             stop)
                 read_stdin
-                emit_osc "completed" "Done"
+                emit_event "completed" "Done"
                 ;;
             session-end)
                 read_stdin
-                emit_osc "session_end" "ended"
+                emit_event "session_end" "ended"
                 ;;
             *)
                 read_stdin

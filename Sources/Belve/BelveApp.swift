@@ -50,10 +50,17 @@ class CommandPaletteState: ObservableObject {
 class AppDelegate: NSObject, NSApplicationDelegate {
 	let commandPaletteState = CommandPaletteState()
 	let notificationStore = NotificationStore()
+	let agentFileMonitor = AgentEventFileMonitor()
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		NSApp.activate(ignoringOtherApps: true)
 		adjustTrafficLights()
+
+		// Start monitoring agent events file
+		agentFileMonitor.onEvent = { [weak self] paneId, status, message in
+			self?.notificationStore.updateAgentStatus(paneId: paneId, status: status, message: message)
+		}
+		agentFileMonitor.start()
 
 		NotificationCenter.default.addObserver(
 			forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
