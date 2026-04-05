@@ -121,7 +121,7 @@ Sources/Belve/
 
 ## 設計原則
 
-- 1ファイル1責務、200行以下目安
+- 1ファイル1責務（凝縮度優先。行数制限なし、責務が混在していれば分割）
 - Protocol 駆動（Service 層は Protocol で定義）
 - DI はイニシャライザ注入
 - View は `*View`、Service は `*Service`
@@ -131,3 +131,49 @@ Sources/Belve/
 - インデントはタブ
 - Swift naming conventions（PascalCase: 型、camelCase: 変数/関数）
 - デバッグログ（`NSLog("[Belve] ...")`）は残してよい
+
+## 実装後レビュー（サブエージェント）
+
+実装タスクを完了する前に、以下の2つのレビューをサブエージェント（Agent ツール）で実行する。両方 PASS するまで修正を繰り返すこと。
+
+### 1. Plan Review（プラン適合性チェック）
+
+プランや要件に対して実装が正しく完了しているかを検証する。
+
+```
+Agent ツールで起動（subagent_type: general-purpose）:
+- git diff で変更内容を取得
+- 会話のプラン/要件と照合
+- 未実装ステップ、意図からの逸脱、スコープクリープを検出
+- 詳細は .claude/skills/review-plan.md を参照
+```
+
+**起動タイミング**: プランに基づく実装が一通り完了した時点
+
+### 2. Rules Review（プロジェクトルールチェック）
+
+変更ファイルがプロジェクトの設計原則・規約に準拠しているかを検証する。
+
+```
+Agent ツールで起動（subagent_type: general-purpose）:
+- git diff --name-only で変更ファイルを特定
+- 各ファイルを読み込み、ルール違反を検出
+- 凝縮度・構造（単一責務、レイヤー漏洩）、設計（Protocol 駆動、DI）、スレッド・パフォーマンス、規約（タブ、命名）、安全性、テスト品質をチェック
+- 詳細は .claude/skills/review-rules.md を参照
+```
+
+**起動タイミング**: 全ての実装変更が完了した時点（Plan Review の後）
+
+### レビューフロー
+
+```
+実装完了
+  ↓
+Plan Review（サブエージェント）
+  ↓ FAIL → 修正 → 再レビュー
+  ↓ PASS
+Rules Review（サブエージェント）
+  ↓ FAIL → 修正 → 再レビュー
+  ↓ PASS
+ユーザーに完了報告
+```

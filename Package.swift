@@ -10,11 +10,27 @@ let package = Package(
 	targets: [
 		.executableTarget(
 			name: "Belve",
-			dependencies: ["SwiftTerm"],
+			dependencies: [
+				"SwiftTerm",
+				"GhosttyKit",
+			],
 			path: "Sources/Belve",
 			resources: [
 				.copy("Resources"),
+			],
+			linkerSettings: [
+				.linkedFramework("Metal"),
+				.linkedFramework("MetalKit"),
+				.linkedFramework("QuartzCore"),
+				.linkedFramework("IOSurface"),
+				.linkedFramework("CoreText"),
+				.linkedLibrary("z"),
+				.linkedLibrary("c++"),
 			]
+		),
+		.binaryTarget(
+			name: "GhosttyKit",
+			path: "GhosttyKit.xcframework"
 		),
 		.testTarget(
 			name: "BelveTests",
