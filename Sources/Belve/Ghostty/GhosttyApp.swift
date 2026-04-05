@@ -60,7 +60,7 @@ final class GhosttyRuntime {
 				try? """
 				[ -f "\(home)/.zshrc" ] && source "\(home)/.zshrc"
 				export PATH="\(belveBin):$PATH"
-				alias claude="\(belveBin)/claude"
+				claude() { "\(belveBin)/claude" "$@"; }
 				""".write(toFile: "\(zdotdir)/.zshrc", atomically: true, encoding: .utf8)
 				try? """
 				[ -f "\(home)/.zprofile" ] && source "\(home)/.zprofile"
@@ -75,7 +75,8 @@ final class GhosttyRuntime {
 				[ -f "\(home)/.bash_profile" ] && source "\(home)/.bash_profile"
 				[ -f "\(home)/.bashrc" ] && source "\(home)/.bashrc"
 				export PATH="\(belveBin):$PATH"
-				alias claude="\(belveBin)/claude"
+				claude() { "\(belveBin)/claude" "$@"; }
+				export -f claude
 				""".write(toFile: bashrc, atomically: true, encoding: .utf8)
 				command = "\(shell) --rcfile \(bashrc) -i"
 
