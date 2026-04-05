@@ -114,9 +114,13 @@ Theme.trafficLightLeading  // トラフィックライトの右端位置
 - **OSC (`/dev/tty`) はリモートでも動く**: SSH/DevContainer では OSC 経由が唯一の通信手段。ファイル監視はローカルのフォールバック
 
 ### シェル関数注入
-- **bash**: ランチャースクリプト (`/tmp/belve-shell/bash-launcher.sh`) で `claude()` 関数を定義してから `exec bash -l -i`。ログインシェルでは `--rcfile` が無視されるためこの方式が必要
-- **zsh**: ZDOTDIR の `.zshrc` で関数定義（未テスト）
-- **fish**: `--init-command` で PATH 追加のみ（関数未定義）
+統一ランチャー (`/tmp/belve-shell/belve-launcher.sh`) がシェルを検出して適切に `claude()` 関数を注入:
+- **bash**: `export -f claude` — bash はエクスポートされた関数を子プロセスに引き継ぐ
+- **zsh**: ZDOTDIR の `.zshrc` で `.zshrc` source 後に関数定義
+- **fish**: `--init-command` でインライン関数定義
+- **その他**: PATH のみ（関数なし、ラッパーが PATH で見つかれば動く）
+
+**なぜ PATH だけでは不十分か**: nvm, pyenv 等のツールがシェル初期化時に PATH を再構成し、Belve bin より前に自身の bin を配置する。シェル関数は PATH 順序に関係なく優先されるため確実。
 
 ### SSH/DevContainer 対応状況
 - ローカル: ✅ ファイル監視 + OSC 両方で動作
