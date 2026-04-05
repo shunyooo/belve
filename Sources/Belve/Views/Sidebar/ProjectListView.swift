@@ -7,6 +7,11 @@ struct ProjectListView: View {
 	var onAddProject: (() -> Void)?
 	var onToggleSidebar: (() -> Void)?
 	var onOpenNotifications: (() -> Void)?
+	var onRenameProject: ((UUID, String) -> Void)?
+	var onDeleteProject: ((UUID) -> Void)?
+
+	@State private var renamingProjectId: UUID?
+	@State private var renameText = ""
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
@@ -14,17 +19,37 @@ struct ProjectListView: View {
 			ScrollView {
 				VStack(spacing: 2) {
 					ForEach(projects) { project in
-						Button {
-							selectedProject = project
-						} label: {
-							ProjectRow(
-								project: project,
-								isSelected: selectedProject == project,
-								unreadCount: notificationStore.unreadCount(for: project.id),
-								agentState: notificationStore.agentStatus[project.id]
-							)
+						if renamingProjectId == project.id {
+							RenameField(text: $renameText) {
+								if !renameText.isEmpty {
+									onRenameProject?(project.id, renameText)
+								}
+								renamingProjectId = nil
+							}
+							.padding(.horizontal, 8)
+						} else {
+							Button {
+								selectedProject = project
+							} label: {
+								ProjectRow(
+									project: project,
+									isSelected: selectedProject == project,
+									unreadCount: notificationStore.unreadCount(for: project.id),
+									agentState: notificationStore.agentStatus[project.id]
+								)
+							}
+							.buttonStyle(.plain)
+							.contextMenu {
+								Button("Rename") {
+									renameText = project.name
+									renamingProjectId = project.id
+								}
+								Divider()
+								Button("Delete", role: .destructive) {
+									onDeleteProject?(project.id)
+								}
+							}
 						}
-						.buttonStyle(.plain)
 					}
 				}
 				.padding(.horizontal, 8)
@@ -47,6 +72,29 @@ struct ProjectListView: View {
 			.padding(.trailing, 6)
 			.padding(.top, 4)
 		}
+	}
+}
+
+struct RenameField: View {
+	@Binding var text: String
+	let onCommit: () -> Void
+	@FocusState private var isFocused: Bool
+
+	var body: some View {
+		TextField("Project name", text: $text)
+			.textFieldStyle(.plain)
+			.font(Theme.fontBody)
+			.foregroundStyle(Theme.textPrimary)
+			.padding(.horizontal, 10)
+			.padding(.vertical, 7)
+			.background(
+				RoundedRectangle(cornerRadius: Theme.radiusSm)
+					.fill(Theme.surfaceActive)
+			)
+			.focused($isFocused)
+			.onAppear { isFocused = true }
+			.onSubmit { onCommit() }
+			.onExitCommand { onCommit() }
 	}
 }
 

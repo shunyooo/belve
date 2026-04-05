@@ -26,7 +26,20 @@ struct MainWindow: View {
 						selectedProject: $selectedProject,
 						onAddProject: { addProject() },
 						onToggleSidebar: { withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() } },
-						onOpenNotifications: { /* TODO: notification panel */ }
+						onOpenNotifications: { /* TODO: notification panel */ },
+						onRenameProject: { id, newName in
+							if let index = projects.firstIndex(where: { $0.id == id }) {
+								projects[index].name = newName
+								saveProjects()
+							}
+						},
+						onDeleteProject: { id in
+							projects.removeAll { $0.id == id }
+							if selectedProject?.id == id {
+								selectedProject = projects.first
+							}
+							saveProjects()
+						}
 					)
 					.frame(width: showSidebar ? Theme.sidebarWidth : 0)
 					.clipped()
