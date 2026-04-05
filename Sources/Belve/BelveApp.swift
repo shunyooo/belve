@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 @main
 struct BelveApp: App {
@@ -72,7 +73,7 @@ class CommandPaletteState: ObservableObject {
 	@Published var isPresented = false
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
 	let commandPaletteState = CommandPaletteState()
 	let notificationStore = NotificationStore()
 	let agentFileMonitor = AgentEventFileMonitor()
@@ -80,6 +81,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		NSApp.activate(ignoringOtherApps: true)
 		adjustTrafficLights()
+
+		// Set notification delegate (must be before requestAuthorization)
+		UNUserNotificationCenter.current().delegate = self
 
 		// Request notification permission
 		notificationStore.requestNotificationPermission()
@@ -124,6 +128,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 	func applicationDidBecomeActive(_ notification: Notification) {
 		NSLog("[Belve] App became active")
 		adjustTrafficLights()
+	}
+
+	// MARK: - UNUserNotificationCenterDelegate
+
+	func userNotificationCenter(
+		_ center: UNUserNotificationCenter,
+		willPresent notification: UNNotification,
+		withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+	) {
+		// Show banner + sound even when app is in foreground
+		completionHandler([.banner, .sound])
 	}
 
 	private func adjustTrafficLights() {

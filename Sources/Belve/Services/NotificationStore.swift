@@ -33,6 +33,7 @@ class NotificationStore: ObservableObject {
 
 	func registerPane(paneId: String, projectId: UUID) {
 		paneToProject[paneId] = projectId
+		NSLog("[Belve] registerPane: paneId=\(paneId) projectId=\(projectId)")
 	}
 
 	func updateAgentStatus(paneId: String, status: String, message: String) {

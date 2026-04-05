@@ -38,4 +38,14 @@ cp Sources/Belve/Resources/bin/belve Belve.app/Contents/Resources/bin/ 2>/dev/nu
 cp Sources/Belve/Resources/bin/claude Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 chmod +x Belve.app/Contents/Resources/bin/belve Belve.app/Contents/Resources/bin/claude 2>/dev/null || true
 
+# Move resource bundle out of MacOS to avoid codesign sub-bundle issues
+mkdir -p Belve.app/Contents/Resources
+if [ -d "Belve.app/Contents/MacOS/Belve_Belve.bundle" ]; then
+    rm -rf Belve.app/Contents/Resources/Belve_Belve.bundle
+    mv Belve.app/Contents/MacOS/Belve_Belve.bundle Belve.app/Contents/Resources/
+fi
+
+# Re-sign so Info.plist is bound to the signature (required for notifications)
+codesign --force --sign - Belve.app
+
 echo "Belve.app built successfully"
