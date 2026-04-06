@@ -43,6 +43,7 @@ struct MainWindow: View {
 					// Top bar
 					TopBar(
 						projectName: projectStore.selectedProject?.name ?? "",
+						connectionInfo: projectStore.selectedProject.map { Self.connectionInfo(for: $0) } ?? nil,
 						showSidebar: showSidebar,
 						onToggleSidebar: { withAnimation(.easeOut(duration: 0.15)) { showSidebar.toggle() } },
 						sessionLabel: nil
@@ -135,6 +136,21 @@ struct MainWindow: View {
 			}
 		}
 		.background(Theme.bg)
+		.onKeyPress(characters: .init(charactersIn: "dw"), phases: .down) { press in
+			if press.characters == "d" && press.modifiers == .command {
+				commandAreaState.splitActive(.vertical)
+				return .handled
+			}
+			if press.characters == "d" && press.modifiers == [.command, .shift] {
+				commandAreaState.splitActive(.horizontal)
+				return .handled
+			}
+			if press.characters == "w" && press.modifiers == .command {
+				commandAreaState.closeActivePane()
+				return .handled
+			}
+			return .ignored
+		}
 		.onKeyPress(characters: .init(charactersIn: "123456789"), phases: .down) { press in
 			guard press.modifiers == .command else { return .ignored }
 			if let digit = press.characters.first, let index = digit.wholeNumberValue {
@@ -174,15 +190,7 @@ struct MainWindow: View {
 				openFolder()
 			}
 		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveSplitVertical)) { _ in
-			commandAreaState.splitActive(.vertical)
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveSplitHorizontal)) { _ in
-			commandAreaState.splitActive(.horizontal)
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveClosePane)) { _ in
-			commandAreaState.closeActivePane()
-		}
+		// Split/close handled via .onKeyPress above
 	}
 
 	// MARK: - Command Palette
@@ -256,6 +264,18 @@ struct MainWindow: View {
 
 	// MARK: - Folder Browser
 
+	private static func connectionInfo(for project: Project) -> String? {
+		switch project.executionContext {
+		case .local: return nil
+		case .ssh(let host):
+			let short = host.components(separatedBy: ".").first ?? host
+			return "SSH: \(short)"
+		case .devContainer(let host, _):
+			let short = host.components(separatedBy: ".").first ?? host
+			return "DevContainer: \(short)"
+		}
+	}
+
 	private func openFolder() {
 		browserPath = projectStore.selectedProject?.effectivePath ?? NSHomeDirectory()
 		paletteMode = .folderBrowser
@@ -267,6 +287,7 @@ struct MainWindow: View {
 
 struct TopBar: View {
 	let projectName: String
+	let connectionInfo: String?  // e.g. "SSH: host", "DevContainer: host", nil for local
 	let showSidebar: Bool
 	let onToggleSidebar: () -> Void
 	var sessionLabel: String?
@@ -290,6 +311,10 @@ struct TopBar: View {
 				.font(.system(size: 12, weight: .medium))
 				.foregroundStyle(Theme.textSecondary)
 
+			if let info = connectionInfo {
+				ConnectionBadge(text: info)
+			}
+
 			if let label = sessionLabel {
 				Text("— \(label)")
 					.font(.system(size: 12))
@@ -306,6 +331,38 @@ struct TopBar: View {
 }
 
 // MARK: - Welcome View
+
+struct ConnectionBadge: View {
+	let text: String
+
+	private var icon: String {
+		if text.hasPrefix("DevContainer") { return "shippingbox" }
+		if text.hasPrefix("SSH") { return "network" }
+		return "desktopcomputer"
+	}
+
+	private var color: Color {
+		if text.hasPrefix("DevContainer") { return Theme.yellow }
+		if text.hasPrefix("SSH") { return Theme.accent }
+		return Theme.green
+	}
+
+	var body: some View {
+		HStack(spacing: 4) {
+			Image(systemName: icon)
+				.font(.system(size: 9))
+			Text(text)
+				.font(.system(size: 10, weight: .medium))
+		}
+		.foregroundStyle(color)
+		.padding(.horizontal, 6)
+		.padding(.vertical, 2)
+		.background(
+			RoundedRectangle(cornerRadius: 4)
+				.fill(color.opacity(0.12))
+		)
+	}
+}
 
 struct WelcomeView: View {
 	let onCreateProject: () -> Void

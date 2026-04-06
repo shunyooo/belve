@@ -370,6 +370,8 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 
 	override func keyUp(with event: NSEvent) {
 		guard let surface else { return }
+		// Don't send Cmd-based key releases to Ghostty
+		if event.modifierFlags.contains(.command) { return }
 		var keyEvent = ghostty_input_key_s()
 		keyEvent.action = GHOSTTY_ACTION_RELEASE
 		keyEvent.keycode = UInt32(event.keyCode)

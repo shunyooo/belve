@@ -36,6 +36,16 @@ final class GhosttyRuntime {
 		ghostty_config_load_default_files(cfg)
 		ghostty_config_load_recursive_files(cfg)
 
+		// Disable Ghostty's default keybindings that conflict with Belve
+		// (Belve handles Cmd+D split, Cmd+W close, Cmd+N new, Cmd+T tab, etc.)
+		let disableBindings = """
+		keybind = clear
+		"""
+		let bindingsConf = "/tmp/belve-shell/ghostty-keybinds.conf"
+		try? FileManager.default.createDirectory(atPath: "/tmp/belve-shell", withIntermediateDirectories: true)
+		try? disableBindings.write(toFile: bindingsConf, atomically: true, encoding: .utf8)
+		ghostty_config_load_file(cfg, bindingsConf)
+
 		// Launcher script injects Belve env + claude function, then execs user's shell.
 		// Ghostty env_vars alone isn't enough because shell rc files (nvm, pyenv)
 		// reorder PATH. Shell function (export -f / ZDOTDIR) ensures claude wrapper
@@ -55,26 +65,38 @@ final class GhosttyRuntime {
 			export TERM=xterm-256color
 			SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color"
 
-			# SSH/DevContainer: connect, then fall through to local shell on exit
+			# SSH/DevContainer: connect with tmux for session persistence
 			if [ -n "$BELVE_SSH_HOST" ]; then
+			    TMUX_SESSION="belve-${BELVE_PANE_ID:-default}"
+			    TMUX_CMD="tmux new-session -A -s $TMUX_SESSION"
+
 			    if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_REMOTE_PATH" ]; then
-			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && echo '⏳ Starting Dev Container...' && devcontainer up --workspace-folder . 2>&1 && echo '✅ Container ready' && TERM=xterm-256color devcontainer exec --workspace-folder . \$SHELL -l"
+			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && echo '⏳ Starting Dev Container...' && devcontainer up --workspace-folder . 2>&1 && echo '✅ Container ready' && TERM=xterm-256color devcontainer exec --workspace-folder . sh -c 'command -v tmux >/dev/null && exec $TMUX_CMD || exec \$SHELL -l'"
 			    elif [ -n "$BELVE_REMOTE_PATH" ]; then
-			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && exec \$SHELL -l"
+			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && { command -v tmux >/dev/null && exec $TMUX_CMD || exec \$SHELL -l; }"
 			    else
-			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST"
+			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "command -v tmux >/dev/null && exec $TMUX_CMD || exec \$SHELL -l"
 			    fi
 			    # SSH exited — fall through to local shell below
 			    echo "🔌 SSH disconnected. Local shell:"
 			fi
+			# Local shell setup
 			export BELVE_SESSION=1
 			export PATH="\#(belveBin):$PATH"
+			TMUX_SESSION="belve-${BELVE_PANE_ID:-local}"
 			SHELL_NAME="$(basename "\#(shell)")"
+
+			# Prepare shell-specific rc files
 			case "$SHELL_NAME" in
 			  bash)
-			    claude() { "\#(belveBin)/claude" "$@"; }
-			    export -f claude
-			    exec \#(shell) -l -i ;;
+			    cat > "\#(tmpDir)/belve-bashrc" << BASHRC
+			[ -f "\$HOME/.bash_profile" ] && source "\$HOME/.bash_profile"
+			[ -f "\$HOME/.bashrc" ] && source "\$HOME/.bashrc"
+			export PATH="\#(belveBin):\$PATH"
+			claude() { "\#(belveBin)/claude" "\$@"; }
+			export -f claude
+			BASHRC
+			    BELVE_SHELL="\#(shell) --rcfile \#(tmpDir)/belve-bashrc -i" ;;
 			  zsh)
 			    mkdir -p "\#(tmpDir)/zdotdir"
 			    cat > "\#(tmpDir)/zdotdir/.zshenv" << 'ZENV'
@@ -88,12 +110,23 @@ final class GhosttyRuntime {
 			export PATH="\#(belveBin):\$PATH"
 			claude() { "\#(belveBin)/claude" "\$@"; }
 			ZSHRC
-			    ZDOTDIR="\#(tmpDir)/zdotdir" exec \#(shell) -l -i ;;
+			    BELVE_SHELL="ZDOTDIR=\#(tmpDir)/zdotdir \#(shell) -l -i" ;;
 			  fish)
-			    exec \#(shell) --init-command 'set -gx PATH \#(belveBin) $PATH; function claude; \#(belveBin)/claude $argv; end' ;;
+			    BELVE_SHELL="\#(shell) --init-command 'set -gx PATH \#(belveBin) \$PATH; function claude; \#(belveBin)/claude \$argv; end'" ;;
 			  *)
-			    exec \#(shell) -l -i ;;
+			    BELVE_SHELL="\#(shell) -l -i" ;;
 			esac
+
+			# Launch inside tmux (create or attach)
+			if command -v tmux >/dev/null 2>&1; then
+			    exec tmux new-session -A -s "$TMUX_SESSION" \
+			        \; set mouse on \
+			        \; set -s extended-keys on \
+			        \; set -as terminal-features 'xterm*:extkeys' \
+			        "$BELVE_SHELL"
+			else
+			    exec sh -c "$BELVE_SHELL"
+			fi
 			"""#.write(toFile: launcher, atomically: true, encoding: .utf8)
 			try? FileManager.default.setAttributes(
 				[.posixPermissions: 0o755], ofItemAtPath: launcher)

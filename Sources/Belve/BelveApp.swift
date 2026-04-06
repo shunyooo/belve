@@ -47,18 +47,12 @@ struct BelveApp: App {
 				}
 				.keyboardShortcut("r", modifiers: .command)
 			}
+			// Cmd+D/Cmd+Shift+D/Cmd+W handled via .onKeyPress in MainWindow
+			// (CommandGroup + @Published mutation crashes during performKeyEquivalent)
 			CommandGroup(after: .toolbar) {
-				Button("Split Vertical") {
-					NotificationCenter.default.post(name: .belveSplitVertical, object: nil)
-				}
-				.keyboardShortcut("d", modifiers: .command)
-				Button("Split Horizontal") {
-					NotificationCenter.default.post(name: .belveSplitHorizontal, object: nil)
-				}
-				.keyboardShortcut("d", modifiers: [.command, .shift])
-				Button("Close Pane") {
-					NotificationCenter.default.post(name: .belveClosePane, object: nil)
-				}
+				Button("Split Vertical") {}
+				Button("Split Horizontal") {}
+				Button("Close Pane") {}
 				.keyboardShortcut("w", modifiers: .command)
 			}
 			// Cmd+1-9 project switching handled via NSEvent monitor in AppDelegate
