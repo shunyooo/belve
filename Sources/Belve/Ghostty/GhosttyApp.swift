@@ -36,15 +36,9 @@ final class GhosttyRuntime {
 		ghostty_config_load_default_files(cfg)
 		ghostty_config_load_recursive_files(cfg)
 
-		// Disable Ghostty's default keybindings that conflict with Belve
-		// (Belve handles Cmd+D split, Cmd+W close, Cmd+N new, Cmd+T tab, etc.)
-		let disableBindings = """
-		keybind = clear
-		"""
-		let bindingsConf = "/tmp/belve-shell/ghostty-keybinds.conf"
-		try? FileManager.default.createDirectory(atPath: "/tmp/belve-shell", withIntermediateDirectories: true)
-		try? disableBindings.write(toFile: bindingsConf, atomically: true, encoding: .utf8)
-		ghostty_config_load_file(cfg, bindingsConf)
+		// NOTE: Ghostty keybind conflicts handled in performKeyEquivalent
+		// (Cmd keys pass through to SwiftUI menu, not to Ghostty).
+		// No keybind = clear needed — it causes empty terminal rendering.
 
 		// Launcher script injects Belve env + claude function, then execs user's shell.
 		// Ghostty env_vars alone isn't enough because shell rc files (nvm, pyenv)
@@ -117,16 +111,7 @@ final class GhosttyRuntime {
 			    BELVE_SHELL="\#(shell) -l -i" ;;
 			esac
 
-			# Launch inside tmux (create or attach)
-			if command -v tmux >/dev/null 2>&1; then
-			    exec tmux new-session -A -s "$TMUX_SESSION" \
-			        \; set mouse on \
-			        \; set -s extended-keys on \
-			        \; set -as terminal-features 'xterm*:extkeys' \
-			        "$BELVE_SHELL"
-			else
-			    exec sh -c "$BELVE_SHELL"
-			fi
+			exec sh -c "$BELVE_SHELL"
 			"""#.write(toFile: launcher, atomically: true, encoding: .utf8)
 			try? FileManager.default.setAttributes(
 				[.posixPermissions: 0o755], ofItemAtPath: launcher)
