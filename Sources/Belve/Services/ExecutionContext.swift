@@ -28,6 +28,8 @@ enum ExecutionContext: Codable, Hashable {
 			]
 		}
 
+		NSLog("[Belve] ExecutionContext.run: \(process.executableURL?.path ?? "?") \(process.arguments ?? [])")
+
 		do {
 			try process.run()
 			process.waitUntilExit()
@@ -37,7 +39,9 @@ enum ExecutionContext: Codable, Hashable {
 		}
 
 		let data = pipe.fileHandleForReading.readDataToEndOfFile()
-		return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .newlines)
+		let result = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .newlines)
+		NSLog("[Belve] ExecutionContext.run result: \(result?.prefix(100) ?? "nil") (rc=\(process.terminationStatus))")
+		return result
 	}
 
 	/// List directory contents.
@@ -83,11 +87,12 @@ enum ExecutionContext: Codable, Hashable {
 		}
 	}
 
-	/// The home directory for this context.
+	/// The home/default directory for this context.
 	var homeDirectory: String {
 		switch self {
 		case .local: return NSHomeDirectory()
-		case .ssh, .devContainer: return "~"
+		case .ssh: return "~"
+		case .devContainer: return "."  // devcontainer exec starts in workspace dir
 		}
 	}
 
@@ -120,7 +125,7 @@ enum ExecutionContext: Codable, Hashable {
 	}
 
 	private func shellQuote(_ path: String) -> String {
-		if path.hasPrefix("~") { return path }
+		if path.hasPrefix("~") || path == "." || path.hasPrefix("/") { return path }
 		return "'\(path.replacingOccurrences(of: "'", with: "'\\''"))'"
 	}
 }

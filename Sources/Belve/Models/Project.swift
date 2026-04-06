@@ -46,6 +46,9 @@ struct Project: Identifiable, Codable, Hashable {
 
 	/// The effective working directory for this project.
 	var effectivePath: String {
-		remotePath ?? executionContext.homeDirectory
+		if isDevContainer {
+			return "."  // devcontainer exec starts in workspace dir
+		}
+		return remotePath ?? executionContext.homeDirectory
 	}
 }
