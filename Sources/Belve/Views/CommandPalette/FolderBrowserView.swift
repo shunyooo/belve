@@ -46,16 +46,7 @@ struct FolderBrowserView: View {
 				.foregroundStyle(Theme.textPrimary)
 				.focused($isFocused)
 				.onSubmit {
-					NSLog("[Belve] FolderBrowser onSubmit: selectedIndex=\(selectedIndex) filtered.count=\(filtered.count)")
-					// If a valid item is selected by arrow keys, enter that directory
-					if selectedIndex >= 0, selectedIndex < filtered.count {
-						let selected = filtered[selectedIndex]
-						if selected.isDirectory {
-							enterDirectory(selected.path)
-							return
-						}
-					}
-					// Otherwise confirm current path
+					// Enter always confirms current path
 					isPresented = false
 					onSelect(currentPath)
 				}
@@ -109,6 +100,16 @@ struct FolderBrowserView: View {
 		.onKeyPress(.downArrow) {
 			selectedIndex = min(filtered.count - 1, selectedIndex + 1)
 			return .handled
+		}
+		.onKeyPress(.tab) {
+			if selectedIndex >= 0, selectedIndex < filtered.count {
+				let selected = filtered[selectedIndex]
+				if selected.isDirectory {
+					enterDirectory(selected.path)
+					return .handled
+				}
+			}
+			return .ignored
 		}
 		.onKeyPress(.escape) {
 			isPresented = false

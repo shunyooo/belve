@@ -161,6 +161,14 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 		NSLog("[Belve] Ghostty surface created")
 	}
 
+	/// Send text to the terminal (simulates keyboard input).
+	func sendText(_ text: String) {
+		guard let surface else { return }
+		text.withCString { ptr in
+			ghostty_surface_text(surface, ptr, UInt(text.utf8.count))
+		}
+	}
+
 	func destroySurface() {
 		guard let surface else { return }
 		ghostty_surface_free(surface)

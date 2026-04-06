@@ -253,13 +253,40 @@ struct MainWindow: View {
 		guard let index = projects.firstIndex(where: { $0.id == selectedProject?.id }) else { return }
 		projects[index].remotePath = path
 		projects[index].name = (path as NSString).lastPathComponent
-		let project = projects[index]
-		selectedProject = nil
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-			selectedProject = project
-			saveProjects()
+		saveProjects()
+
+		// Send cd command to active terminal pane
+		// Leave ~ unquoted so the shell expands it
+		let cdCommand: String
+		if path.hasPrefix("~") {
+			cdCommand = " cd \(path)\n"
+		} else {
+			let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
+			cdCommand = " cd '\(escaped)'\n"
 		}
+		sendToActiveTerminal(cdCommand)
+
 		NSLog("[Belve] Opened folder: \(path)")
+	}
+
+	private func shellEscape(_ path: String) -> String {
+		// Wrap in single quotes, escaping any single quotes in the path
+		return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+	}
+
+	private func sendToActiveTerminal(_ text: String) {
+		// Find the active GhosttyTerminalNSView and send text via ghostty_surface_text
+		guard let window = NSApp.keyWindow else { return }
+		func findGhosttyView(_ view: NSView) -> NSView? {
+			if view is GhosttyTerminalNSView { return view }
+			for sub in view.subviews {
+				if let found = findGhosttyView(sub) { return found }
+			}
+			return nil
+		}
+		if let ghosttyView = findGhosttyView(window.contentView ?? window.contentView!) as? GhosttyTerminalNSView {
+			ghosttyView.sendText(text)
+		}
 	}
 
 	private func addProject() {
