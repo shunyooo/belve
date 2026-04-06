@@ -33,13 +33,21 @@ struct GhosttyTerminalView: NSViewRepresentable {
 			env["PATH"] = "\(resourceBin.path):\(currentPath)"
 		}
 
-		// SSH: tell the launcher to connect via SSH
-		if let sshHost = project.sshHost {
-			env["BELVE_SSH_HOST"] = sshHost
-			NSLog("[Belve] SSH mode for \(sshHost)")
-		}
-
 		view.environmentVariables = env
+
+		// Set command for SSH / DevContainer connections
+		if project.isDevContainer, let sshHost = project.sshHost, let workspacePath = project.devContainerPath {
+			// DevContainer: ssh into host, then devcontainer exec
+			BelveRemoteInstaller.deploy(to: sshHost)
+			let args = DevContainerService.exec(sshHost: sshHost, workspacePath: workspacePath)
+			view.command = args.joined(separator: " ")
+			NSLog("[Belve] DevContainer mode: \(sshHost):\(workspacePath)")
+		} else if let sshHost = project.sshHost {
+			// SSH: connect to remote host
+			BelveRemoteInstaller.deploy(to: sshHost)
+			view.command = "/usr/bin/ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -t \(sshHost)"
+			NSLog("[Belve] SSH mode: \(sshHost)")
+		}
 
 		// Register pane → project mapping for agent notifications
 		if let paneId {

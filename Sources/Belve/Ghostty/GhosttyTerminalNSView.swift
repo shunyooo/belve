@@ -15,6 +15,9 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 	/// Working directory for the shell.
 	var workingDirectory: String?
 
+	/// Custom command to run instead of default shell (e.g. "ssh host" for remote).
+	var command: String?
+
 	/// Environment variables to inject into the shell.
 	var environmentVariables: [String: String] = [:]
 
@@ -80,6 +83,18 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 		guard let app = GhosttyRuntime.shared.app else {
 			NSLog("[Belve] Cannot create surface: Ghostty runtime not initialized")
 			return
+		}
+
+		// Apply per-surface command override if set (e.g. SSH/DevContainer)
+		if let command {
+			let tmpConf = "/tmp/belve-surface-\(ObjectIdentifier(self).hashValue).conf"
+			try? "command = \(command)\n".write(toFile: tmpConf, atomically: true, encoding: .utf8)
+			if let cfg = ghostty_config_clone(GhosttyRuntime.shared.config) {
+				ghostty_config_load_file(cfg, tmpConf)
+				ghostty_config_finalize(cfg)
+				ghostty_app_update_config(app, cfg)
+			}
+			NSLog("[Belve] Per-surface command: \(command)")
 		}
 
 		var config = ghostty_surface_config_new()
@@ -351,9 +366,12 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 	override func performKeyEquivalent(with event: NSEvent) -> Bool {
 		guard let surface else { return false }
 
-		// Let the main menu handle shortcuts first (Cmd+Shift+P, Cmd+D, etc.)
-		if let menu = NSApp.mainMenu, menu.performKeyEquivalent(with: event) {
-			return true
+		// Always let Cmd-based shortcuts go to the main menu first.
+		// This ensures Cmd+Shift+P (palette), Cmd+D (split), Cmd+N (new project) etc. work.
+		if event.modifierFlags.contains(.command) {
+			if let menu = NSApp.mainMenu, menu.performKeyEquivalent(with: event) {
+				return true
+			}
 		}
 
 		var keyEvent = ghostty_input_key_s()

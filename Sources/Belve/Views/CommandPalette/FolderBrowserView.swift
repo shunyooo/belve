@@ -46,16 +46,18 @@ struct FolderBrowserView: View {
 				.foregroundStyle(Theme.textPrimary)
 				.focused($isFocused)
 				.onSubmit {
-					if let selected = filtered.first(where: { filtered.firstIndex(of: $0) == selectedIndex }),
-					   selected.isDirectory {
-						enterDirectory(selected.path)
-					} else if filtered.isEmpty || typedSuffix.isEmpty {
-						// Confirm current path
-						isPresented = false
-						onSelect(currentPath)
-					} else if let first = filtered.first, first.isDirectory {
-						enterDirectory(first.path)
+					NSLog("[Belve] FolderBrowser onSubmit: selectedIndex=\(selectedIndex) filtered.count=\(filtered.count)")
+					// If a valid item is selected by arrow keys, enter that directory
+					if selectedIndex >= 0, selectedIndex < filtered.count {
+						let selected = filtered[selectedIndex]
+						if selected.isDirectory {
+							enterDirectory(selected.path)
+							return
+						}
 					}
+					// Otherwise confirm current path
+					isPresented = false
+					onSelect(currentPath)
 				}
 			}
 			.padding(.horizontal, 12)
@@ -138,8 +140,11 @@ struct FolderBrowserView: View {
 	private func handlePathInput(_ newValue: String) {
 		let base = currentPath.hasSuffix("/") ? currentPath : currentPath + "/"
 		if newValue.hasPrefix(base) {
-			typedSuffix = String(newValue.dropFirst(base.count))
-			selectedIndex = 0
+			let newSuffix = String(newValue.dropFirst(base.count))
+			if newSuffix != typedSuffix {
+				typedSuffix = newSuffix
+				selectedIndex = 0
+			}
 		} else if newValue.hasSuffix("/") && newValue.count > 1 {
 			// User typed a full path ending with /
 			let newPath = String(newValue.dropLast())
