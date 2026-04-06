@@ -85,12 +85,9 @@ struct GhosttyTerminalView: NSViewRepresentable {
 			}
 		}
 
-		// Cache view in PaneNode for reuse on split
-		if let paneId, cachedView == nil {
-			if let paneNode = commandAreaState.findNode(paneId) {
-				paneNode.terminalView = view
-			}
-		}
+		// Note: Don't cache here — caching in makeNSView causes SwiftUI
+		// to return the same view on re-render, orphaning the surface.
+		// Caching is done only in PaneNode.split() for split operations.
 
 		// Request first responder after layout settles
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
