@@ -10,9 +10,6 @@ class PaneNode: ObservableObject, Identifiable {
 	@Published var splitDirection: SplitDirection?
 	@Published var splitRatio: CGFloat = 0.5
 
-	/// Cached terminal NSView — survives split operations
-	var terminalView: GhosttyTerminalNSView?
-
 	init(id: UUID = UUID()) {
 		self.id = id
 	}
@@ -21,10 +18,8 @@ class PaneNode: ObservableObject, Identifiable {
 
 	func split(_ direction: SplitDirection) {
 		guard isLeaf else { return }
-		// Move this node's terminal view to first child
+		// Keep the existing pane's id so SwiftUI doesn't destroy its NSView/surface.
 		let existing = PaneNode(id: self.id)
-		existing.terminalView = self.terminalView
-		self.terminalView = nil
 		let newPane = PaneNode()
 		splitDirection = direction
 		splitRatio = 0.5
@@ -131,7 +126,7 @@ struct PaneTreeView: View {
 
 	var body: some View {
 		if node.isLeaf {
-			GhosttyTerminalView(project: project, paneId: node.id.uuidString, cachedView: node.terminalView)
+			GhosttyTerminalView(project: project, paneId: node.id.uuidString)
 				.id(node.id)
 		} else if let children = node.children, children.count == 2,
 				  let direction = node.splitDirection {

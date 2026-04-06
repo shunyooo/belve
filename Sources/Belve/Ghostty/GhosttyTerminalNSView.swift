@@ -179,31 +179,25 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 	}
 
 	func destroySurface() {
-		guard let surface else { return }
-		// Clear reference first to prevent callbacks on freed surface
-		self.surface = nil
-		// Free on main thread with a small delay to let Ghostty finish any pending work
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-			ghostty_surface_free(surface)
+		// Don't free Ghostty surface — it crashes.
+		// Just deactivate and clear the reference.
+		if let surface {
+			ghostty_surface_set_focus(surface, false)
+			ghostty_surface_set_occlusion(surface, true)
 		}
+		self.surface = nil
 	}
 
 	deinit {
-		let s = surface
-		let ta = trackingArea
-		surface = nil
-		// Deactivate surface before freeing to prevent Ghostty callbacks
-		if let s {
+		// Don't free Ghostty surface in deinit — it crashes.
+		// Surface lifecycle is tied to the Ghostty app runtime instead.
+		// Just clean up AppKit resources.
+		if let s = surface {
 			ghostty_surface_set_focus(s, false)
 			ghostty_surface_set_occlusion(s, true)
 		}
-		// deinit may not be on main thread; schedule cleanup with delay
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-			if let s {
-				ghostty_surface_free(s)
-			}
-		}
-		if let ta {
+		surface = nil
+		if let ta = trackingArea {
 			removeTrackingArea(ta)
 		}
 	}
