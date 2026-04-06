@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import WebKit
 
 /// Manages project lifecycle: CRUD, persistence, selection, and state reset.
 /// Single source of truth for project state — all project mutations go through here.
@@ -99,22 +100,24 @@ class ProjectStore: ObservableObject {
 		NSLog("[Belve] Opened folder: \(path)")
 	}
 
-	/// Send text to the currently focused GhosttyTerminalNSView
+	/// Send text to the currently focused terminal (via WKWebView PTY bridge)
 	func sendToActiveTerminal(_ text: String) {
-		findTerminalView()?.sendText(text)
+		guard let webView = findTerminalWebView() else { return }
+		let b64 = Data(text.utf8).base64EncodedString()
+		webView.evaluateJavaScript("terminalWrite('\(b64)')", completionHandler: nil)
 	}
 
 	/// Refocus the terminal view after palette/dialog closes
 	func refocusTerminal() {
-		if let tv = findTerminalView() {
-			tv.window?.makeFirstResponder(tv)
+		if let webView = findTerminalWebView() {
+			webView.window?.makeFirstResponder(webView)
 		}
 	}
 
-	private func findTerminalView() -> GhosttyTerminalNSView? {
+	private func findTerminalWebView() -> WKWebView? {
 		guard let window = NSApp.keyWindow else { return nil }
-		func find(_ view: NSView) -> GhosttyTerminalNSView? {
-			if let v = view as? GhosttyTerminalNSView { return v }
+		func find(_ view: NSView) -> WKWebView? {
+			if let v = view as? WKWebView { return v }
 			for sub in view.subviews {
 				if let found = find(sub) { return found }
 			}

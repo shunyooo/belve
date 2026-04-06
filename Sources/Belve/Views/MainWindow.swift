@@ -7,7 +7,7 @@ struct MainWindow: View {
 	@State private var splitPosition: CGFloat = 500
 	@State private var openFile: OpenFile?
 	@State private var paletteMode: PaletteMode = .commands
-	@StateObject private var commandAreaState = CommandAreaState()
+	@StateObject private var stateManager = CommandAreaStateManager()
 	@State private var browserPath: String = ""
 
 	enum PaletteMode {
@@ -58,10 +58,12 @@ struct MainWindow: View {
 							ZStack {
 								ForEach(projectStore.projects) { project in
 									let isSelected = project.id == projectStore.selectedProject?.id
+									let state = commandAreaState(for: project.id)
 									ZStack(alignment: .bottomTrailing) {
 										HStack(spacing: 0) {
-											CommandArea(project: project, state: commandAreaState, areaWidth: clampedSplit)
-												.environmentObject(commandAreaState)
+											CommandArea(project: project, state: state)
+													.frame(width: clampedSplit)
+												.environmentObject(state)
 
 											SplitDivider(
 												position: $splitPosition,
@@ -136,31 +138,19 @@ struct MainWindow: View {
 			}
 		}
 		.background(Theme.bg)
-		.onKeyPress(characters: .init(charactersIn: "dw"), phases: .down) { press in
-			if press.characters == "d" && press.modifiers == .command {
-				commandAreaState.splitActive(.vertical)
-				return .handled
+		// Cmd+D/W/1-9 shortcuts are handled via JS postMessage → Coordinator
+		// (WKWebView consumes key events before SwiftUI .onKeyPress sees them)
+		.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notif in
+			if let index = notif.userInfo?["index"] as? Int {
+				projectStore.selectByIndex(index)
 			}
-			if press.characters == "d" && press.modifiers == [.command, .shift] {
-				commandAreaState.splitActive(.horizontal)
-				return .handled
-			}
-			if press.characters == "w" && press.modifiers == .command {
-				commandAreaState.closeActivePane()
-				return .handled
-			}
-			return .ignored
-		}
-		.onKeyPress(characters: .init(charactersIn: "123456789"), phases: .down) { press in
-			guard press.modifiers == .command else { return .ignored }
-			if let digit = press.characters.first, let index = digit.wholeNumberValue {
-				projectStore.selectByIndex(index - 1)
-				return .handled
-			}
-			return .ignored
 		}
 		.onChange(of: projectStore.selectedProject) {
 			openFile = nil
+			// Refocus terminal after project switch
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+				projectStore.refocusTerminal()
+			}
 		}
 		.onChange(of: commandPaletteState.isPresented) {
 			if !commandPaletteState.isPresented {
@@ -234,10 +224,14 @@ struct MainWindow: View {
 		}
 
 		cmds.append(PaletteCommand(title: "Split Terminal Vertical", icon: "rectangle.split.1x2") {
-			commandAreaState.splitActive(.vertical)
+			if let id = projectStore.selectedProject?.id {
+				commandAreaState(for: id).splitActive(.vertical)
+			}
 		})
 		cmds.append(PaletteCommand(title: "Split Terminal Horizontal", icon: "rectangle.split.2x1") {
-			commandAreaState.splitActive(.horizontal)
+			if let id = projectStore.selectedProject?.id {
+				commandAreaState(for: id).splitActive(.horizontal)
+			}
 		})
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
 			withAnimation(.easeOut(duration: 0.15)) { showSidebar.toggle() }
@@ -274,6 +268,10 @@ struct MainWindow: View {
 			let short = host.components(separatedBy: ".").first ?? host
 			return "DevContainer: \(short)"
 		}
+	}
+
+	private func commandAreaState(for projectId: UUID) -> CommandAreaState {
+		stateManager.state(for: projectId)
 	}
 
 	private func openFolder() {

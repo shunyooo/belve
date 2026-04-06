@@ -22,12 +22,15 @@ class PTYService {
 	static func spawn(
 		shell: String? = nil,
 		args: [String] = ["-l"],
-		environment: [String: String]? = nil
+		environment: [String: String]? = nil,
+		cols: Int = 80,
+		rows: Int = 24
 	) throws -> PTYService {
 		var master: Int32 = 0
 		var slave: Int32 = 0
 
-		guard openpty(&master, &slave, nil, nil, nil) == 0 else {
+		var size = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
+		guard openpty(&master, &slave, nil, nil, &size) == 0 else {
 			throw PTYError.openptyFailed
 		}
 

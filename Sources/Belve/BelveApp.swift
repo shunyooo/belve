@@ -89,6 +89,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		let buildDate = binaryModificationDate()
 		NSLog("[Belve] Binary: \(Bundle.main.executableURL?.path ?? "?"), modified: \(buildDate)")
 
+		// Generate launcher script for terminal sessions
+		LauncherScriptGenerator.generate()
+
 		// Install crash signal handlers to capture backtrace
 		installCrashHandlers()
 		NSApp.activate(ignoringOtherApps: true)

@@ -1,10 +1,10 @@
 import SwiftUI
 
-enum SplitDirection {
+enum SplitDirection: String, Codable {
 	case horizontal, vertical
 }
 
-class PaneNode: ObservableObject, Identifiable {
+class PaneNode: ObservableObject, Identifiable, Codable {
 	let id: UUID
 	let paneIndex: Int
 	@Published var children: [PaneNode]?
@@ -17,6 +17,30 @@ class PaneNode: ObservableObject, Identifiable {
 	}
 
 	var isLeaf: Bool { children == nil }
+
+	// MARK: - Codable
+
+	enum CodingKeys: String, CodingKey {
+		case id, paneIndex, children, splitDirection, splitRatio
+	}
+
+	required init(from decoder: Decoder) throws {
+		let c = try decoder.container(keyedBy: CodingKeys.self)
+		id = try c.decode(UUID.self, forKey: .id)
+		paneIndex = try c.decode(Int.self, forKey: .paneIndex)
+		children = try c.decodeIfPresent([PaneNode].self, forKey: .children)
+		splitDirection = try c.decodeIfPresent(SplitDirection.self, forKey: .splitDirection)
+		splitRatio = try c.decode(CGFloat.self, forKey: .splitRatio)
+	}
+
+	func encode(to encoder: Encoder) throws {
+		var c = encoder.container(keyedBy: CodingKeys.self)
+		try c.encode(id, forKey: .id)
+		try c.encode(paneIndex, forKey: .paneIndex)
+		try c.encodeIfPresent(children, forKey: .children)
+		try c.encodeIfPresent(splitDirection, forKey: .splitDirection)
+		try c.encode(splitRatio, forKey: .splitRatio)
+	}
 }
 
 // MARK: - Layout Calculation
@@ -37,18 +61,72 @@ struct PaneLayout {
 	let dividers: [DividerItem]
 }
 
+// MARK: - Per-Project State Manager
+
+class CommandAreaStateManager: ObservableObject {
+	private var states: [UUID: CommandAreaState] = [:]
+
+	private static var saveURL: URL {
+		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+		let belveDir = appSupport.appendingPathComponent("Belve")
+		try? FileManager.default.createDirectory(at: belveDir, withIntermediateDirectories: true)
+		return belveDir.appendingPathComponent("pane-layouts.json")
+	}
+
+	init() {
+		load()
+	}
+
+	func state(for projectId: UUID) -> CommandAreaState {
+		if let existing = states[projectId] {
+			return existing
+		}
+		let state = CommandAreaState()
+		state.onLayoutChanged = { [weak self] in self?.save() }
+		states[projectId] = state
+		return state
+	}
+
+	func save() {
+		let data: [String: PaneNode] = states.reduce(into: [:]) { result, pair in
+			result[pair.key.uuidString] = pair.value.root
+		}
+		if let encoded = try? JSONEncoder().encode(data) {
+			try? encoded.write(to: Self.saveURL)
+		}
+	}
+
+	private func load() {
+		guard let data = try? Data(contentsOf: Self.saveURL),
+			  let decoded = try? JSONDecoder().decode([String: PaneNode].self, from: data) else { return }
+		for (key, root) in decoded {
+			if let uuid = UUID(uuidString: key) {
+				let state = CommandAreaState()
+				state.root = root
+				state.restoreNextPaneIndex()
+				state.onLayoutChanged = { [weak self] in self?.save() }
+				states[uuid] = state
+			}
+		}
+		NSLog("[Belve] Restored pane layouts for \(states.count) projects")
+	}
+}
+
 // MARK: - Command Area State
 
 class CommandAreaState: ObservableObject {
 	@Published var root = PaneNode(paneIndex: 0)
 	@Published var activePaneId: UUID?
 	private var nextPaneIndex = 1
+	/// Called when layout changes, so the manager can persist
+	var onLayoutChanged: (() -> Void)?
 
 	func splitActive(_ direction: SplitDirection) {
 		let targetId = activePaneId ?? firstLeaf(root)?.id
 		guard let targetId else { return }
 		if splitNode(targetId, direction: direction, in: root) {
 			objectWillChange.send()
+			onLayoutChanged?()
 		}
 	}
 
@@ -70,6 +148,18 @@ class CommandAreaState: ObservableObject {
 		return false
 	}
 
+	func restoreNextPaneIndex() {
+		nextPaneIndex = maxPaneIndex(root) + 1
+	}
+
+	private func maxPaneIndex(_ node: PaneNode) -> Int {
+		var maxIdx = node.paneIndex
+		for child in node.children ?? [] {
+			maxIdx = max(maxIdx, maxPaneIndex(child))
+		}
+		return maxIdx
+	}
+
 	func closeActivePane() {
 		let targetId = activePaneId ?? firstLeaf(root)?.id
 		guard let targetId else { return }
@@ -82,6 +172,7 @@ class CommandAreaState: ObservableObject {
 		}
 		if removeNode(id, from: root, parent: nil) {
 			objectWillChange.send()
+			onLayoutChanged?()
 		}
 	}
 
@@ -194,40 +285,29 @@ class CommandAreaState: ObservableObject {
 struct CommandArea: View {
 	let project: Project
 	@ObservedObject var state: CommandAreaState
-	let areaWidth: CGFloat
-	@State private var areaHeight: CGFloat = 1
 
 	var body: some View {
-		let size = CGSize(width: areaWidth, height: areaHeight)
-		let layout = state.calculateLayout(in: size)
-		ZStack(alignment: .topLeading) {
-			// Height reader — width is passed from parent, height is read here
-			Color.clear
-				.frame(maxWidth: .infinity, maxHeight: .infinity)
-				.background(GeometryReader { geo in
-					Color.clear
-						.onAppear { areaHeight = geo.size.height }
-						.onChange(of: geo.size.height) { _, h in areaHeight = h }
-				})
-
-			// Terminal panes — flat ForEach ensures views are never destroyed on split
-			ForEach(layout.panes) { pane in
-				GhosttyTerminalView(project: project, paneId: pane.id.uuidString, paneIndex: pane.paneIndex)
-					.frame(width: max(1, pane.rect.width), height: max(1, pane.rect.height))
-					.offset(x: pane.rect.minX, y: pane.rect.minY)
-			}
-			// Dividers — rendered on top for hit testing
-			ForEach(layout.dividers) { divider in
-				PaneDivider(
-					direction: divider.direction,
-					availableSize: divider.availableSize,
-					ratio: state.ratioBinding(for: divider.id)
-				)
-				.frame(width: divider.rect.width, height: divider.rect.height)
-				.offset(x: divider.rect.minX, y: divider.rect.minY)
+		GeometryReader { geo in
+			let layout = state.calculateLayout(in: geo.size)
+			ZStack(alignment: .topLeading) {
+				// Terminal panes — flat ForEach ensures views are never destroyed on split
+				ForEach(layout.panes) { pane in
+					XTermTerminalView(project: project, paneId: pane.id.uuidString, paneIndex: pane.paneIndex)
+						.frame(width: max(1, pane.rect.width), height: max(1, pane.rect.height))
+						.offset(x: pane.rect.minX, y: pane.rect.minY)
+				}
+				// Dividers — rendered on top for hit testing
+				ForEach(layout.dividers) { divider in
+					PaneDivider(
+						direction: divider.direction,
+						availableSize: divider.availableSize,
+						ratio: state.ratioBinding(for: divider.id)
+					)
+					.frame(width: divider.rect.width, height: divider.rect.height)
+					.offset(x: divider.rect.minX, y: divider.rect.minY)
+				}
 			}
 		}
-		.frame(width: areaWidth)
 		.clipped()
 		.background(Theme.bg)
 	}
