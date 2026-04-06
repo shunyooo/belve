@@ -123,8 +123,9 @@ struct PreviewArea: View {
 			return
 		}
 
+		let ctx = project.executionContext
 		DispatchQueue.global().async {
-			if let content = FileService.readFile(path: path, sshHost: project.sshHost) {
+			if let content = ctx.readFile(path) {
 				NSLog("[Belve] File loaded: \(path), \(content.count) chars")
 				DispatchQueue.main.async {
 					openFile = OpenFile(path: path, content: content)
@@ -137,8 +138,9 @@ struct PreviewArea: View {
 
 	func saveCurrentFile() {
 		guard let file = openFile, isDirty else { return }
+		let ctx = project.executionContext
 		DispatchQueue.global().async {
-			let success = FileService.writeFile(path: file.path, content: editedContent, sshHost: project.sshHost)
+			let success = ctx.writeFile(file.path, content: editedContent)
 			DispatchQueue.main.async {
 				if success {
 					openFile = OpenFile(path: file.path, content: editedContent)

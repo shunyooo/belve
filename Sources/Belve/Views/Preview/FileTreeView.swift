@@ -52,7 +52,7 @@ class FileTreeState: ObservableObject {
 			expandedPaths.insert(path)
 			if childrenCache[path] == nil {
 				DispatchQueue.global().async {
-					let children = FileService.listDirectory(path: path, sshHost: project.sshHost)
+					let children = project.executionContext.listDirectory(path)
 					DispatchQueue.main.async {
 						NSLog("[Belve] Loaded \(children.count) children for \(path)")
 						self.childrenCache[path] = children
@@ -128,7 +128,7 @@ struct FileTreeView: View {
 		}
 		.onAppear {
 			DispatchQueue.global().async {
-				let result = FileService.listDirectory(path: rootPath, sshHost: project.sshHost)
+				let result = project.executionContext.listDirectory(rootPath)
 				DispatchQueue.main.async {
 					state.items = result
 					state.focusedPath = result.first?.path

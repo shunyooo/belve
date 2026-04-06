@@ -170,18 +170,14 @@ class ProjectStore: ObservableObject {
 
 	private func checkForDevContainer() {
 		guard let project = selectedProject,
-			  let sshHost = project.sshHost,
+			  project.sshHost != nil,
 			  let remotePath = project.remotePath,
 			  !project.isDevContainer else { return }
 
+		let ctx = project.executionContext
 		DispatchQueue.global().async { [weak self] in
-			let hasDevContainer = FileService.fileExists(
-				path: "\(remotePath)/.devcontainer/devcontainer.json",
-				sshHost: sshHost
-			) || FileService.fileExists(
-				path: "\(remotePath)/.devcontainer.json",
-				sshHost: sshHost
-			)
+			let hasDevContainer = ctx.fileExists("\(remotePath)/.devcontainer/devcontainer.json")
+				|| ctx.fileExists("\(remotePath)/.devcontainer.json")
 			DispatchQueue.main.async {
 				withAnimation(.easeOut(duration: 0.2)) {
 					self?.showDevContainerBanner = hasDevContainer

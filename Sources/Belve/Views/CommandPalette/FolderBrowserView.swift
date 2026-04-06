@@ -2,7 +2,7 @@ import SwiftUI
 
 struct FolderBrowserView: View {
 	@Binding var isPresented: Bool
-	let sshHost: String?
+	let executionContext: ExecutionContext
 	let onSelect: (String) -> Void
 
 	@State private var currentPath: String
@@ -11,10 +11,10 @@ struct FolderBrowserView: View {
 	@State private var selectedIndex: Int = 0
 	@FocusState private var isFocused: Bool
 
-	init(isPresented: Binding<Bool>, initialPath: String, sshHost: String?, onSelect: @escaping (String) -> Void) {
+	init(isPresented: Binding<Bool>, initialPath: String, executionContext: ExecutionContext, onSelect: @escaping (String) -> Void) {
 		self._isPresented = isPresented
 		self._currentPath = State(initialValue: initialPath)
-		self.sshHost = sshHost
+		self.executionContext = executionContext
 		self.onSelect = onSelect
 	}
 
@@ -130,7 +130,7 @@ struct FolderBrowserView: View {
 
 	private func loadDirectory() {
 		DispatchQueue.global().async {
-			let result = FileService.listDirectory(path: currentPath, sshHost: sshHost)
+			let result = executionContext.listDirectory(currentPath)
 				.filter { $0.isDirectory }
 			DispatchQueue.main.async {
 				items = result

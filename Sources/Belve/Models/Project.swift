@@ -34,9 +34,18 @@ struct Project: Identifiable, Codable, Hashable {
 		sshHost != nil
 	}
 
+	/// The execution context for this project — determines where commands run.
+	var executionContext: ExecutionContext {
+		if let sshHost, let devContainerPath {
+			return .devContainer(host: sshHost, workspacePath: devContainerPath)
+		} else if let sshHost {
+			return .ssh(host: sshHost)
+		}
+		return .local
+	}
+
 	/// The effective working directory for this project.
-	/// Remote projects default to ~, local projects default to user home.
 	var effectivePath: String {
-		remotePath ?? (isRemote ? "~" : NSHomeDirectory())
+		remotePath ?? executionContext.homeDirectory
 	}
 }

@@ -118,7 +118,7 @@ struct MainWindow: View {
 						FolderBrowserView(
 							isPresented: $commandPaletteState.isPresented,
 							initialPath: browserPath,
-							sshHost: projectStore.selectedProject?.sshHost
+							executionContext: projectStore.selectedProject?.executionContext ?? .local
 						) { path in
 							projectStore.setProjectFolder(path)
 						}
