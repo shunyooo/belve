@@ -53,6 +53,7 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 	private func setup() {
 		wantsLayer = true
 		layer?.masksToBounds = true
+		clipsToBounds = true
 	}
 
 	// MARK: - Surface Lifecycle

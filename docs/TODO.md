@@ -14,8 +14,8 @@
 ### ターミナル (GhosttyKit)
 - [x] クリップボード対応（コピー & ペースト）— GhosttyKit 内蔵で動作確認済み
 - [x] テキスト選択（マウスドラッグ、ダブルクリック単語選択、トリプルクリック行選択）— GhosttyKit 内蔵で動作確認済み
-- [ ] **ペイン split 時に元のターミナルが再初期化される問題** — NSView キャッシュで対処中だが完全ではない。根本的には Ghostty surface を安全に破棄/移動する仕組みが必要
-- [ ] **Ghostty surface の安全な破棄** — deinit でクラッシュする。`keybind = clear` で Ghostty のデフォルトアクションを無効化したが、ターミナルが空になる副作用が発生
+- [x] **ペイン split 時のクラッシュ修正** — フラットレイアウト方式で解決。ForEach で全ペインを描画し、split 時に既存ビューを破棄しない。GeometryReader は GhosttyTerminalView の親にできない制約あり（バックグラウンドサイズリーダーで回避）
+- [x] **Ghostty surface のクラッシュ対策** — deinit で surface_free を呼ばない。surface は Ghostty app ランタイムに委ねる
 - [ ] URL リンク検出 & Cmd+クリックでブラウザオープン
 - [ ] スクロールバー表示（フェード付き）
 - [ ] Ghostty config のユーザーカスタマイズ対応（フォント、テーマ等）
@@ -119,6 +119,7 @@ Belve の SwiftUI ショートカットと衝突してクラッシュする。
 
 ### 設計上の注意
 - **Ghostty surface は安全に破棄できない** — deinit/free でクラッシュ。プロジェクト切替は opacity で対応。
+- **GhosttyTerminalView は GeometryReader の子にできない** — GeometryReader が NSViewRepresentable の再作成を引き起こし、surface がクラッシュする。バックグラウンドサイズリーダーで回避。
+- **ペイン分割はフラットレイアウト方式** — 再帰 PaneTreeView だと SwiftUI がビューを破棄/再作成してクラッシュ。ZStack + ForEach でフラットに描画し、split 時にビュー破棄を回避。
 - **SwiftUI CommandGroup + @Published = クラッシュ** — performKeyEquivalent のコールスタック内で @Published 変更すると EXC_BAD_ACCESS。`.onKeyPress` を使う。
 - **SPM ビルドキャッシュ** — インクリメンタルビルドが変更を反映しないことがある。`swift package clean` + `rm -rf .build` でフルリビルドが必要。
-- **Ghostty `keybind = clear`** — デフォルトバインド全無効化でクラッシュ防止できるが、ターミナルが空になる副作用あり。

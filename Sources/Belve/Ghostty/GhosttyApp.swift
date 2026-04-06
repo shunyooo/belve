@@ -60,16 +60,25 @@ final class GhosttyRuntime {
 			SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ControlMaster=auto -o ControlPath=/tmp/belve-ssh-%r@%h:%p -o ControlPersist=600"
 
 			# SSH/DevContainer: connect with tmux for session persistence
+			# tmux is transparent: no status bar, no prefix key, no keybinds — pure session persistence
+			# Session naming: belve-{PROJECT_ID_short} for primary, belve-{PROJECT_ID_short}-{N} for splits
 			if [ -n "$BELVE_SSH_HOST" ]; then
-			    TMUX_SESSION="belve-${BELVE_PANE_ID:-default}"
-			    TMUX_CMD="tmux new-session -A -s $TMUX_SESSION"
+			    PROJ_SHORT=$(echo "$BELVE_PROJECT_ID" | cut -c1-8)
+			    if [ "${BELVE_PANE_INDEX:-0}" = "0" ]; then
+			        TMUX_SESSION="belve-${PROJ_SHORT}"
+			    else
+			        TMUX_SESSION="belve-${PROJ_SHORT}-${BELVE_PANE_INDEX}"
+			    fi
+			    # tmux transparent mode: session-local settings (no UI, no prefix)
+			    # Create session detached, apply per-session settings, then attach
+			    TMUX_APPLY="tmux set -t $TMUX_SESSION status off; tmux set -t $TMUX_SESSION prefix None; tmux set -t $TMUX_SESSION mouse on; tmux set -t $TMUX_SESSION escape-time 0; tmux setw -t $TMUX_SESSION pane-border-status off"
 
 			    if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_REMOTE_PATH" ]; then
-			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && echo '⏳ Starting Dev Container...' && devcontainer up --workspace-folder . 2>&1 && echo '✅ Container ready' && TERM=xterm-256color devcontainer exec --workspace-folder . sh -c 'command -v tmux >/dev/null && exec $TMUX_CMD || exec \$SHELL -l'"
+			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && devcontainer up --workspace-folder . 2>&1 && TERM=xterm-256color devcontainer exec --workspace-folder . sh -c 'exec \$(getent passwd \$(whoami) | cut -d: -f7 || echo /bin/sh) -l'"
 			    elif [ -n "$BELVE_REMOTE_PATH" ]; then
-			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && { command -v tmux >/dev/null && exec $TMUX_CMD || exec \$SHELL -l; }"
+			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; tmux kill-session -t $TMUX_SESSION 2>/dev/null; command -v tmux >/dev/null && { tmux new-session -d -s $TMUX_SESSION -c $BELVE_REMOTE_PATH && $TMUX_APPLY && exec tmux attach -t $TMUX_SESSION; } || { cd $BELVE_REMOTE_PATH && exec \$SHELL -l; }"
 			    else
-			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "command -v tmux >/dev/null && exec $TMUX_CMD || exec \$SHELL -l"
+			        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "tmux kill-session -t $TMUX_SESSION 2>/dev/null; command -v tmux >/dev/null && { tmux new-session -d -s $TMUX_SESSION && $TMUX_APPLY && exec tmux attach -t $TMUX_SESSION; } || exec \$SHELL -l"
 			    fi
 			    # SSH exited — fall through to local shell below
 			    echo "🔌 SSH disconnected. Local shell:"
@@ -77,7 +86,12 @@ final class GhosttyRuntime {
 			# Local shell setup
 			export BELVE_SESSION=1
 			export PATH="\#(belveBin):$PATH"
-			TMUX_SESSION="belve-${BELVE_PANE_ID:-local}"
+			PROJ_SHORT=$(echo "${BELVE_PROJECT_ID:-local}" | cut -c1-8)
+			if [ "${BELVE_PANE_INDEX:-0}" = "0" ]; then
+			    TMUX_SESSION="belve-${PROJ_SHORT}"
+			else
+			    TMUX_SESSION="belve-${PROJ_SHORT}-${BELVE_PANE_INDEX}"
+			fi
 			SHELL_NAME="$(basename "\#(shell)")"
 
 			# Prepare shell-specific rc files

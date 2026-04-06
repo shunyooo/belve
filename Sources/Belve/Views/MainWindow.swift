@@ -54,13 +54,13 @@ struct MainWindow: View {
 					// Content
 					if !projectStore.projects.isEmpty {
 						GeometryReader { geo in
+							let clampedSplit = min(splitPosition, max(250, geo.size.width - 250))
 							ZStack {
 								ForEach(projectStore.projects) { project in
 									let isSelected = project.id == projectStore.selectedProject?.id
 									ZStack(alignment: .bottomTrailing) {
 										HStack(spacing: 0) {
-											CommandArea(project: project, state: commandAreaState)
-												.frame(width: splitPosition)
+											CommandArea(project: project, state: commandAreaState, areaWidth: clampedSplit)
 												.environmentObject(commandAreaState)
 
 											SplitDivider(

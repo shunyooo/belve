@@ -6,6 +6,7 @@ import AppKit
 struct GhosttyTerminalView: NSViewRepresentable {
 	let project: Project
 	var paneId: String?
+	var paneIndex: Int = 0
 	@EnvironmentObject var notificationStore: NotificationStore
 	@EnvironmentObject var commandAreaState: CommandAreaState
 
@@ -24,6 +25,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
 			env["BELVE_PANE_ID"] = paneId
 		}
 		env["BELVE_PROJECT_ID"] = project.id.uuidString
+		env["BELVE_PANE_INDEX"] = "\(paneIndex)"
 
 		// Add Belve's bin directory to PATH
 		if let execDir = Bundle.main.executableURL?.deletingLastPathComponent() {

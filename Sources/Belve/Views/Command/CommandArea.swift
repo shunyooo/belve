@@ -6,33 +6,45 @@ enum SplitDirection {
 
 class PaneNode: ObservableObject, Identifiable {
 	let id: UUID
+	let paneIndex: Int
 	@Published var children: [PaneNode]?
 	@Published var splitDirection: SplitDirection?
 	@Published var splitRatio: CGFloat = 0.5
 
-	init(id: UUID = UUID()) {
+	init(id: UUID = UUID(), paneIndex: Int = 0) {
 		self.id = id
+		self.paneIndex = paneIndex
 	}
 
 	var isLeaf: Bool { children == nil }
-
-	func split(_ direction: SplitDirection) {
-		guard isLeaf else { return }
-		// Keep the existing pane's id so SwiftUI doesn't destroy its NSView/surface.
-		let existing = PaneNode(id: self.id)
-		let newPane = PaneNode()
-		splitDirection = direction
-		splitRatio = 0.5
-		children = [existing, newPane]
-	}
 }
 
+// MARK: - Layout Calculation
+
+struct PaneLayout {
+	struct Pane: Identifiable {
+		let id: UUID
+		let paneIndex: Int
+		let rect: CGRect
+	}
+	struct DividerItem: Identifiable {
+		let id: UUID
+		let direction: SplitDirection
+		let rect: CGRect
+		let availableSize: CGFloat
+	}
+	let panes: [Pane]
+	let dividers: [DividerItem]
+}
+
+// MARK: - Command Area State
+
 class CommandAreaState: ObservableObject {
-	@Published var root = PaneNode()
+	@Published var root = PaneNode(paneIndex: 0)
 	@Published var activePaneId: UUID?
+	private var nextPaneIndex = 1
 
 	func splitActive(_ direction: SplitDirection) {
-		// Split the active pane, or fall back to first leaf
 		let targetId = activePaneId ?? firstLeaf(root)?.id
 		guard let targetId else { return }
 		if splitNode(targetId, direction: direction, in: root) {
@@ -42,7 +54,12 @@ class CommandAreaState: ObservableObject {
 
 	private func splitNode(_ id: UUID, direction: SplitDirection, in node: PaneNode) -> Bool {
 		if node.id == id && node.isLeaf {
-			node.split(direction)
+			let existing = PaneNode(id: node.id, paneIndex: node.paneIndex)
+			let newPane = PaneNode(paneIndex: nextPaneIndex)
+			nextPaneIndex += 1
+			node.splitDirection = direction
+			node.splitRatio = 0.5
+			node.children = [existing, newPane]
 			return true
 		}
 		for child in node.children ?? [] {
@@ -61,7 +78,6 @@ class CommandAreaState: ObservableObject {
 
 	func removePane(_ id: UUID) {
 		if root.id == id && root.isLeaf {
-			// Last pane — don't remove, just reset
 			return
 		}
 		if removeNode(id, from: root, parent: nil) {
@@ -73,12 +89,10 @@ class CommandAreaState: ObservableObject {
 		guard let children = node.children else { return false }
 		for (index, child) in children.enumerated() {
 			if child.id == id && child.isLeaf {
-				// Replace parent with the sibling
 				let sibling = children[1 - index]
 				node.children = sibling.children
 				node.splitDirection = sibling.splitDirection
 				node.splitRatio = sibling.splitRatio
-				// If sibling was a leaf, this node becomes a leaf
 				return true
 			}
 			if removeNode(id, from: child, parent: node) {
@@ -93,7 +107,7 @@ class CommandAreaState: ObservableObject {
 		return findNodeById(uuid, in: root)
 	}
 
-	private func findNodeById(_ id: UUID, in node: PaneNode) -> PaneNode? {
+	func findNodeById(_ id: UUID, in node: PaneNode) -> PaneNode? {
 		if node.id == id { return node }
 		for child in node.children ?? [] {
 			if let found = findNodeById(id, in: child) { return found }
@@ -108,65 +122,118 @@ class CommandAreaState: ObservableObject {
 		}
 		return nil
 	}
+
+	// MARK: - Flat Layout Calculation
+
+	func calculateLayout(in size: CGSize) -> PaneLayout {
+		var panes: [PaneLayout.Pane] = []
+		var dividers: [PaneLayout.DividerItem] = []
+		let dividerThickness: CGFloat = 1
+
+		func walk(_ node: PaneNode, rect: CGRect) {
+			if node.isLeaf {
+				panes.append(.init(id: node.id, paneIndex: node.paneIndex, rect: rect))
+				return
+			}
+			guard let children = node.children, children.count == 2,
+				  let direction = node.splitDirection else { return }
+
+			let totalSize = direction == .vertical ? rect.height : rect.width
+			let available = totalSize - dividerThickness
+			let firstSize = available * node.splitRatio
+
+			switch direction {
+			case .vertical:
+				walk(children[0], rect: CGRect(
+					x: rect.minX, y: rect.minY,
+					width: rect.width, height: firstSize))
+				dividers.append(.init(
+					id: node.id, direction: .vertical,
+					rect: CGRect(x: rect.minX, y: rect.minY + firstSize, width: rect.width, height: dividerThickness),
+					availableSize: available))
+				walk(children[1], rect: CGRect(
+					x: rect.minX, y: rect.minY + firstSize + dividerThickness,
+					width: rect.width, height: available - firstSize))
+			case .horizontal:
+				walk(children[0], rect: CGRect(
+					x: rect.minX, y: rect.minY,
+					width: firstSize, height: rect.height))
+				dividers.append(.init(
+					id: node.id, direction: .horizontal,
+					rect: CGRect(x: rect.minX + firstSize, y: rect.minY, width: dividerThickness, height: rect.height),
+					availableSize: available))
+				walk(children[1], rect: CGRect(
+					x: rect.minX + firstSize + dividerThickness, y: rect.minY,
+					width: available - firstSize, height: rect.height))
+			}
+		}
+
+		walk(root, rect: CGRect(origin: .zero, size: size))
+		return PaneLayout(panes: panes, dividers: dividers)
+	}
+
+	func ratioBinding(for nodeId: UUID) -> Binding<CGFloat> {
+		Binding<CGFloat>(
+			get: { [weak self] in
+				guard let self else { return 0.5 }
+				return self.findNodeById(nodeId, in: self.root)?.splitRatio ?? 0.5
+			},
+			set: { [weak self] newValue in
+				guard let self else { return }
+				if let node = self.findNodeById(nodeId, in: self.root) {
+					node.splitRatio = newValue
+					self.objectWillChange.send()
+				}
+			}
+		)
+	}
 }
+
+// MARK: - Command Area View (Flat Layout)
 
 struct CommandArea: View {
 	let project: Project
 	@ObservedObject var state: CommandAreaState
+	let areaWidth: CGFloat
+	@State private var areaHeight: CGFloat = 1
 
 	var body: some View {
-		PaneTreeView(node: state.root, project: project)
-			.background(Theme.bg)
-	}
-}
+		let size = CGSize(width: areaWidth, height: areaHeight)
+		let layout = state.calculateLayout(in: size)
+		ZStack(alignment: .topLeading) {
+			// Height reader — width is passed from parent, height is read here
+			Color.clear
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.background(GeometryReader { geo in
+					Color.clear
+						.onAppear { areaHeight = geo.size.height }
+						.onChange(of: geo.size.height) { _, h in areaHeight = h }
+				})
 
-struct PaneTreeView: View {
-	@ObservedObject var node: PaneNode
-	let project: Project
-
-	var body: some View {
-		if node.isLeaf {
-			GhosttyTerminalView(project: project, paneId: node.id.uuidString)
-				.id(node.id)
-		} else if let children = node.children, children.count == 2,
-				  let direction = node.splitDirection {
-			GeometryReader { geo in
-				let totalSize = direction == .vertical ? geo.size.height : geo.size.width
-				let dividerThickness: CGFloat = 1
-				let available = totalSize - dividerThickness
-				let firstSize = available * node.splitRatio
-				let secondSize = available * (1 - node.splitRatio)
-
-				switch direction {
-				case .vertical:
-					VStack(spacing: 0) {
-						PaneTreeView(node: children[0], project: project)
-							.frame(height: firstSize)
-						PaneDivider(
-							direction: .vertical,
-							availableSize: available,
-							ratio: $node.splitRatio
-						)
-						PaneTreeView(node: children[1], project: project)
-							.frame(height: secondSize)
-					}
-				case .horizontal:
-					HStack(spacing: 0) {
-						PaneTreeView(node: children[0], project: project)
-							.frame(width: firstSize)
-						PaneDivider(
-							direction: .horizontal,
-							availableSize: available,
-							ratio: $node.splitRatio
-						)
-						PaneTreeView(node: children[1], project: project)
-							.frame(width: secondSize)
-					}
-				}
+			// Terminal panes — flat ForEach ensures views are never destroyed on split
+			ForEach(layout.panes) { pane in
+				GhosttyTerminalView(project: project, paneId: pane.id.uuidString, paneIndex: pane.paneIndex)
+					.frame(width: max(1, pane.rect.width), height: max(1, pane.rect.height))
+					.offset(x: pane.rect.minX, y: pane.rect.minY)
+			}
+			// Dividers — rendered on top for hit testing
+			ForEach(layout.dividers) { divider in
+				PaneDivider(
+					direction: divider.direction,
+					availableSize: divider.availableSize,
+					ratio: state.ratioBinding(for: divider.id)
+				)
+				.frame(width: divider.rect.width, height: divider.rect.height)
+				.offset(x: divider.rect.minX, y: divider.rect.minY)
 			}
 		}
+		.frame(width: areaWidth)
+		.clipped()
+		.background(Theme.bg)
 	}
 }
+
+// MARK: - Pane Divider
 
 struct PaneDivider: View {
 	let direction: SplitDirection

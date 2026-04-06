@@ -279,16 +279,35 @@ struct ProjectRow: View {
 		}
 	}
 
+	private var subtitle: String {
+		if project.isDevContainer, let host = project.sshHost {
+			let short = host.components(separatedBy: ".").first ?? host
+			return "DevContainer: \(short)"
+		} else if let host = project.sshHost {
+			let short = host.components(separatedBy: ".").first ?? host
+			return "SSH: \(short)"
+		} else {
+			return "~/\(project.remotePath.map { ($0 as NSString).lastPathComponent } ?? "")"
+		}
+	}
+
 	var body: some View {
 		HStack(spacing: 10) {
 			Circle()
 				.fill(statusColor)
 				.frame(width: 7, height: 7)
 
-			Text(project.name)
-				.font(Theme.fontBody)
-				.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
-				.lineLimit(1)
+			VStack(alignment: .leading, spacing: 1) {
+				Text(project.name)
+					.font(Theme.fontBody)
+					.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+					.lineLimit(1)
+
+				Text(subtitle)
+					.font(.system(size: 10))
+					.foregroundStyle(Theme.textTertiary)
+					.lineLimit(1)
+			}
 
 			Spacer()
 

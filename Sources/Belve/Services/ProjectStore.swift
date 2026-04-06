@@ -43,8 +43,10 @@ class ProjectStore: ObservableObject {
 	// MARK: - CRUD
 
 	func addProject(name: String? = nil, sshHost: String? = nil) -> Project {
+		let baseName = name ?? NSHomeDirectory().components(separatedBy: "/").last ?? "Project"
+		let finalName = uniqueName(baseName)
 		let project = Project(
-			name: name ?? "Project \(projects.count + 1)",
+			name: finalName,
 			sshHost: sshHost
 		)
 		projects.append(project)
@@ -59,6 +61,14 @@ class ProjectStore: ObservableObject {
 			select(projects.first)
 		}
 		saveProjects()
+	}
+
+	private func uniqueName(_ base: String) -> String {
+		let existing = Set(projects.map(\.name))
+		if !existing.contains(base) { return base }
+		var i = 2
+		while existing.contains("\(base) \(i)") { i += 1 }
+		return "\(base) \(i)"
 	}
 
 	func renameProject(_ id: UUID, name: String) {
@@ -118,7 +128,10 @@ class ProjectStore: ObservableObject {
 	func connectSSH(host: String) {
 		if let index = indexOfSelected {
 			projects[index].sshHost = host
-			projects[index].name = host.components(separatedBy: ".").first ?? host
+			// Only set name to host if no folder name is set yet
+			if projects[index].remotePath == nil {
+				projects[index].name = host.components(separatedBy: ".").first ?? host
+			}
 			saveProjects()
 			selectedProject = projects[index]
 			// Connect via existing terminal
@@ -137,35 +150,44 @@ class ProjectStore: ObservableObject {
 			NSLog("[Belve] Cannot open DevContainer: no remotePath set. Use Cmd+O first.")
 			return
 		}
-		projects[index].devContainerPath = workspacePath
-		saveProjects()
-		selectedProject = projects[index]
-		// Send devcontainer commands to existing terminal
-		sendToActiveTerminal("cd \(workspacePath) && devcontainer up --workspace-folder . 2>&1 && devcontainer exec --workspace-folder . $SHELL -l\n")
-		NSLog("[Belve] DevContainer enabled for \(projects[index].name)")
+		// Recreate project with new ID to get fresh terminal sessions
+		var updated = projects[index]
+		updated.devContainerPath = workspacePath
+		replaceWithNewId(at: index, updated: updated)
+		NSLog("[Belve] DevContainer enabled for \(updated.name)")
 	}
 
 	func disconnectSSH() {
 		guard let index = indexOfSelected else { return }
 		let name = projects[index].name
-		projects[index].sshHost = nil
-		projects[index].remotePath = nil
-		projects[index].devContainerPath = nil
-		saveProjects()
-		selectedProject = projects[index]
-		// Exit SSH session in terminal
-		sendToActiveTerminal("exit\n")
+		var updated = projects[index]
+		updated.sshHost = nil
+		updated.remotePath = nil
+		updated.devContainerPath = nil
+		replaceWithNewId(at: index, updated: updated)
 		NSLog("[Belve] SSH disconnected for \(name), reverted to local")
 	}
 
 	func closeDevContainer() {
 		guard let index = indexOfSelected else { return }
-		projects[index].devContainerPath = nil
-		saveProjects()
-		selectedProject = projects[index]
-		// Exit devcontainer shell back to SSH
-		sendToActiveTerminal("exit\n")
+		var updated = projects[index]
+		updated.devContainerPath = nil
+		replaceWithNewId(at: index, updated: updated)
 		NSLog("[Belve] DevContainer disabled, reverting to SSH")
+	}
+
+	/// Replace a project with a new ID to force terminal recreation.
+	/// Old terminal surfaces remain in memory (Ghostty can't free them) but become invisible.
+	private func replaceWithNewId(at index: Int, updated: Project) {
+		let newProject = Project(
+			name: updated.name,
+			sshHost: updated.sshHost,
+			remotePath: updated.remotePath,
+			devContainerPath: updated.devContainerPath
+		)
+		projects[index] = newProject
+		saveProjects()
+		select(newProject)
 	}
 
 	private func checkForDevContainer() {
