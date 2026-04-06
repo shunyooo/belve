@@ -91,6 +91,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 	let agentFileMonitor = AgentEventFileMonitor()
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
+		// Log build info for verifying correct binary is running
+		let buildDate = binaryModificationDate()
+		NSLog("[Belve] Binary: \(Bundle.main.executableURL?.path ?? "?"), modified: \(buildDate)")
+
 		// Install crash signal handlers to capture backtrace
 		installCrashHandlers()
 		NSApp.activate(ignoringOtherApps: true)
@@ -119,25 +123,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			}
 		}
 
-		// Cmd+1-9 project switching via local event monitor
-		// (Cannot use SwiftUI CommandGroup — @Published mutation during
-		// performKeyEquivalent causes EXC_BAD_ACCESS in swift_retain)
-		NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-			guard event.modifierFlags.contains(.command),
-				  !event.modifierFlags.contains(.shift),
-				  !event.modifierFlags.contains(.option),
-				  let chars = event.charactersIgnoringModifiers,
-				  let digit = chars.first, digit >= "1" && digit <= "9" else {
-				return event
-			}
-			let index = Int(String(digit))! - 1
-			// Perform on next RunLoop iteration to escape event processing stack
-			CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
-				self?.projectStore.selectByIndex(index)
-			}
-			CFRunLoopWakeUp(CFRunLoopGetMain())
-			return nil // Consume the event
-		}
+		// Cmd+1-9 handled via .onKeyPress in MainWindow (SwiftUI native)
 
 		// Start monitoring agent events file
 		agentFileMonitor.onEvent = { [weak self] paneId, status, message in
@@ -226,5 +212,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			try? msg.write(toFile: "/tmp/belve-crash-trace.log", atomically: true, encoding: .utf8)
 		}
 		NSLog("[Belve] Crash handlers installed")
+	}
+
+	private func binaryModificationDate() -> String {
+		guard let url = Bundle.main.executableURL,
+			  let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+			  let date = attrs[.modificationDate] as? Date else { return "unknown" }
+		let fmt = DateFormatter()
+		fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+		return fmt.string(from: date)
 	}
 }

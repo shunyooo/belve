@@ -129,6 +129,14 @@ struct MainWindow: View {
 			}
 		}
 		.background(Theme.bg)
+		.onKeyPress(characters: .init(charactersIn: "123456789"), phases: .down) { press in
+			guard press.modifiers == .command else { return .ignored }
+			if let digit = press.characters.first, let index = digit.wholeNumberValue {
+				projectStore.selectByIndex(index - 1)
+				return .handled
+			}
+			return .ignored
+		}
 		.onChange(of: projectStore.selectedProject) {
 			openFile = nil
 		}
@@ -140,13 +148,6 @@ struct MainWindow: View {
 		.onReceive(NotificationCenter.default.publisher(for: .belveCommandPalette)) { _ in
 			paletteMode = .commands
 			commandPaletteState.isPresented.toggle()
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notif in
-			if let index = notif.userInfo?["index"] as? Int {
-				DispatchQueue.main.async {
-					projectStore.selectByIndex(index)
-				}
-			}
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFocusProject)) { notif in
 			if let projectId = notif.userInfo?["projectId"] as? UUID,
