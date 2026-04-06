@@ -1,77 +1,90 @@
 import SwiftUI
 
 struct MainWindow: View {
-	@State private var selectedProject: Project?
-	@State private var showSidebar = true
 	@EnvironmentObject var commandPaletteState: CommandPaletteState
+	@EnvironmentObject var projectStore: ProjectStore
+	@State private var showSidebar = true
 	@State private var splitPosition: CGFloat = 500
-	@State private var projects: [Project] = []
 	@State private var openFile: OpenFile?
 	@State private var paletteMode: PaletteMode = .commands
 	@StateObject private var commandAreaState = CommandAreaState()
+	@State private var browserPath: String = ""
 
 	enum PaletteMode {
 		case commands
 		case sshHosts
 		case folderBrowser
 	}
-	@State private var browserPath: String = ""
 
 	var body: some View {
 		ZStack {
-			// Main layout
 			HStack(spacing: 0) {
-				ProjectListView(
-						projects: projects,
-						selectedProject: $selectedProject,
-						onAddProject: { addProject() },
-						onToggleSidebar: { withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() } },
-						onOpenNotifications: { /* TODO: notification panel */ },
-						onRenameProject: { id, newName in
-							if let index = projects.firstIndex(where: { $0.id == id }) {
-								projects[index].name = newName
-								saveProjects()
-							}
-						},
-						onDeleteProject: { id in
-							projects.removeAll { $0.id == id }
-							if selectedProject?.id == id {
-								selectedProject = projects.first
-							}
-							saveProjects()
-						}
+				// Sidebar
+				if showSidebar {
+					ProjectListView(
+						projects: projectStore.projects,
+						selectedProject: Binding(
+							get: { projectStore.selectedProject },
+							set: { projectStore.select($0) }
+						),
+						onAddProject: { let _ = projectStore.addProject() },
+						onToggleSidebar: { withAnimation(.easeOut(duration: 0.15)) { showSidebar.toggle() } },
+						onOpenNotifications: {},
+						onRenameProject: { id, name in projectStore.renameProject(id, name: name) },
+						onDeleteProject: { id in projectStore.deleteProject(id) }
 					)
-					.frame(width: showSidebar ? Theme.sidebarWidth : 0)
-					.clipped()
-					.background(Theme.bg)
+					.frame(width: Theme.sidebarWidth)
+					Theme.borderSubtle
+						.frame(width: 1)
+				}
 
-					if showSidebar {
-						Theme.border
-							.frame(width: 1)
-					}
-
+				// Main content
 				VStack(spacing: 0) {
+					// Top bar
 					TopBar(
-						project: selectedProject,
-						showSidebar: $showSidebar
+						projectName: projectStore.selectedProject?.name ?? "",
+						showSidebar: showSidebar,
+						onToggleSidebar: { withAnimation(.easeOut(duration: 0.15)) { showSidebar.toggle() } },
+						sessionLabel: nil
 					)
+					Theme.borderSubtle
+						.frame(height: 1)
 
-					if let project = selectedProject {
+					// Content
+					if let project = projectStore.selectedProject {
 						GeometryReader { geo in
-							HStack(spacing: 0) {
-								CommandArea(project: project, state: commandAreaState)
-									.id(project.id)
-									.frame(width: splitPosition)
-									.environmentObject(commandAreaState)
+							ZStack(alignment: .bottomTrailing) {
+								HStack(spacing: 0) {
+									CommandArea(project: project, state: commandAreaState)
+										.id(project.id)
+										.frame(width: splitPosition)
+										.environmentObject(commandAreaState)
 
-								SplitDivider(
-									position: $splitPosition,
-									minLeft: 250,
-									minRight: 250
-								)
+									SplitDivider(
+										position: $splitPosition,
+										minLeft: 250,
+										minRight: 250
+									)
 
-								PreviewArea(project: project, openFile: $openFile)
-									.frame(maxWidth: .infinity)
+									PreviewArea(project: project, openFile: $openFile)
+										.frame(maxWidth: .infinity)
+								}
+
+								// DevContainer banner
+								if projectStore.showDevContainerBanner && !project.isDevContainer {
+									DevContainerBanner(
+										onReopen: {
+											projectStore.showDevContainerBanner = false
+											projectStore.openDevContainer()
+										},
+										onDismiss: {
+											projectStore.showDevContainerBanner = false
+										}
+									)
+									.padding(.bottom, 16)
+									.padding(.trailing, 16)
+									.transition(.move(edge: .bottom).combined(with: .opacity))
+								}
 							}
 							.onAppear {
 								splitPosition = geo.size.width * 0.5
@@ -79,7 +92,7 @@ struct MainWindow: View {
 						}
 					} else {
 						WelcomeView {
-							addProject()
+							let _ = projectStore.addProject()
 						}
 					}
 				}
@@ -99,9 +112,9 @@ struct MainWindow: View {
 						FolderBrowserView(
 							isPresented: $commandPaletteState.isPresented,
 							initialPath: browserPath,
-							sshHost: selectedProject?.sshHost
+							sshHost: projectStore.selectedProject?.sshHost
 						) { path in
-							setProjectFolder(path)
+							projectStore.setProjectFolder(path)
 						}
 						.padding(.top, 80)
 					} else {
@@ -113,46 +126,39 @@ struct MainWindow: View {
 					}
 					Spacer()
 				}
-				.onChange(of: commandPaletteState.isPresented) {
-					if !commandPaletteState.isPresented {
-						paletteMode = .commands
-					}
-				}
 			}
 		}
 		.background(Theme.bg)
-		.preferredColorScheme(.dark)
-		.onAppear {
-			loadProjects()
+		.onChange(of: projectStore.selectedProject) {
+			openFile = nil
 		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveSplitVertical)) { _ in
-			commandAreaState.splitActive(.vertical)
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveSplitHorizontal)) { _ in
-			commandAreaState.splitActive(.horizontal)
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveClosePane)) { _ in
-			if commandAreaState.root.isLeaf {
-				// Last pane — close window
-				NSApp.keyWindow?.close()
-			} else {
-				commandAreaState.closeActivePane()
+		.onChange(of: commandPaletteState.isPresented) {
+			if !commandPaletteState.isPresented {
+				paletteMode = .commands
 			}
 		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notification in
-			if let index = notification.userInfo?["index"] as? Int,
-			   index >= 0, index < projects.count {
-				selectedProject = projects[index]
+		.onReceive(NotificationCenter.default.publisher(for: .belveCommandPalette)) { _ in
+			paletteMode = .commands
+			commandPaletteState.isPresented.toggle()
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notif in
+			if let index = notif.userInfo?["index"] as? Int {
+				DispatchQueue.main.async {
+					projectStore.selectByIndex(index)
+				}
 			}
 		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveFocusProject)) { notification in
-			if let projectId = notification.userInfo?["projectId"] as? UUID,
-			   let project = projects.first(where: { $0.id == projectId }) {
-				selectedProject = project
+		.onReceive(NotificationCenter.default.publisher(for: .belveFocusProject)) { notif in
+			if let projectId = notif.userInfo?["projectId"] as? UUID,
+			   let project = projectStore.projects.first(where: { $0.id == projectId }) {
+				DispatchQueue.main.async { [self] in projectStore.select(project) }
 			}
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveNewProject)) { _ in
-			addProject()
+			DispatchQueue.main.async { [self] in let _ = projectStore.addProject() }
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveReloadProject)) { _ in
+			DispatchQueue.main.async { [self] in projectStore.reloadCurrentProject() }
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveOpenFolder)) { _ in
 			if commandPaletteState.isPresented && paletteMode == .folderBrowser {
@@ -161,7 +167,18 @@ struct MainWindow: View {
 				openFolder()
 			}
 		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveSplitVertical)) { _ in
+			commandAreaState.splitActive(.vertical)
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveSplitHorizontal)) { _ in
+			commandAreaState.splitActive(.horizontal)
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveClosePane)) { _ in
+			commandAreaState.closeActivePane()
+		}
 	}
+
+	// MARK: - Command Palette
 
 	private func buildPaletteCommands() -> [PaletteCommand] {
 		switch paletteMode {
@@ -170,15 +187,15 @@ struct MainWindow: View {
 		case .sshHosts:
 			return buildSSHHostCommands()
 		case .folderBrowser:
-			return [] // handled by FolderBrowserView
+			return []
 		}
 	}
 
 	private func buildMainCommands() -> [PaletteCommand] {
 		var cmds: [PaletteCommand] = []
 
-		cmds.append(PaletteCommand(title: "New Project", icon: "plus.circle") {
-			addProject()
+		cmds.append(PaletteCommand(title: "Open Folder", icon: "folder") {
+			openFolder()
 		})
 
 		cmds.append(PaletteCommand(title: "SSH Connect", icon: "link") {
@@ -186,257 +203,134 @@ struct MainWindow: View {
 			commandPaletteState.isPresented = true
 		})
 
-		if selectedProject?.sshHost != nil {
-			cmds.append(PaletteCommand(title: "Open DevContainer", icon: "shippingbox") {
-				openDevContainer()
+		if let project = projectStore.selectedProject, project.sshHost != nil {
+			if project.isDevContainer {
+				cmds.append(PaletteCommand(title: "Reopen without Container (SSH)", icon: "arrow.uturn.backward") {
+					projectStore.closeDevContainer()
+				})
+			} else {
+				cmds.append(PaletteCommand(title: "Reopen in Container", icon: "shippingbox") {
+					projectStore.openDevContainer()
+				})
+			}
+			cmds.append(PaletteCommand(title: "Disconnect SSH (Local)", icon: "wifi.slash") {
+				projectStore.disconnectSSH()
 			})
 		}
 
 		cmds.append(PaletteCommand(title: "Split Terminal Vertical", icon: "rectangle.split.1x2") {
 			commandAreaState.splitActive(.vertical)
 		})
-
 		cmds.append(PaletteCommand(title: "Split Terminal Horizontal", icon: "rectangle.split.2x1") {
 			commandAreaState.splitActive(.horizontal)
 		})
-
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
-			withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() }
+			withAnimation(.easeOut(duration: 0.15)) { showSidebar.toggle() }
 		})
-
-		if selectedProject != nil {
-			cmds.append(PaletteCommand(title: "Delete Project", icon: "trash") {
-				deleteSelectedProject()
-			})
-		}
+		cmds.append(PaletteCommand(title: "New Project", icon: "plus") {
+			let _ = projectStore.addProject()
+		})
+		cmds.append(PaletteCommand(title: "Delete Project", icon: "trash") {
+			if let id = projectStore.selectedProject?.id {
+				projectStore.deleteProject(id)
+			}
+		})
 
 		return cmds
 	}
 
 	private func buildSSHHostCommands() -> [PaletteCommand] {
-		let hosts = SSHConfigParser.parse()
-		return hosts.map { host in
-			let subtitle = [host.user, host.hostname].compactMap { $0 }.joined(separator: "@")
-			return PaletteCommand(
-				title: "\(host.name)" + (subtitle.isEmpty ? "" : " (\(subtitle))"),
-				icon: "network"
-			) {
-				connectSSH(host: host.name)
+		SSHConfigParser.parse().map { host in
+			PaletteCommand(title: host.name, icon: "network") {
+				projectStore.connectSSH(host: host.name)
 			}
 		}
 	}
 
-	private func openDevContainer() {
-		guard let index = projects.firstIndex(where: { $0.id == selectedProject?.id }),
-			  let sshHost = projects[index].sshHost else { return }
-		// Use remotePath or home directory as workspace
-		let workspacePath = projects[index].remotePath ?? "~"
-		projects[index].devContainerPath = workspacePath
-
-		// Recreate terminal
-		let project = projects[index]
-		selectedProject = nil
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-			selectedProject = project
-			saveProjects()
-		}
-		NSLog("[Belve] DevContainer enabled for \(project.name) at \(sshHost):\(workspacePath)")
-	}
+	// MARK: - Folder Browser
 
 	private func openFolder() {
-		browserPath = selectedProject?.remotePath ?? NSHomeDirectory()
+		if let project = projectStore.selectedProject {
+			if project.sshHost != nil {
+				browserPath = project.remotePath ?? "~"
+			} else {
+				browserPath = project.remotePath ?? NSHomeDirectory()
+			}
+		}
 		paletteMode = .folderBrowser
 		commandPaletteState.isPresented = true
 	}
-
-	private func setProjectFolder(_ path: String) {
-		guard let index = projects.firstIndex(where: { $0.id == selectedProject?.id }) else { return }
-		projects[index].remotePath = path
-		projects[index].name = (path as NSString).lastPathComponent
-		saveProjects()
-
-		// Send cd command to active terminal pane
-		// Leave ~ unquoted so the shell expands it
-		let cdCommand: String
-		if path.hasPrefix("~") {
-			cdCommand = " cd \(path)\n"
-		} else {
-			let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
-			cdCommand = " cd '\(escaped)'\n"
-		}
-		sendToActiveTerminal(cdCommand)
-
-		NSLog("[Belve] Opened folder: \(path)")
-	}
-
-	private func shellEscape(_ path: String) -> String {
-		// Wrap in single quotes, escaping any single quotes in the path
-		return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-	}
-
-	private func sendToActiveTerminal(_ text: String) {
-		// Find the active GhosttyTerminalNSView and send text via ghostty_surface_text
-		guard let window = NSApp.keyWindow else { return }
-		func findGhosttyView(_ view: NSView) -> NSView? {
-			if view is GhosttyTerminalNSView { return view }
-			for sub in view.subviews {
-				if let found = findGhosttyView(sub) { return found }
-			}
-			return nil
-		}
-		if let ghosttyView = findGhosttyView(window.contentView ?? window.contentView!) as? GhosttyTerminalNSView {
-			ghosttyView.sendText(text)
-		}
-	}
-
-	private func addProject() {
-		let name = "Project \(projects.count + 1)"
-		let project = Project(name: name)
-		projects.append(project)
-		selectedProject = project
-		saveProjects()
-	}
-
-	private func connectSSH(host: String) {
-		guard let index = projects.firstIndex(where: { $0.id == selectedProject?.id }) else {
-			// No project selected, create one
-			let project = Project(name: host, sshHost: host, remotePath: "~")
-			projects.append(project)
-			selectedProject = project
-			saveProjects()
-			return
-		}
-		projects[index].sshHost = host
-		if projects[index].remotePath == nil {
-			projects[index].remotePath = "~"
-		}
-		// Force terminal recreation by updating selectedProject
-		let project = projects[index]
-		selectedProject = nil
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-			selectedProject = project
-			saveProjects()
-		}
-	}
-
-	private func deleteSelectedProject() {
-		guard let selected = selectedProject else { return }
-		projects.removeAll { $0.id == selected.id }
-		selectedProject = projects.first
-		saveProjects()
-	}
-
-	// MARK: - Persistence
-
-	private static var projectsFileURL: URL {
-		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-		let belveDir = appSupport.appendingPathComponent("Belve")
-		try? FileManager.default.createDirectory(at: belveDir, withIntermediateDirectories: true)
-		return belveDir.appendingPathComponent("projects.json")
-	}
-
-	private func loadProjects() {
-		guard let data = try? Data(contentsOf: Self.projectsFileURL),
-			  let decoded = try? JSONDecoder().decode([Project].self, from: data),
-			  !decoded.isEmpty else {
-			// First launch: no projects
-			return
-		}
-		projects = decoded
-		selectedProject = projects.first
-	}
-
-	private func saveProjects() {
-		if let data = try? JSONEncoder().encode(projects) {
-			try? data.write(to: Self.projectsFileURL)
-		}
-	}
 }
 
-struct WelcomeView: View {
-	let onNewProject: () -> Void
-
-	var body: some View {
-		VStack(spacing: 16) {
-			Text("Belve")
-				.font(.system(size: 24, weight: .semibold))
-				.foregroundStyle(Theme.textPrimary)
-
-			Text("Create a project to get started")
-				.font(Theme.fontBody)
-				.foregroundStyle(Theme.textSecondary)
-
-			Button {
-				onNewProject()
-			} label: {
-				HStack(spacing: 6) {
-					Image(systemName: "plus")
-						.font(.system(size: 12, weight: .medium))
-					Text("New Project")
-						.font(.system(size: 13, weight: .medium))
-				}
-				.foregroundStyle(Theme.bg)
-				.padding(.horizontal, 16)
-				.padding(.vertical, 8)
-				.background(Theme.accent)
-				.cornerRadius(Theme.radiusMd)
-			}
-			.buttonStyle(.plain)
-		}
-		.frame(maxWidth: .infinity, maxHeight: .infinity)
-	}
-}
+// MARK: - Top Bar
 
 struct TopBar: View {
-	let project: Project?
-	@Binding var showSidebar: Bool
-	@EnvironmentObject var notificationStore: NotificationStore
+	let projectName: String
+	let showSidebar: Bool
+	let onToggleSidebar: () -> Void
+	var sessionLabel: String?
 	@State private var isHoveringSidebar = false
 
 	var body: some View {
 		HStack(spacing: 8) {
-			// Show toggle only when sidebar is hidden
 			if !showSidebar {
-				Button {
-					withAnimation(.easeInOut(duration: 0.2)) { showSidebar = true }
-				} label: {
+				Button(action: onToggleSidebar) {
 					Image(systemName: "sidebar.left")
-						.font(.system(size: 11, weight: .medium))
+						.font(.system(size: 13))
 						.foregroundStyle(isHoveringSidebar ? Theme.textPrimary : Theme.textTertiary)
 				}
 				.buttonStyle(.plain)
-				.onHover { hovering in
-					isHoveringSidebar = hovering
-				}
+				.onHover { isHoveringSidebar = $0 }
 			}
 
-			if let project {
-				Text(project.name)
-					.font(.system(size: 11, weight: .semibold))
-					.foregroundStyle(Theme.textPrimary)
+			Spacer()
 
-				if let host = project.sshHost {
-					Text("·")
-						.foregroundStyle(Theme.textTertiary)
-					Text(host)
-						.font(.system(size: 10, weight: .regular, design: .monospaced))
-						.foregroundStyle(Theme.textTertiary)
-				}
+			Text(projectName)
+				.font(.system(size: 12, weight: .medium))
+				.foregroundStyle(Theme.textSecondary)
 
-				if let label = notificationStore.sessionLabels[project.id] {
-					Text("·")
-						.foregroundStyle(Theme.textTertiary)
-					Text(label)
-						.font(.system(size: 10, weight: .regular))
-						.foregroundStyle(Theme.textTertiary)
-						.lineLimit(1)
-				}
+			if let label = sessionLabel {
+				Text("— \(label)")
+					.font(.system(size: 12))
+					.foregroundStyle(Theme.textTertiary)
+					.lineLimit(1)
 			}
 
 			Spacer()
 		}
-		.padding(.horizontal, 12)
+		.padding(.horizontal, showSidebar ? 12 : 80)
 		.frame(height: Theme.titlebarHeight)
 		.background(Theme.bg)
+	}
+}
+
+// MARK: - Welcome View
+
+struct WelcomeView: View {
+	let onCreateProject: () -> Void
+
+	var body: some View {
+		VStack(spacing: 12) {
+			Image(systemName: "rectangle.stack")
+				.font(.system(size: 40, weight: .ultraLight))
+				.foregroundStyle(Theme.textTertiary)
+			Text("Create a project to get started")
+				.font(Theme.fontBody)
+				.foregroundStyle(Theme.textTertiary)
+			Button(action: onCreateProject) {
+				Text("New Project")
+					.font(.system(size: 13, weight: .medium))
+					.foregroundStyle(.white)
+					.padding(.horizontal, 16)
+					.padding(.vertical, 6)
+					.background(
+						RoundedRectangle(cornerRadius: 6)
+							.fill(Theme.accent)
+					)
+			}
+			.buttonStyle(.plain)
+		}
+		.frame(maxWidth: .infinity, maxHeight: .infinity)
+		.background(Theme.surface)
 	}
 }

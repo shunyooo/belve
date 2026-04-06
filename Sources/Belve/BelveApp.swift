@@ -12,6 +12,7 @@ struct BelveApp: App {
 				.frame(minWidth: 900, minHeight: 500)
 				.ignoresSafeArea()
 				.environmentObject(appDelegate.commandPaletteState)
+				.environmentObject(appDelegate.projectStore)
 				.environmentObject(appDelegate.notificationStore)
 		}
 		.windowStyle(.hiddenTitleBar)
@@ -19,7 +20,8 @@ struct BelveApp: App {
 		.commands {
 			CommandGroup(after: .toolbar) {
 				Button("Command Palette") {
-					appDelegate.commandPaletteState.isPresented.toggle()
+					// Always open in command mode, not folder browser
+					NotificationCenter.default.post(name: .belveCommandPalette, object: nil)
 				}
 				.keyboardShortcut("p", modifiers: [.command, .shift])
 			}
@@ -38,6 +40,12 @@ struct BelveApp: App {
 					NotificationCenter.default.post(name: .belveFileSave, object: nil)
 				}
 				.keyboardShortcut("s", modifiers: .command)
+				Button("Reload Project") {
+					DispatchQueue.main.async {
+						NotificationCenter.default.post(name: .belveReloadProject, object: nil)
+					}
+				}
+				.keyboardShortcut("r", modifiers: .command)
 			}
 			CommandGroup(after: .toolbar) {
 				Button("Split Vertical") {
@@ -53,18 +61,8 @@ struct BelveApp: App {
 				}
 				.keyboardShortcut("w", modifiers: .command)
 			}
-			CommandGroup(after: .toolbar) {
-				ForEach(1...9, id: \.self) { index in
-					Button("Switch to Project \(index)") {
-						NotificationCenter.default.post(
-							name: .belveSwitchProject,
-							object: nil,
-							userInfo: ["index": index - 1]
-						)
-					}
-					.keyboardShortcut(KeyEquivalent(Character("\(index)")), modifiers: .command)
-				}
-			}
+			// Cmd+1-9 project switching handled via NSEvent monitor in AppDelegate
+		// (SwiftUI CommandGroup + @Published mutation crashes during performKeyEquivalent)
 		}
 	}
 }
@@ -77,7 +75,9 @@ extension Notification.Name {
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
 	static let belveFocusProject = Notification.Name("belveFocusProject")
 	static let belveClosePane = Notification.Name("belveClosePane")
+	static let belveCommandPalette = Notification.Name("belveCommandPalette")
 	static let belveNewProject = Notification.Name("belveNewProject")
+	static let belveReloadProject = Notification.Name("belveReloadProject")
 }
 
 class CommandPaletteState: ObservableObject {
@@ -87,9 +87,12 @@ class CommandPaletteState: ObservableObject {
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
 	let commandPaletteState = CommandPaletteState()
 	let notificationStore = NotificationStore()
+	let projectStore = ProjectStore()
 	let agentFileMonitor = AgentEventFileMonitor()
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
+		// Install crash signal handlers to capture backtrace
+		installCrashHandlers()
 		NSApp.activate(ignoringOtherApps: true)
 		adjustTrafficLights()
 
@@ -114,6 +117,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 					}
 				}
 			}
+		}
+
+		// Cmd+1-9 project switching via local event monitor
+		// (Cannot use SwiftUI CommandGroup — @Published mutation during
+		// performKeyEquivalent causes EXC_BAD_ACCESS in swift_retain)
+		NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+			guard event.modifierFlags.contains(.command),
+				  !event.modifierFlags.contains(.shift),
+				  !event.modifierFlags.contains(.option),
+				  let chars = event.charactersIgnoringModifiers,
+				  let digit = chars.first, digit >= "1" && digit <= "9" else {
+				return event
+			}
+			let index = Int(String(digit))! - 1
+			// Perform on next RunLoop iteration to escape event processing stack
+			CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+				self?.projectStore.selectByIndex(index)
+			}
+			CFRunLoopWakeUp(CFRunLoopGetMain())
+			return nil // Consume the event
 		}
 
 		// Start monitoring agent events file
@@ -180,5 +203,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			let defaultX: CGFloat = type == .closeButton ? 7 : (type == .miniaturizeButton ? 27 : 47)
 			button.setFrameOrigin(NSPoint(x: defaultX + xOffset, y: button.superview!.frame.height - button.frame.height - yOffset))
 		}
+	}
+
+	private func installCrashHandlers() {
+		let handler: @convention(c) (Int32) -> Void = { signal in
+			let trace = Thread.callStackSymbols.joined(separator: "\n")
+			let msg = "CRASH signal=\(signal)\n\(trace)\n"
+			try? msg.write(toFile: "/tmp/belve-crash-trace.log", atomically: true, encoding: .utf8)
+			// Re-raise to get default behavior
+			Darwin.signal(signal, SIG_DFL)
+			Darwin.raise(signal)
+		}
+		signal(SIGSEGV, handler)
+		signal(SIGBUS, handler)
+		signal(SIGABRT, handler)
+		signal(SIGILL, handler)
+		signal(SIGFPE, handler)
+		signal(SIGTRAP, handler)
+		atexit {
+			let trace = Thread.callStackSymbols.joined(separator: "\n")
+			let msg = "EXIT (atexit)\n\(trace)\n"
+			try? msg.write(toFile: "/tmp/belve-crash-trace.log", atomically: true, encoding: .utf8)
+		}
+		NSLog("[Belve] Crash handlers installed")
 	}
 }

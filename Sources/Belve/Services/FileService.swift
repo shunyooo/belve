@@ -2,6 +2,30 @@ import Foundation
 
 /// Reads directory contents locally or via SSH.
 enum FileService {
+	static func fileExists(path: String, sshHost: String? = nil) -> Bool {
+		if let host = sshHost {
+			let process = Process()
+			process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+			process.arguments = [
+				"-o", "StrictHostKeyChecking=accept-new",
+				"-o", "ConnectTimeout=5",
+				"-o", "BatchMode=yes",
+				host,
+				"test -f \(path)"
+			]
+			process.standardOutput = FileHandle.nullDevice
+			process.standardError = FileHandle.nullDevice
+			do {
+				try process.run()
+				process.waitUntilExit()
+				return process.terminationStatus == 0
+			} catch {
+				return false
+			}
+		}
+		return FileManager.default.fileExists(atPath: path)
+	}
+
 	static func listDirectory(path: String, sshHost: String? = nil) -> [FileItem] {
 		if let host = sshHost {
 			return listRemoteDirectory(path: path, host: host)

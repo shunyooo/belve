@@ -52,9 +52,19 @@ final class GhosttyRuntime {
 			let launcher = "\(tmpDir)/belve-launcher.sh"
 			try? #"""
 			#!/bin/sh
-			# SSH mode: connect to remote host
+			export TERM=xterm-256color
+			SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color"
+			# DevContainer mode: ssh + devcontainer up + exec
+			if [ -n "$BELVE_SSH_HOST" ] && [ -n "$BELVE_DEVCONTAINER" ]; then
+			    exec /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && echo '⏳ Starting Dev Container...' && devcontainer up --workspace-folder . 2>&1 && echo '✅ Container ready' && TERM=xterm-256color devcontainer exec --workspace-folder . \$SHELL -l"
+			fi
+			# SSH mode: connect to remote host, optionally cd to remote path
 			if [ -n "$BELVE_SSH_HOST" ]; then
-			    exec /usr/bin/ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -t "$BELVE_SSH_HOST"
+			    if [ -n "$BELVE_REMOTE_PATH" ]; then
+			        exec /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && exec \$SHELL -l"
+			    else
+			        exec /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST"
+			    fi
 			fi
 			export BELVE_SESSION=1
 			export PATH="\#(belveBin):$PATH"

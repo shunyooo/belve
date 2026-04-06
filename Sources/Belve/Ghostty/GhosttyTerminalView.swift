@@ -33,33 +33,26 @@ struct GhosttyTerminalView: NSViewRepresentable {
 			env["PATH"] = "\(resourceBin.path):\(currentPath)"
 		}
 
-		view.environmentVariables = env
-
-		// Set command and working directory based on project type
+		// Set connection mode via environment variables (handled by launcher script)
 		if project.isDevContainer, let sshHost = project.sshHost, let workspacePath = project.devContainerPath {
-			// DevContainer: ssh into host, then devcontainer exec
 			BelveRemoteInstaller.deploy(to: sshHost)
-			let args = DevContainerService.exec(sshHost: sshHost, workspacePath: workspacePath)
-			view.command = args.joined(separator: " ")
+			env["BELVE_SSH_HOST"] = sshHost
+			env["BELVE_REMOTE_PATH"] = workspacePath
+			env["BELVE_DEVCONTAINER"] = "1"
 			NSLog("[Belve] DevContainer mode: \(sshHost):\(workspacePath)")
 		} else if let sshHost = project.sshHost {
-			// SSH: connect to remote host, cd to remotePath after connection
 			BelveRemoteInstaller.deploy(to: sshHost)
+			env["BELVE_SSH_HOST"] = sshHost
 			if let remotePath = project.remotePath {
-				// Use single quotes for paths without ~, unquoted for ~ expansion
-				let cdPath = remotePath.hasPrefix("~")
-					? remotePath  // Unquoted so ~ expands
-					: "'\(remotePath.replacingOccurrences(of: "'", with: "'\\''"))'"
-				view.command = "/usr/bin/ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -t \(sshHost) \"cd \(cdPath) && exec \\$SHELL -l\""
-			} else {
-				view.command = "/usr/bin/ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -t \(sshHost)"
+				env["BELVE_REMOTE_PATH"] = remotePath
 			}
 			NSLog("[Belve] SSH mode: \(sshHost), remotePath: \(project.remotePath ?? "none")")
 		} else if let remotePath = project.remotePath {
-			// Local: set working directory
 			view.workingDirectory = remotePath
 			NSLog("[Belve] Local workingDirectory: \(remotePath)")
 		}
+
+		view.environmentVariables = env
 
 		// Register pane → project mapping for agent notifications
 		if let paneId {

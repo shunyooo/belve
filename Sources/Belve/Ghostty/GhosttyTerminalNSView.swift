@@ -85,18 +85,6 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 			return
 		}
 
-		// Apply per-surface command override if set (e.g. SSH/DevContainer)
-		if let command {
-			let tmpConf = "/tmp/belve-surface-\(ObjectIdentifier(self).hashValue).conf"
-			try? "command = \(command)\n".write(toFile: tmpConf, atomically: true, encoding: .utf8)
-			if let cfg = ghostty_config_clone(GhosttyRuntime.shared.config) {
-				ghostty_config_load_file(cfg, tmpConf)
-				ghostty_config_finalize(cfg)
-				ghostty_app_update_config(app, cfg)
-			}
-			NSLog("[Belve] Per-surface command: \(command)")
-		}
-
 		var config = ghostty_surface_config_new()
 		config.platform_tag = GHOSTTY_PLATFORM_MACOS
 		config.platform = ghostty_platform_u(
@@ -171,14 +159,26 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 
 	func destroySurface() {
 		guard let surface else { return }
-		ghostty_surface_free(surface)
+		// Clear reference first to prevent callbacks on freed surface
 		self.surface = nil
+		// Free on main thread with a small delay to let Ghostty finish any pending work
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+			ghostty_surface_free(surface)
+		}
 	}
 
 	deinit {
-		destroySurface()
-		if let trackingArea {
-			removeTrackingArea(trackingArea)
+		let s = surface
+		let ta = trackingArea
+		surface = nil
+		// deinit may not be on main thread; schedule cleanup
+		DispatchQueue.main.async {
+			if let s {
+				ghostty_surface_free(s)
+			}
+		}
+		if let ta {
+			removeTrackingArea(ta)
 		}
 	}
 
@@ -374,12 +374,11 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 	override func performKeyEquivalent(with event: NSEvent) -> Bool {
 		guard let surface else { return false }
 
-		// Always let Cmd-based shortcuts go to the main menu first.
-		// This ensures Cmd+Shift+P (palette), Cmd+D (split), Cmd+N (new project) etc. work.
+		// Let Cmd-based shortcuts pass through to SwiftUI menu system.
+		// Don't send to Ghostty — its default keybindings (tab switch etc.)
+		// expect infrastructure we don't provide.
 		if event.modifierFlags.contains(.command) {
-			if let menu = NSApp.mainMenu, menu.performKeyEquivalent(with: event) {
-				return true
-			}
+			return false
 		}
 
 		var keyEvent = ghostty_input_key_s()
