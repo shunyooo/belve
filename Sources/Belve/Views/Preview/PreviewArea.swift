@@ -14,7 +14,7 @@ struct PreviewArea: View {
 	@State private var editedContent: String = ""
 
 	private var rootPath: String {
-		project.remotePath ?? NSHomeDirectory()
+		project.effectivePath
 	}
 
 	var body: some View {

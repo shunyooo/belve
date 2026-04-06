@@ -256,13 +256,7 @@ struct MainWindow: View {
 	// MARK: - Folder Browser
 
 	private func openFolder() {
-		if let project = projectStore.selectedProject {
-			if project.sshHost != nil {
-				browserPath = project.remotePath ?? "~"
-			} else {
-				browserPath = project.remotePath ?? NSHomeDirectory()
-			}
-		}
+		browserPath = projectStore.selectedProject?.effectivePath ?? NSHomeDirectory()
 		paletteMode = .folderBrowser
 		commandPaletteState.isPresented = true
 	}

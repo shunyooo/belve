@@ -24,4 +24,14 @@ struct Project: Identifiable, Codable, Hashable {
 	var isDevContainer: Bool {
 		devContainerPath != nil && sshHost != nil
 	}
+
+	var isRemote: Bool {
+		sshHost != nil
+	}
+
+	/// The effective working directory for this project.
+	/// Remote projects default to ~, local projects default to user home.
+	var effectivePath: String {
+		remotePath ?? (isRemote ? "~" : NSHomeDirectory())
+	}
 }
