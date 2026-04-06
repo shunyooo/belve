@@ -69,6 +69,7 @@ struct MainWindow: View {
 											)
 
 											PreviewArea(project: project, openFile: isSelected ? $openFile : .constant(nil))
+												.id(project.hashValue)  // Rebuild when project properties change
 												.frame(maxWidth: .infinity)
 										}
 

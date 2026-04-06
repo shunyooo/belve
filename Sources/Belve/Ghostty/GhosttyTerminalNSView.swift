@@ -150,10 +150,31 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 	}
 
 	/// Send text to the terminal (simulates keyboard input).
+	/// Send text to the terminal. Newlines are converted to Enter key presses.
 	func sendText(_ text: String) {
 		guard let surface else { return }
-		text.withCString { ptr in
-			ghostty_surface_text(surface, ptr, UInt(text.utf8.count))
+		// Split by newlines — send text parts via surface_text, newlines via key press
+		let parts = text.components(separatedBy: "\n")
+		for (i, part) in parts.enumerated() {
+			if !part.isEmpty {
+				part.withCString { ptr in
+					ghostty_surface_text(surface, ptr, UInt(part.utf8.count))
+				}
+			}
+			// Send Enter for each \n (except trailing)
+			if i < parts.count - 1 {
+				var keyEvent = ghostty_input_key_s()
+				keyEvent.action = GHOSTTY_ACTION_PRESS
+				keyEvent.keycode = 36  // macOS keycode for Return
+				keyEvent.mods = GHOSTTY_MODS_NONE
+				keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+				keyEvent.composing = false
+				keyEvent.text = nil
+				"\r".withCString { ptr in
+					keyEvent.text = ptr
+					_ = ghostty_surface_key(surface, keyEvent)
+				}
+			}
 		}
 	}
 

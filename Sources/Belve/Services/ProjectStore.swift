@@ -73,6 +73,7 @@ class ProjectStore: ObservableObject {
 	// MARK: - Folder / Path
 
 	func setProjectFolder(_ path: String) {
+		let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard let index = indexOfSelected else { return }
 		projects[index].remotePath = path
 		projects[index].name = (path as NSString).lastPathComponent
@@ -80,13 +81,28 @@ class ProjectStore: ObservableObject {
 		selectedProject = projects[index]
 		// Send cd to active terminal
 		let cdPath = path.hasPrefix("~") ? path : "'\(path.replacingOccurrences(of: "'", with: "'\\''"))'"
-		sendToActiveTerminal(" cd \(cdPath)\n")
+		// Small delay to let palette close, then send cd and refocus terminal
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
+			sendToActiveTerminal(" cd \(cdPath)\n")
+			refocusTerminal()
+		}
 		NSLog("[Belve] Opened folder: \(path)")
 	}
 
 	/// Send text to the currently focused GhosttyTerminalNSView
 	func sendToActiveTerminal(_ text: String) {
-		guard let window = NSApp.keyWindow else { return }
+		findTerminalView()?.sendText(text)
+	}
+
+	/// Refocus the terminal view after palette/dialog closes
+	func refocusTerminal() {
+		if let tv = findTerminalView() {
+			tv.window?.makeFirstResponder(tv)
+		}
+	}
+
+	private func findTerminalView() -> GhosttyTerminalNSView? {
+		guard let window = NSApp.keyWindow else { return nil }
 		func find(_ view: NSView) -> GhosttyTerminalNSView? {
 			if let v = view as? GhosttyTerminalNSView { return v }
 			for sub in view.subviews {
@@ -94,7 +110,7 @@ class ProjectStore: ObservableObject {
 			}
 			return nil
 		}
-		find(window.contentView ?? window.contentView!)?.sendText(text)
+		return find(window.contentView ?? window.contentView!)
 	}
 
 	// MARK: - SSH
