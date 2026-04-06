@@ -5,18 +5,30 @@ enum SplitDirection {
 }
 
 class PaneNode: ObservableObject, Identifiable {
-	let id = UUID()
+	let id: UUID
 	@Published var children: [PaneNode]?
 	@Published var splitDirection: SplitDirection?
 	@Published var splitRatio: CGFloat = 0.5
+
+	/// Cached terminal NSView — survives split operations
+	var terminalView: GhosttyTerminalNSView?
+
+	init(id: UUID = UUID()) {
+		self.id = id
+	}
 
 	var isLeaf: Bool { children == nil }
 
 	func split(_ direction: SplitDirection) {
 		guard isLeaf else { return }
+		// Move this node's terminal view to first child
+		let existing = PaneNode(id: self.id)
+		existing.terminalView = self.terminalView
+		self.terminalView = nil
+		let newPane = PaneNode()
 		splitDirection = direction
 		splitRatio = 0.5
-		children = [PaneNode(), PaneNode()]
+		children = [existing, newPane]
 	}
 }
 
@@ -81,6 +93,19 @@ class CommandAreaState: ObservableObject {
 		return false
 	}
 
+	func findNode(_ paneId: String) -> PaneNode? {
+		guard let uuid = UUID(uuidString: paneId) else { return nil }
+		return findNodeById(uuid, in: root)
+	}
+
+	private func findNodeById(_ id: UUID, in node: PaneNode) -> PaneNode? {
+		if node.id == id { return node }
+		for child in node.children ?? [] {
+			if let found = findNodeById(id, in: child) { return found }
+		}
+		return nil
+	}
+
 	private func firstLeaf(_ node: PaneNode) -> PaneNode? {
 		if node.isLeaf { return node }
 		for child in node.children ?? [] {
@@ -106,7 +131,7 @@ struct PaneTreeView: View {
 
 	var body: some View {
 		if node.isLeaf {
-			GhosttyTerminalView(project: project, paneId: node.id.uuidString)
+			GhosttyTerminalView(project: project, paneId: node.id.uuidString, cachedView: node.terminalView)
 				.id(node.id)
 		} else if let children = node.children, children.count == 2,
 				  let direction = node.splitDirection {

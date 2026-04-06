@@ -63,7 +63,7 @@ final class GhosttyRuntime {
 			try? #"""
 			#!/bin/sh
 			export TERM=xterm-256color
-			SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color"
+			SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ControlMaster=auto -o ControlPath=/tmp/belve-ssh-%r@%h:%p -o ControlPersist=600"
 
 			# SSH/DevContainer: connect with tmux for session persistence
 			if [ -n "$BELVE_SSH_HOST" ]; then
