@@ -12,9 +12,13 @@ struct GhosttyTerminalView: NSViewRepresentable {
 	@EnvironmentObject var commandAreaState: CommandAreaState
 
 	func makeNSView(context: Context) -> GhosttyTerminalNSView {
-		// Reuse cached view if available (preserves terminal session across split)
+		// Reuse cached view from PaneNode.split() — preserves terminal session
 		if let cached = cachedView {
 			NSLog("[Belve] Reusing cached terminal view for pane \(paneId ?? "?")")
+			// Clear the cache so SwiftUI re-renders don't return stale views
+			if let paneId, let paneNode = commandAreaState.findNode(paneId) {
+				paneNode.terminalView = nil
+			}
 			return cached
 		}
 
@@ -85,9 +89,14 @@ struct GhosttyTerminalView: NSViewRepresentable {
 			}
 		}
 
-		// Note: Don't cache here — caching in makeNSView causes SwiftUI
-		// to return the same view on re-render, orphaning the surface.
-		// Caching is done only in PaneNode.split() for split operations.
+		// Register view in PaneNode for split reuse.
+		// Only set if this is a fresh view (not a cached reuse) — otherwise
+		// SwiftUI's re-render would overwrite the cache with a stale reference.
+		if let paneId, cachedView == nil {
+			if let paneNode = commandAreaState.findNode(paneId) {
+				paneNode.terminalView = view
+			}
+		}
 
 		// Request first responder after layout settles
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
