@@ -51,39 +51,44 @@ struct MainWindow: View {
 						.frame(height: 1)
 
 					// Content
-					if let project = projectStore.selectedProject {
+					if !projectStore.projects.isEmpty {
 						GeometryReader { geo in
-							ZStack(alignment: .bottomTrailing) {
-								HStack(spacing: 0) {
-									CommandArea(project: project, state: commandAreaState)
-										.id(project.id)
-										.frame(width: splitPosition)
-										.environmentObject(commandAreaState)
+							ZStack {
+								ForEach(projectStore.projects) { project in
+									let isSelected = project.id == projectStore.selectedProject?.id
+									ZStack(alignment: .bottomTrailing) {
+										HStack(spacing: 0) {
+											CommandArea(project: project, state: commandAreaState)
+												.frame(width: splitPosition)
+												.environmentObject(commandAreaState)
 
-									SplitDivider(
-										position: $splitPosition,
-										minLeft: 250,
-										minRight: 250
-									)
+											SplitDivider(
+												position: $splitPosition,
+												minLeft: 250,
+												minRight: 250
+											)
 
-									PreviewArea(project: project, openFile: $openFile)
-										.frame(maxWidth: .infinity)
-								}
-
-								// DevContainer banner
-								if projectStore.showDevContainerBanner && !project.isDevContainer {
-									DevContainerBanner(
-										onReopen: {
-											projectStore.showDevContainerBanner = false
-											projectStore.openDevContainer()
-										},
-										onDismiss: {
-											projectStore.showDevContainerBanner = false
+											PreviewArea(project: project, openFile: isSelected ? $openFile : .constant(nil))
+												.frame(maxWidth: .infinity)
 										}
-									)
-									.padding(.bottom, 16)
-									.padding(.trailing, 16)
-									.transition(.move(edge: .bottom).combined(with: .opacity))
+
+										if isSelected && projectStore.showDevContainerBanner && !project.isDevContainer {
+											DevContainerBanner(
+												onReopen: {
+													projectStore.showDevContainerBanner = false
+													projectStore.openDevContainer()
+												},
+												onDismiss: {
+													projectStore.showDevContainerBanner = false
+												}
+											)
+											.padding(.bottom, 16)
+											.padding(.trailing, 16)
+											.transition(.move(edge: .bottom).combined(with: .opacity))
+										}
+									}
+									.opacity(isSelected ? 1 : 0)
+									.allowsHitTesting(isSelected)
 								}
 							}
 							.onAppear {
