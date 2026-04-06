@@ -17,20 +17,9 @@ class ProjectStore: ObservableObject {
 	/// Reload the current project (re-create terminal, file tree, etc.)
 	/// Uses ID change to force SwiftUI view recreation without nil transition.
 	func reloadCurrentProject() {
-		guard let index = indexOfSelected else { return }
-		// Create a new Project with same data but new UUID to force view recreation
-		let old = projects[index]
-		let reloaded = Project(
-			id: UUID(),
-			name: old.name,
-			sshHost: old.sshHost,
-			remotePath: old.remotePath,
-			devContainerPath: old.devContainerPath
-		)
-		projects[index] = reloaded
-		selectedProject = reloaded
-		saveProjects()
-		NSLog("[Belve] Reloaded project: \(reloaded.name)")
+		// Cannot safely destroy Ghostty surfaces — just log for now
+		// TODO: Implement safe surface re-creation
+		NSLog("[Belve] Reload not yet supported (Ghostty surface lifecycle)")
 	}
 
 	// MARK: - Selection
@@ -88,14 +77,24 @@ class ProjectStore: ObservableObject {
 		projects[index].remotePath = path
 		projects[index].name = (path as NSString).lastPathComponent
 		saveProjects()
-
-		// Reset by re-selecting (forces view recreation)
-		let updated = projects[index]
-		selectedProject = nil
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-			self?.select(updated)
-		}
+		selectedProject = projects[index]
+		// Send cd to active terminal
+		let cdPath = path.hasPrefix("~") ? path : "'\(path.replacingOccurrences(of: "'", with: "'\\''"))'"
+		sendToActiveTerminal(" cd \(cdPath)\n")
 		NSLog("[Belve] Opened folder: \(path)")
+	}
+
+	/// Send text to the currently focused GhosttyTerminalNSView
+	func sendToActiveTerminal(_ text: String) {
+		guard let window = NSApp.keyWindow else { return }
+		func find(_ view: NSView) -> GhosttyTerminalNSView? {
+			if let v = view as? GhosttyTerminalNSView { return v }
+			for sub in view.subviews {
+				if let found = find(sub) { return found }
+			}
+			return nil
+		}
+		find(window.contentView ?? window.contentView!)?.sendText(text)
 	}
 
 	// MARK: - SSH
@@ -105,11 +104,9 @@ class ProjectStore: ObservableObject {
 			projects[index].sshHost = host
 			projects[index].name = host.components(separatedBy: ".").first ?? host
 			saveProjects()
-			let project = projects[index]
-			selectedProject = nil
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-				self?.select(project)
-			}
+			selectedProject = projects[index]
+			// Connect via existing terminal
+			sendToActiveTerminal("ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -t \(host)\n")
 		} else {
 			let _ = addProject(name: host.components(separatedBy: ".").first, sshHost: host)
 		}
@@ -119,17 +116,17 @@ class ProjectStore: ObservableObject {
 
 	func openDevContainer() {
 		guard let index = indexOfSelected,
-			  projects[index].sshHost != nil else { return }
-		let workspacePath = projects[index].remotePath ?? "~"
+			  projects[index].sshHost != nil,
+			  let workspacePath = projects[index].remotePath else {
+			NSLog("[Belve] Cannot open DevContainer: no remotePath set. Use Cmd+O first.")
+			return
+		}
 		projects[index].devContainerPath = workspacePath
 		saveProjects()
-
-		let project = projects[index]
-		selectedProject = nil
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-			self?.select(project)
-		}
-		NSLog("[Belve] DevContainer enabled for \(project.name)")
+		selectedProject = projects[index]
+		// Send devcontainer commands to existing terminal
+		sendToActiveTerminal("cd \(workspacePath) && devcontainer up --workspace-folder . 2>&1 && devcontainer exec --workspace-folder . $SHELL -l\n")
+		NSLog("[Belve] DevContainer enabled for \(projects[index].name)")
 	}
 
 	func disconnectSSH() {
@@ -140,6 +137,8 @@ class ProjectStore: ObservableObject {
 		projects[index].devContainerPath = nil
 		saveProjects()
 		selectedProject = projects[index]
+		// Exit SSH session in terminal
+		sendToActiveTerminal("exit\n")
 		NSLog("[Belve] SSH disconnected for \(name), reverted to local")
 	}
 
@@ -147,12 +146,9 @@ class ProjectStore: ObservableObject {
 		guard let index = indexOfSelected else { return }
 		projects[index].devContainerPath = nil
 		saveProjects()
-
-		let project = projects[index]
-		selectedProject = nil
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-			self?.select(project)
-		}
+		selectedProject = projects[index]
+		// Exit devcontainer shell back to SSH
+		sendToActiveTerminal("exit\n")
 		NSLog("[Belve] DevContainer disabled, reverting to SSH")
 	}
 

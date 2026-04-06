@@ -171,8 +171,13 @@ final class GhosttyTerminalNSView: NSView, NSTextInputClient {
 		let s = surface
 		let ta = trackingArea
 		surface = nil
-		// deinit may not be on main thread; schedule cleanup
-		DispatchQueue.main.async {
+		// Deactivate surface before freeing to prevent Ghostty callbacks
+		if let s {
+			ghostty_surface_set_focus(s, false)
+			ghostty_surface_set_occlusion(s, true)
+		}
+		// deinit may not be on main thread; schedule cleanup with delay
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
 			if let s {
 				ghostty_surface_free(s)
 			}

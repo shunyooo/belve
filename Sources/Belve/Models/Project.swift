@@ -21,6 +21,11 @@ struct Project: Identifiable, Codable, Hashable {
 		self.devContainerPath = devContainerPath
 	}
 
+	/// Create a copy with a new UUID. Forces SwiftUI view recreation when connection type changes.
+	func withNewId() -> Project {
+		Project(id: UUID(), name: name, sshHost: sshHost, remotePath: remotePath, devContainerPath: devContainerPath)
+	}
+
 	var isDevContainer: Bool {
 		devContainerPath != nil && sshHost != nil
 	}
