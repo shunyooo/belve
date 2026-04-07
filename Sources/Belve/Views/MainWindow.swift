@@ -1,13 +1,14 @@
 import SwiftUI
+import AppKit
 
 struct MainWindow: View {
 	@EnvironmentObject var commandPaletteState: CommandPaletteState
 	@EnvironmentObject var projectStore: ProjectStore
-	@State private var showSidebar = true
-	@State private var splitPosition: CGFloat = 500
+	@State private var sidebarWidthAtDragStart: CGFloat = 0
 	@State private var openFile: OpenFile?
 	@State private var paletteMode: PaletteMode = .commands
 	@StateObject private var stateManager = CommandAreaStateManager()
+	@StateObject private var layoutState = WorkspaceLayoutStateManager()
 	@State private var browserPath: String = ""
 
 	enum PaletteMode {
@@ -20,7 +21,7 @@ struct MainWindow: View {
 		ZStack {
 			HStack(spacing: 0) {
 				// Sidebar
-				if showSidebar {
+				if layoutState.showSidebar {
 					ProjectListView(
 						projects: projectStore.projects,
 						selectedProject: Binding(
@@ -28,14 +29,35 @@ struct MainWindow: View {
 							set: { projectStore.select($0) }
 						),
 						onAddProject: { let _ = projectStore.addProject() },
-						onToggleSidebar: { withAnimation(.easeOut(duration: 0.15)) { showSidebar.toggle() } },
+						onToggleSidebar: { withAnimation(.easeOut(duration: 0.15)) { layoutState.showSidebar.toggle() } },
 						onOpenNotifications: {},
 						onRenameProject: { id, name in projectStore.renameProject(id, name: name) },
 						onDeleteProject: { id in projectStore.deleteProject(id) }
 					)
-					.frame(width: Theme.sidebarWidth)
-					Theme.borderSubtle
+					.frame(width: layoutState.sidebarWidth)
+					Rectangle()
+						.fill(Theme.borderSubtle)
 						.frame(width: 1)
+						.contentShape(Rectangle().inset(by: -3))
+						.onHover { hovering in
+							if hovering {
+								NSCursor.resizeLeftRight.push()
+							} else {
+								NSCursor.pop()
+							}
+						}
+						.gesture(
+							DragGesture(minimumDistance: 1, coordinateSpace: .global)
+								.onChanged { value in
+									if sidebarWidthAtDragStart == 0 {
+										sidebarWidthAtDragStart = layoutState.sidebarWidth
+									}
+									layoutState.sidebarWidth = max(140, min(350, sidebarWidthAtDragStart + value.translation.width))
+								}
+								.onEnded { _ in
+									sidebarWidthAtDragStart = layoutState.sidebarWidth
+								}
+						)
 				}
 
 				// Main content
@@ -44,8 +66,8 @@ struct MainWindow: View {
 					TopBar(
 						projectName: projectStore.selectedProject?.name ?? "",
 						connectionInfo: projectStore.selectedProject.map { Self.connectionInfo(for: $0) } ?? nil,
-						showSidebar: showSidebar,
-						onToggleSidebar: { withAnimation(.easeOut(duration: 0.15)) { showSidebar.toggle() } },
+						showSidebar: layoutState.showSidebar,
+						onToggleSidebar: { withAnimation(.easeOut(duration: 0.15)) { layoutState.showSidebar.toggle() } },
 						sessionLabel: nil
 					)
 					Theme.borderSubtle
@@ -54,24 +76,41 @@ struct MainWindow: View {
 					// Content
 					if !projectStore.projects.isEmpty {
 						GeometryReader { geo in
-							let clampedSplit = min(splitPosition, max(250, geo.size.width - 250))
 							ZStack {
 								ForEach(projectStore.projects) { project in
 									let isSelected = project.id == projectStore.selectedProject?.id
 									let state = commandAreaState(for: project.id)
+									let projectLayout = layoutState.state(for: project.id)
+									let splitBinding = Binding<CGFloat>(
+										get: {
+											let preferred = projectLayout.commandAreaFraction * geo.size.width
+											return min(max(250, preferred), max(250, geo.size.width - 250))
+										},
+										set: { newValue in
+											let clamped = min(max(250, newValue), max(250, geo.size.width - 250))
+											projectLayout.commandAreaFraction = clamped / max(geo.size.width, 1)
+										}
+									)
+									let clampedSplit = splitBinding.wrappedValue
 									ZStack(alignment: .bottomTrailing) {
 										HStack(spacing: 0) {
 											CommandArea(project: project, state: state)
-													.frame(width: clampedSplit)
+												.frame(width: clampedSplit)
 												.environmentObject(state)
 
 											SplitDivider(
-												position: $splitPosition,
+												position: splitBinding,
 												minLeft: 250,
-												minRight: 250
+												minRight: 250,
+												availableWidth: geo.size.width
 											)
+											.frame(width: DividerMetrics.absoluteHitWidth)
 
-											PreviewArea(project: project, openFile: isSelected ? $openFile : .constant(nil))
+											PreviewArea(
+												project: project,
+												layoutState: projectLayout,
+												openFile: isSelected ? $openFile : .constant(nil)
+											)
 												.id(project.hashValue)  // Rebuild when project properties change
 												.frame(maxWidth: .infinity)
 										}
@@ -94,9 +133,6 @@ struct MainWindow: View {
 									.opacity(isSelected ? 1 : 0)
 									.allowsHitTesting(isSelected)
 								}
-							}
-							.onAppear {
-								splitPosition = geo.size.width * 0.5
 							}
 						}
 					} else {
@@ -138,8 +174,12 @@ struct MainWindow: View {
 			}
 		}
 		.background(Theme.bg)
+		.background(WindowFrameAutosave(name: "BelveMainWindow"))
 		// Cmd+D/W/1-9 shortcuts are handled via JS postMessage → Coordinator
 		// (WKWebView consumes key events before SwiftUI .onKeyPress sees them)
+		.onAppear {
+			sidebarWidthAtDragStart = layoutState.sidebarWidth
+		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notif in
 			if let index = notif.userInfo?["index"] as? Int {
 				projectStore.selectByIndex(index)
@@ -234,7 +274,7 @@ struct MainWindow: View {
 			}
 		})
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
-			withAnimation(.easeOut(duration: 0.15)) { showSidebar.toggle() }
+			withAnimation(.easeOut(duration: 0.15)) { layoutState.showSidebar.toggle() }
 		})
 		cmds.append(PaletteCommand(title: "New Project", icon: "plus") {
 			let _ = projectStore.addProject()
@@ -264,9 +304,9 @@ struct MainWindow: View {
 		case .ssh(let host):
 			let short = host.components(separatedBy: ".").first ?? host
 			return "SSH: \(short)"
-		case .devContainer(let host, _):
-			let short = host.components(separatedBy: ".").first ?? host
-			return "DevContainer: \(short)"
+		case .devContainer(_, _):
+			let label = project.containerImageName.map { ($0 as NSString).lastPathComponent } ?? "container"
+			return "DevContainer: \(label)"
 		}
 	}
 
@@ -388,5 +428,45 @@ struct WelcomeView: View {
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
 		.background(Theme.surface)
+	}
+}
+
+struct WindowFrameAutosave: NSViewRepresentable {
+	let name: String
+
+	func makeNSView(context: Context) -> WindowFrameAutosaveView {
+		WindowFrameAutosaveView(name: name)
+	}
+
+	func updateNSView(_ nsView: WindowFrameAutosaveView, context: Context) {
+		nsView.name = name
+		nsView.applyAutosaveNameIfNeeded()
+	}
+}
+
+final class WindowFrameAutosaveView: NSView {
+	var name: String
+	private var appliedWindowNumber: Int?
+
+	init(name: String) {
+		self.name = name
+		super.init(frame: .zero)
+	}
+
+	required init?(coder: NSCoder) {
+		return nil
+	}
+
+	override func viewDidMoveToWindow() {
+		super.viewDidMoveToWindow()
+		applyAutosaveNameIfNeeded()
+	}
+
+	func applyAutosaveNameIfNeeded() {
+		guard let window else { return }
+		let windowNumber = window.windowNumber
+		guard appliedWindowNumber != windowNumber else { return }
+		appliedWindowNumber = windowNumber
+		window.setFrameAutosaveName(name)
 	}
 }

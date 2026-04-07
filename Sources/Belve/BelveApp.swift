@@ -72,6 +72,8 @@ extension Notification.Name {
 	static let belveCommandPalette = Notification.Name("belveCommandPalette")
 	static let belveNewProject = Notification.Name("belveNewProject")
 	static let belveReloadProject = Notification.Name("belveReloadProject")
+	static let belveFileDeleted = Notification.Name("belveFileDeleted")
+	static let belveUndo = Notification.Name("belveUndo")
 }
 
 class CommandPaletteState: ObservableObject {

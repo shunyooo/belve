@@ -280,9 +280,9 @@ struct ProjectRow: View {
 	}
 
 	private var subtitle: String {
-		if project.isDevContainer, let host = project.sshHost {
-			let short = host.components(separatedBy: ".").first ?? host
-			return "DevContainer: \(short)"
+		if project.isDevContainer {
+			let label = project.containerImageName.map { ($0 as NSString).lastPathComponent } ?? "container"
+			return "DevContainer: \(label)"
 		} else if let host = project.sshHost {
 			let short = host.components(separatedBy: ".").first ?? host
 			return "SSH: \(short)"

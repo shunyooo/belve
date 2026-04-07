@@ -26,6 +26,12 @@ kill $(pgrep -f Belve) 2>/dev/null; open Belve.app
 # プロセス停止
 kill $(pgrep -f Belve) 2>/dev/null
 
+# xterm.js バンドル再生成（scripts/terminal-entry.js 変更時に必要）
+npx esbuild scripts/terminal-entry.js --bundle --format=iife --outfile=Sources/Belve/Resources/terminal-bundle.js --minify
+
+# npm セットアップ（初回 or パッケージ追加時）
+npm install
+
 # テスト
 swift test
 ```

@@ -18,9 +18,17 @@ class ProjectStore: ObservableObject {
 	/// Reload the current project (re-create terminal, file tree, etc.)
 	/// Uses ID change to force SwiftUI view recreation without nil transition.
 	func reloadCurrentProject() {
-		// Cannot safely destroy Ghostty surfaces — just log for now
-		// TODO: Implement safe surface re-creation
-		NSLog("[Belve] Reload not yet supported (Ghostty surface lifecycle)")
+		guard let index = indexOfSelected else { return }
+		let project = projects[index]
+
+		// Refresh project metadata without recreating terminals
+		if project.isDevContainer, let workspacePath = project.devContainerPath, let sshHost = project.sshHost {
+			fetchContainerImageName(sshHost: sshHost, remotePath: workspacePath)
+		}
+
+		// Refresh file tree
+		objectWillChange.send()
+		NSLog("[Belve] Reloaded project: \(project.name)")
 	}
 
 	// MARK: - Selection
@@ -111,6 +119,10 @@ class ProjectStore: ObservableObject {
 	func refocusTerminal() {
 		if let webView = findTerminalWebView() {
 			webView.window?.makeFirstResponder(webView)
+			webView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+				webView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
+			}
 		}
 	}
 
@@ -153,10 +165,15 @@ class ProjectStore: ObservableObject {
 			NSLog("[Belve] Cannot open DevContainer: no remotePath set. Use Cmd+O first.")
 			return
 		}
-		// Recreate project with new ID to get fresh terminal sessions
+		// Update name from workspace path, recreate with new ID for fresh terminals
 		var updated = projects[index]
 		updated.devContainerPath = workspacePath
+		updated.name = (workspacePath as NSString).lastPathComponent
 		replaceWithNewId(at: index, updated: updated)
+		// Fetch container image name from host-side devcontainer.json
+		if let sshHost = updated.sshHost {
+			fetchContainerImageName(sshHost: sshHost, remotePath: workspacePath)
+		}
 		NSLog("[Belve] DevContainer enabled for \(updated.name)")
 	}
 
@@ -186,11 +203,83 @@ class ProjectStore: ObservableObject {
 			name: updated.name,
 			sshHost: updated.sshHost,
 			remotePath: updated.remotePath,
-			devContainerPath: updated.devContainerPath
+			devContainerPath: updated.devContainerPath,
+			containerImageName: updated.containerImageName
 		)
 		projects[index] = newProject
 		saveProjects()
 		select(newProject)
+	}
+
+	private func fetchContainerImageName(sshHost: String, remotePath: String) {
+		let jsonPath = "\(remotePath)/.devcontainer/devcontainer.json"
+		DispatchQueue.global().async { [weak self] in
+			// Read devcontainer.json directly from SSH host (not inside container)
+			let process = Process()
+			process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+			process.arguments = [
+				"-o", "StrictHostKeyChecking=accept-new",
+				"-o", "ConnectTimeout=5",
+				"-o", "BatchMode=yes",
+				"-o", "ControlMaster=auto",
+				"-o", "ControlPath=/tmp/belve-ssh-%r@%h:%p",
+				"-o", "ControlPersist=600",
+				sshHost,
+				"cat \(jsonPath)"
+			]
+			let pipe = Pipe()
+			process.standardOutput = pipe
+			process.standardError = Pipe()
+			try? process.run()
+			process.waitUntilExit()
+			let data = pipe.fileHandleForReading.readDataToEndOfFile()
+			guard !data.isEmpty else { return }
+
+			// Strip JSON comments (// style) before parsing
+			let raw = String(data: data, encoding: .utf8) ?? ""
+			let stripped = raw.components(separatedBy: "\n")
+				.map { line in
+					// Remove // comments (simple heuristic, doesn't handle strings)
+					if let range = line.range(of: "//") {
+						let before = line[line.startIndex..<range.lowerBound]
+						// Only strip if not inside a string
+						if before.filter({ $0 == "\"" }).count % 2 == 0 {
+							return String(before)
+						}
+					}
+					return line
+				}
+				.joined(separator: "\n")
+
+			guard let jsonData = stripped.data(using: .utf8),
+				  let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { return }
+
+			// Try "image", then "dockerComposeFile" service name, then "build.dockerfile"
+			let imageName: String?
+			if let image = json["image"] as? String {
+				imageName = image
+			} else if let service = json["service"] as? String {
+				imageName = service
+			} else if let build = json["build"] as? [String: Any], let dockerfile = build["dockerfile"] as? String {
+				imageName = "Dockerfile: \(dockerfile)"
+			} else {
+				imageName = nil
+			}
+
+			guard let imageName else { return }
+
+			DispatchQueue.main.async {
+				guard let self else { return }
+				// Find the project by matching remotePath and DevContainer status
+				guard let idx = self.projects.firstIndex(where: { $0.devContainerPath == remotePath }) else { return }
+				self.projects[idx].containerImageName = imageName
+				self.saveProjects()
+				if self.selectedProject?.id == self.projects[idx].id {
+					self.selectedProject = self.projects[idx]
+				}
+				NSLog("[Belve] Container image: \(imageName)")
+			}
+		}
 	}
 
 	private func checkForDevContainer() {

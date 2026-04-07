@@ -12,13 +12,15 @@ struct Project: Identifiable, Codable, Hashable {
 	var sshHost: String?
 	var remotePath: String?
 	var devContainerPath: String? // workspace path for devcontainer
+	var containerImageName: String? // e.g. "mcr.microsoft.com/devcontainers/python:3.12"
 
-	init(id: UUID = UUID(), name: String, sshHost: String? = nil, remotePath: String? = nil, devContainerPath: String? = nil) {
+	init(id: UUID = UUID(), name: String, sshHost: String? = nil, remotePath: String? = nil, devContainerPath: String? = nil, containerImageName: String? = nil) {
 		self.id = id
 		self.name = name
 		self.sshHost = sshHost
 		self.remotePath = remotePath
 		self.devContainerPath = devContainerPath
+		self.containerImageName = containerImageName
 	}
 
 	/// Create a copy with a new UUID. Forces SwiftUI view recreation when connection type changes.

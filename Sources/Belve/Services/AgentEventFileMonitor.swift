@@ -7,6 +7,7 @@ class AgentEventFileMonitor {
 	private var fileHandle: FileHandle?
 	private var source: DispatchSourceFileSystemObject?
 	private var fileOffset: UInt64 = 0
+	private var partialLineBuffer = ""
 
 	var onEvent: ((String, String, String) -> Void)? // (paneId, status, message)
 
@@ -55,6 +56,7 @@ class AgentEventFileMonitor {
 		if size <= fileOffset {
 			if size < fileOffset {
 				fileOffset = 0 // File was truncated
+				partialLineBuffer = ""
 			}
 			return
 		}
@@ -64,7 +66,7 @@ class AgentEventFileMonitor {
 		fileOffset = size
 
 		guard let str = String(data: data, encoding: .utf8) else { return }
-		let lines = str.components(separatedBy: "\n").filter { !$0.isEmpty }
+		let lines = consume(str)
 
 		for line in lines {
 			guard let jsonData = line.data(using: .utf8),
@@ -80,6 +82,19 @@ class AgentEventFileMonitor {
 				self?.onEvent?(paneId, status, message)
 			}
 		}
+	}
+
+	func consume(_ chunk: String) -> [String] {
+		guard !chunk.isEmpty else { return [] }
+		partialLineBuffer += chunk
+		let segments = partialLineBuffer.components(separatedBy: "\n")
+		if partialLineBuffer.hasSuffix("\n") {
+			partialLineBuffer = ""
+			return segments.filter { !$0.isEmpty }
+		}
+
+		partialLineBuffer = segments.last ?? ""
+		return segments.dropLast().filter { !$0.isEmpty }
 	}
 
 	func stop() {

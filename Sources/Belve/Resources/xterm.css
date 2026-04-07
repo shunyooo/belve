@@ -62,14 +62,16 @@
     padding: 0;
     border: 0;
     margin: 0;
-    /* Move textarea out of the screen to the far left, so that the cursor is not visible */
+    /* Keep the helper textarea in the input stack so IME works in WKWebView. */
     position: absolute;
-    opacity: 0;
-    left: -9999em;
+    opacity: 0.01;
+    left: 0;
     top: 0;
-    width: 0;
-    height: 0;
-    z-index: -5;
+    width: 1px;
+    height: 1px;
+    z-index: 6;
+    color: transparent;
+    background: transparent;
     /** Prevent wrapping so the IME appears against the textarea at the correct position */
     white-space: nowrap;
     overflow: hidden;

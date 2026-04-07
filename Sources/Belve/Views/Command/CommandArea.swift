@@ -4,39 +4,57 @@ enum SplitDirection: String, Codable {
 	case horizontal, vertical
 }
 
+enum PaneDropPosition {
+	case left, right, top, bottom
+}
+
 class PaneNode: ObservableObject, Identifiable, Codable {
 	let id: UUID
-	let paneIndex: Int
+	var paneId: UUID?
+	var paneIndex: Int?
 	@Published var children: [PaneNode]?
 	@Published var splitDirection: SplitDirection?
 	@Published var splitRatio: CGFloat = 0.5
 
-	init(id: UUID = UUID(), paneIndex: Int = 0) {
+	init(id: UUID = UUID(), paneId: UUID? = UUID(), paneIndex: Int? = 0) {
 		self.id = id
+		self.paneId = paneId
 		self.paneIndex = paneIndex
 	}
 
-	var isLeaf: Bool { children == nil }
+	var isLeaf: Bool { children == nil && paneId != nil }
 
 	// MARK: - Codable
 
 	enum CodingKeys: String, CodingKey {
-		case id, paneIndex, children, splitDirection, splitRatio
+		case id, paneId, paneIndex, children, splitDirection, splitRatio
 	}
 
 	required init(from decoder: Decoder) throws {
 		let c = try decoder.container(keyedBy: CodingKeys.self)
 		id = try c.decode(UUID.self, forKey: .id)
-		paneIndex = try c.decode(Int.self, forKey: .paneIndex)
+		let decodedPaneId = try c.decodeIfPresent(UUID.self, forKey: .paneId)
+		paneIndex = try c.decodeIfPresent(Int.self, forKey: .paneIndex)
 		children = try c.decodeIfPresent([PaneNode].self, forKey: .children)
 		splitDirection = try c.decodeIfPresent(SplitDirection.self, forKey: .splitDirection)
 		splitRatio = try c.decode(CGFloat.self, forKey: .splitRatio)
+
+		// Backward compatibility for persisted layouts created before paneId existed.
+		if children == nil {
+			paneId = decodedPaneId ?? UUID()
+			if paneIndex == nil {
+				paneIndex = 0
+			}
+		} else {
+			paneId = decodedPaneId
+		}
 	}
 
 	func encode(to encoder: Encoder) throws {
 		var c = encoder.container(keyedBy: CodingKeys.self)
 		try c.encode(id, forKey: .id)
-		try c.encode(paneIndex, forKey: .paneIndex)
+		try c.encodeIfPresent(paneId, forKey: .paneId)
+		try c.encodeIfPresent(paneIndex, forKey: .paneIndex)
 		try c.encodeIfPresent(children, forKey: .children)
 		try c.encodeIfPresent(splitDirection, forKey: .splitDirection)
 		try c.encode(splitRatio, forKey: .splitRatio)
@@ -48,6 +66,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 struct PaneLayout {
 	struct Pane: Identifiable {
 		let id: UUID
+		let paneId: UUID
 		let paneIndex: Int
 		let rect: CGRect
 	}
@@ -115,33 +134,36 @@ class CommandAreaStateManager: ObservableObject {
 // MARK: - Command Area State
 
 class CommandAreaState: ObservableObject {
-	@Published var root = PaneNode(paneIndex: 0)
+	@Published var root = PaneNode(paneId: UUID(), paneIndex: 0)
 	@Published var activePaneId: UUID?
 	private var nextPaneIndex = 1
 	/// Called when layout changes, so the manager can persist
 	var onLayoutChanged: (() -> Void)?
 
 	func splitActive(_ direction: SplitDirection) {
-		let targetId = activePaneId ?? firstLeaf(root)?.id
-		guard let targetId else { return }
-		if splitNode(targetId, direction: direction, in: root) {
+		let targetPaneId = activePaneId ?? firstLeaf(root)?.paneId
+		guard let targetPaneId else { return }
+		if splitNode(targetPaneId, direction: direction, in: root) {
 			objectWillChange.send()
 			onLayoutChanged?()
 		}
 	}
 
-	private func splitNode(_ id: UUID, direction: SplitDirection, in node: PaneNode) -> Bool {
-		if node.id == id && node.isLeaf {
-			let existing = PaneNode(id: node.id, paneIndex: node.paneIndex)
-			let newPane = PaneNode(paneIndex: nextPaneIndex)
+	private func splitNode(_ paneId: UUID, direction: SplitDirection, in node: PaneNode) -> Bool {
+		if node.paneId == paneId && node.isLeaf {
+			let existing = PaneNode(paneId: node.paneId, paneIndex: node.paneIndex)
+			let newPane = PaneNode(paneId: UUID(), paneIndex: nextPaneIndex)
 			nextPaneIndex += 1
+			node.paneId = nil
+			node.paneIndex = nil
 			node.splitDirection = direction
 			node.splitRatio = 0.5
 			node.children = [existing, newPane]
+			activePaneId = existing.paneId
 			return true
 		}
 		for child in node.children ?? [] {
-			if splitNode(id, direction: direction, in: child) {
+			if splitNode(paneId, direction: direction, in: child) {
 				return true
 			}
 		}
@@ -153,7 +175,7 @@ class CommandAreaState: ObservableObject {
 	}
 
 	private func maxPaneIndex(_ node: PaneNode) -> Int {
-		var maxIdx = node.paneIndex
+		var maxIdx = node.paneIndex ?? 0
 		for child in node.children ?? [] {
 			maxIdx = max(maxIdx, maxPaneIndex(child))
 		}
@@ -161,47 +183,77 @@ class CommandAreaState: ObservableObject {
 	}
 
 	func closeActivePane() {
-		let targetId = activePaneId ?? firstLeaf(root)?.id
-		guard let targetId else { return }
-		removePane(targetId)
+		let targetPaneId = activePaneId ?? firstLeaf(root)?.paneId
+		guard let targetPaneId else { return }
+		removePane(targetPaneId)
 	}
 
-	func removePane(_ id: UUID) {
-		if root.id == id && root.isLeaf {
+	func closePane(_ paneId: UUID) {
+		activePaneId = paneId
+		removePane(paneId)
+	}
+
+	func removePane(_ paneId: UUID) {
+		if root.paneId == paneId && root.isLeaf {
 			return
 		}
-		if removeNode(id, from: root, parent: nil) {
+		if removeNode(paneId, from: root, parent: nil) {
 			objectWillChange.send()
 			onLayoutChanged?()
 		}
 	}
 
-	private func removeNode(_ id: UUID, from node: PaneNode, parent: PaneNode?) -> Bool {
+	private func removeNode(_ paneId: UUID, from node: PaneNode, parent: PaneNode?) -> Bool {
 		guard let children = node.children else { return false }
 		for (index, child) in children.enumerated() {
-			if child.id == id && child.isLeaf {
+			if child.paneId == paneId && child.isLeaf {
 				let sibling = children[1 - index]
+				node.paneId = sibling.paneId
+				node.paneIndex = sibling.paneIndex
 				node.children = sibling.children
 				node.splitDirection = sibling.splitDirection
 				node.splitRatio = sibling.splitRatio
+				if sibling.children != nil {
+					node.paneId = nil
+					node.paneIndex = nil
+				}
+				if sibling.isLeaf {
+					activePaneId = sibling.paneId
+				}
 				return true
 			}
-			if removeNode(id, from: child, parent: node) {
+			if removeNode(paneId, from: child, parent: node) {
 				return true
 			}
 		}
 		return false
 	}
 
-	func findNode(_ paneId: String) -> PaneNode? {
-		guard let uuid = UUID(uuidString: paneId) else { return nil }
-		return findNodeById(uuid, in: root)
+	func movePane(_ sourcePaneId: UUID, relativeTo targetPaneId: UUID, position: PaneDropPosition) {
+		guard sourcePaneId != targetPaneId else { return }
+		guard let workingRoot = deepCopy(root),
+			  hasLeaf(sourcePaneId, in: workingRoot),
+			  hasLeaf(targetPaneId, in: workingRoot),
+			  let source = detachPane(sourcePaneId, in: workingRoot),
+			  insertPane(source, relativeTo: targetPaneId, position: position, in: workingRoot) else {
+			return
+		}
+		guard leafCount(in: workingRoot) == leafCount(in: root) else { return }
+		root = workingRoot
+		activePaneId = source.paneId
+		objectWillChange.send()
+		onLayoutChanged?()
 	}
 
-	func findNodeById(_ id: UUID, in node: PaneNode) -> PaneNode? {
-		if node.id == id { return node }
+	func findNode(_ paneId: String) -> PaneNode? {
+		guard let uuid = UUID(uuidString: paneId) else { return nil }
+		return findLeafByPaneId(uuid, in: root)
+	}
+
+	func findLeafByPaneId(_ paneId: UUID, in node: PaneNode) -> PaneNode? {
+		if node.paneId == paneId && node.isLeaf { return node }
 		for child in node.children ?? [] {
-			if let found = findNodeById(id, in: child) { return found }
+			if let found = findLeafByPaneId(paneId, in: child) { return found }
 		}
 		return nil
 	}
@@ -214,6 +266,112 @@ class CommandAreaState: ObservableObject {
 		return nil
 	}
 
+	private func hasLeaf(_ paneId: UUID, in node: PaneNode) -> Bool {
+		if node.paneId == paneId && node.isLeaf { return true }
+		for child in node.children ?? [] {
+			if hasLeaf(paneId, in: child) { return true }
+		}
+		return false
+	}
+
+	private struct LeafLocation {
+		let node: PaneNode
+		let parent: PaneNode
+		let index: Int
+	}
+
+	private func detachPane(_ paneId: UUID, in root: PaneNode) -> PaneNode? {
+		if root.paneId == paneId && root.isLeaf {
+			return nil
+		}
+		return detachPane(paneId, from: root)
+	}
+
+	private func detachPane(_ paneId: UUID, from node: PaneNode) -> PaneNode? {
+		guard let children = node.children else { return nil }
+		for (index, child) in children.enumerated() {
+			if child.paneId == paneId && child.isLeaf {
+				let sibling = children[1 - index]
+				let removed = child
+				node.paneId = sibling.paneId
+				node.paneIndex = sibling.paneIndex
+				node.children = sibling.children
+				node.splitDirection = sibling.splitDirection
+				node.splitRatio = sibling.splitRatio
+				if sibling.children != nil {
+					node.paneId = nil
+					node.paneIndex = nil
+				}
+				return removed
+			}
+			if let removed = detachPane(paneId, from: child) {
+				return removed
+			}
+		}
+		return nil
+	}
+
+	private func findLeafLocation(_ paneId: UUID, in node: PaneNode) -> LeafLocation? {
+		guard let children = node.children else { return nil }
+		for (index, child) in children.enumerated() {
+			if child.paneId == paneId && child.isLeaf {
+				return LeafLocation(node: child, parent: node, index: index)
+			}
+			if let found = findLeafLocation(paneId, in: child) {
+				return found
+			}
+		}
+		return nil
+	}
+
+	private func insertPane(_ pane: PaneNode, relativeTo targetPaneId: UUID, position: PaneDropPosition, in root: PaneNode) -> Bool {
+		if root.paneId == targetPaneId && root.isLeaf {
+			let targetCopy = PaneNode(paneId: root.paneId, paneIndex: root.paneIndex)
+			root.paneId = nil
+			root.paneIndex = nil
+			root.splitDirection = splitDirection(for: position)
+			root.splitRatio = 0.5
+			root.children = orderedChildren(target: targetCopy, inserted: pane, position: position)
+			return true
+		}
+
+		guard let target = findLeafLocation(targetPaneId, in: root) else { return false }
+		let container = PaneNode(paneId: nil, paneIndex: nil)
+		container.splitDirection = splitDirection(for: position)
+		container.splitRatio = 0.5
+		container.children = orderedChildren(target: target.node, inserted: pane, position: position)
+		target.parent.children?[target.index] = container
+		return true
+	}
+
+	private func splitDirection(for position: PaneDropPosition) -> SplitDirection {
+		switch position {
+		case .left, .right:
+			return .horizontal
+		case .top, .bottom:
+			return .vertical
+		}
+	}
+
+	private func orderedChildren(target: PaneNode, inserted: PaneNode, position: PaneDropPosition) -> [PaneNode] {
+		switch position {
+		case .left, .top:
+			return [inserted, target]
+		case .right, .bottom:
+			return [target, inserted]
+		}
+	}
+
+	private func deepCopy(_ node: PaneNode) -> PaneNode? {
+		guard let data = try? JSONEncoder().encode(node) else { return nil }
+		return try? JSONDecoder().decode(PaneNode.self, from: data)
+	}
+
+	private func leafCount(in node: PaneNode) -> Int {
+		guard let children = node.children else { return 1 }
+		return children.reduce(0) { $0 + leafCount(in: $1) }
+	}
+
 	// MARK: - Flat Layout Calculation
 
 	func calculateLayout(in size: CGSize) -> PaneLayout {
@@ -223,7 +381,8 @@ class CommandAreaState: ObservableObject {
 
 		func walk(_ node: PaneNode, rect: CGRect) {
 			if node.isLeaf {
-				panes.append(.init(id: node.id, paneIndex: node.paneIndex, rect: rect))
+				guard let paneId = node.paneId, let paneIndex = node.paneIndex else { return }
+				panes.append(.init(id: paneId, paneId: paneId, paneIndex: paneIndex, rect: rect))
 				return
 			}
 			guard let children = node.children, children.count == 2,
@@ -267,16 +426,24 @@ class CommandAreaState: ObservableObject {
 		Binding<CGFloat>(
 			get: { [weak self] in
 				guard let self else { return 0.5 }
-				return self.findNodeById(nodeId, in: self.root)?.splitRatio ?? 0.5
+				return self.findLayoutNode(nodeId, in: self.root)?.splitRatio ?? 0.5
 			},
 			set: { [weak self] newValue in
 				guard let self else { return }
-				if let node = self.findNodeById(nodeId, in: self.root) {
+				if let node = self.findLayoutNode(nodeId, in: self.root) {
 					node.splitRatio = newValue
 					self.objectWillChange.send()
 				}
 			}
 		)
+	}
+
+	private func findLayoutNode(_ nodeId: UUID, in node: PaneNode) -> PaneNode? {
+		if node.id == nodeId { return node }
+		for child in node.children ?? [] {
+			if let found = findLayoutNode(nodeId, in: child) { return found }
+		}
+		return nil
 	}
 }
 
@@ -285,6 +452,18 @@ class CommandAreaState: ObservableObject {
 struct CommandArea: View {
 	let project: Project
 	@ObservedObject var state: CommandAreaState
+	@State private var dragState: PaneDragState?
+	private let paneHeaderHeight: CGFloat = 24
+
+	private struct PaneDragState {
+		let sourcePaneId: UUID
+		var currentLocation: CGPoint
+	}
+
+	private struct PaneDropTarget {
+		let paneId: UUID
+		let position: PaneDropPosition
+	}
 
 	var body: some View {
 		GeometryReader { geo in
@@ -292,8 +471,64 @@ struct CommandArea: View {
 			ZStack(alignment: .topLeading) {
 				// Terminal panes — flat ForEach ensures views are never destroyed on split
 				ForEach(layout.panes) { pane in
-					XTermTerminalView(project: project, paneId: pane.id.uuidString, paneIndex: pane.paneIndex)
-						.frame(width: max(1, pane.rect.width), height: max(1, pane.rect.height))
+					let isDraggingSource = dragState?.sourcePaneId == pane.paneId
+					VStack(spacing: 0) {
+						PaneChrome(
+							title: "Pane \(pane.paneIndex + 1)",
+							isActive: state.activePaneId == pane.paneId,
+							isDragging: isDraggingSource,
+							onActivate: { state.activePaneId = pane.paneId },
+							onClose: { state.closePane(pane.paneId) },
+							onDragChanged: { value in
+								state.activePaneId = pane.paneId
+								dragState = PaneDragState(
+									sourcePaneId: pane.paneId,
+									currentLocation: CGPoint(
+										x: pane.rect.minX + value.location.x,
+										y: pane.rect.minY + value.location.y
+									)
+								)
+							},
+							onDragEnded: { value in
+								let dropPoint = CGPoint(
+									x: pane.rect.minX + value.location.x,
+									y: pane.rect.minY + value.location.y
+								)
+								let target = dropTarget(for: dropPoint, in: layout, excluding: pane.paneId)
+								dragState = nil
+								if let target {
+									state.movePane(pane.paneId, relativeTo: target.paneId, position: target.position)
+								}
+							}
+						)
+						.frame(height: min(paneHeaderHeight, max(0, pane.rect.height)))
+
+						XTermTerminalView(project: project, paneId: pane.paneId.uuidString, paneIndex: pane.paneIndex)
+							.frame(
+								width: max(1, pane.rect.width),
+								height: max(1, pane.rect.height - paneHeaderHeight)
+							)
+							.opacity(isDraggingSource ? 0.38 : 1)
+					}
+						.overlay {
+							if let dropTarget = dropTarget(in: layout), dropTarget.paneId == pane.paneId {
+								PaneDropOverlay(position: dropTarget.position)
+									.padding(3)
+									.allowsHitTesting(false)
+							}
+							if isDraggingSource {
+								PaneDragOverlay()
+									.padding(3)
+									.allowsHitTesting(false)
+							}
+						}
+						.frame(width: max(1, pane.rect.width), height: max(1, pane.rect.height), alignment: .topLeading)
+						.scaleEffect(isDraggingSource ? 0.985 : 1)
+						.shadow(
+							color: .black.opacity(isDraggingSource ? 0.28 : 0),
+							radius: isDraggingSource ? 10 : 0,
+							y: isDraggingSource ? 3 : 0
+						)
 						.offset(x: pane.rect.minX, y: pane.rect.minY)
 				}
 				// Dividers — rendered on top for hit testing
@@ -311,6 +546,174 @@ struct CommandArea: View {
 		.clipped()
 		.background(Theme.bg)
 	}
+
+	private func dropTarget(in layout: PaneLayout) -> PaneDropTarget? {
+		guard let dragState else { return nil }
+		return dropTarget(for: dragState.currentLocation, in: layout, excluding: dragState.sourcePaneId)
+	}
+
+	private func dropTarget(for point: CGPoint, in layout: PaneLayout, excluding sourcePaneId: UUID) -> PaneDropTarget? {
+		guard let pane = layout.panes.first(where: {
+			$0.paneId != sourcePaneId && $0.rect.contains(point)
+		}) else { return nil }
+		return PaneDropTarget(
+			paneId: pane.paneId,
+			position: dropPosition(for: point, in: pane.rect)
+		)
+	}
+
+	private func dropPosition(for point: CGPoint, in rect: CGRect) -> PaneDropPosition {
+		let xRatio = (point.x - rect.minX) / max(rect.width, 1)
+		let yRatio = (point.y - rect.minY) / max(rect.height, 1)
+
+		let verticalBand = min(0.36, max(0.22, 72 / max(rect.height, 1)))
+		let horizontalBand = min(0.28, max(0.18, 56 / max(rect.width, 1)))
+
+		if yRatio <= verticalBand { return .top }
+		if yRatio >= 1 - verticalBand { return .bottom }
+		if xRatio <= horizontalBand { return .left }
+		if xRatio >= 1 - horizontalBand { return .right }
+
+		let leftDistance = xRatio
+		let rightDistance = 1 - xRatio
+		let topDistance = yRatio
+		let bottomDistance = 1 - yRatio
+		let minDistance = min(leftDistance, rightDistance, topDistance, bottomDistance)
+		if minDistance == topDistance { return .top }
+		if minDistance == bottomDistance { return .bottom }
+		if minDistance == leftDistance { return .left }
+		return .right
+	}
+}
+
+private struct PaneChrome: View {
+	let title: String
+	let isActive: Bool
+	let isDragging: Bool
+	let onActivate: () -> Void
+	let onClose: () -> Void
+	let onDragChanged: (DragGesture.Value) -> Void
+	let onDragEnded: (DragGesture.Value) -> Void
+	@State private var isHovering = false
+	@State private var isHoveringClose = false
+
+	var body: some View {
+		VStack(spacing: 0) {
+			HStack(spacing: 8) {
+				HStack(spacing: 3) {
+					ForEach(0..<3, id: \.self) { _ in
+						Circle()
+							.fill(Theme.textTertiary)
+							.frame(width: 3, height: 3)
+					}
+				}
+				.padding(.leading, 8)
+
+				Text(title)
+					.font(.system(size: 11, weight: .medium))
+					.foregroundStyle(Theme.textSecondary)
+
+				Spacer()
+
+				Button(action: onClose) {
+					Image(systemName: "xmark")
+						.font(.system(size: 9, weight: .bold))
+						.foregroundStyle(isHoveringClose ? Theme.textPrimary : Theme.textTertiary)
+						.frame(width: 18, height: 18)
+				}
+				.buttonStyle(.plain)
+				.onHover { isHoveringClose = $0 }
+				.padding(.trailing, 6)
+			}
+			.frame(height: 24)
+			.background(chromeBackground)
+			.contentShape(Rectangle())
+			.onTapGesture(perform: onActivate)
+			.gesture(
+				DragGesture(minimumDistance: 3, coordinateSpace: .local)
+					.onChanged(onDragChanged)
+					.onEnded(onDragEnded)
+			)
+
+			Spacer()
+		}
+		.onHover { isHovering = $0 }
+	}
+
+	@ViewBuilder
+	private var chromeBackground: some View {
+		if isDragging {
+			Theme.accent.opacity(0.22)
+		} else if isActive {
+			Theme.surfaceActive
+		} else if isHovering {
+			Theme.surfaceHover
+		} else {
+			Color.black.opacity(0.12)
+		}
+	}
+}
+
+private struct PaneDragOverlay: View {
+	var body: some View {
+		RoundedRectangle(cornerRadius: 8)
+			.fill(Color.white.opacity(0.04))
+			.overlay(
+				RoundedRectangle(cornerRadius: 8)
+					.stroke(Color.white.opacity(0.18), style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+			)
+	}
+}
+
+private struct PaneDropOverlay: View {
+	let position: PaneDropPosition
+
+	var body: some View {
+		GeometryReader { geo in
+			ZStack(alignment: alignment) {
+				RoundedRectangle(cornerRadius: 6)
+					.fill(Theme.accent.opacity(0.08))
+
+				highlight(in: geo.size)
+			}
+		}
+	}
+
+	private var alignment: Alignment {
+		switch position {
+		case .left:
+			return .leading
+		case .right:
+			return .trailing
+		case .top:
+			return .top
+		case .bottom:
+			return .bottom
+		}
+	}
+
+	@ViewBuilder
+	private func highlight(in size: CGSize) -> some View {
+		let thickness = max(56, min(size.width, size.height) * 0.33)
+		switch position {
+		case .left:
+			RoundedRectangle(cornerRadius: 6)
+				.fill(Theme.accent.opacity(0.22))
+				.frame(width: min(thickness, size.width))
+		case .right:
+			RoundedRectangle(cornerRadius: 6)
+				.fill(Theme.accent.opacity(0.22))
+				.frame(width: min(thickness, size.width))
+		case .top:
+			RoundedRectangle(cornerRadius: 6)
+				.fill(Theme.accent.opacity(0.22))
+				.frame(height: min(thickness, size.height))
+		case .bottom:
+			RoundedRectangle(cornerRadius: 6)
+				.fill(Theme.accent.opacity(0.22))
+				.frame(height: min(thickness, size.height))
+		}
+	}
 }
 
 // MARK: - Pane Divider
@@ -322,31 +725,41 @@ struct PaneDivider: View {
 	@State private var isDragging = false
 	@State private var ratioAtDragStart: CGFloat = 0
 
+	private var resizeCursor: NSCursor {
+		direction == .vertical ? .resizeUpDown : .resizeLeftRight
+	}
+
 	var body: some View {
 		let isVertical = direction == .vertical
 		Rectangle()
 			.fill(isDragging ? Theme.border : Theme.borderSubtle)
-			.frame(width: isVertical ? nil : 1, height: isVertical ? 1 : nil)
-			.contentShape(Rectangle().inset(by: -3))
-			.onHover { hovering in
-				if hovering {
-					(isVertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).push()
-				} else {
-					NSCursor.pop()
+			.frame(width: isVertical ? nil : DividerMetrics.lineWidth, height: isVertical ? DividerMetrics.lineWidth : nil)
+			.contentShape(Rectangle())
+			.frame(width: isVertical ? nil : DividerMetrics.paneHitWidth, height: isVertical ? DividerMetrics.paneHitWidth : nil)
+			.dividerCursor(resizeCursor)
+			.onContinuousHover { phase in
+				switch phase {
+				case .active:
+					resizeCursor.set()
+				case .ended:
+					break
 				}
 			}
+			.zIndex(1000)
 			.gesture(
 				DragGesture(minimumDistance: 1, coordinateSpace: .global)
 					.onChanged { value in
 						if !isDragging {
 							isDragging = true
 							ratioAtDragStart = ratio
+							resizeCursor.push()
 						}
 						let translation = isVertical ? value.translation.height : value.translation.width
 						let newRatio = ratioAtDragStart + translation / availableSize
 						ratio = max(0.15, min(0.85, newRatio))
 					}
 					.onEnded { _ in
+						NSCursor.pop()
 						isDragging = false
 					}
 			)

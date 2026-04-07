@@ -42,6 +42,7 @@ term.loadAddon(new WebLinksAddon());
 term.open(document.getElementById('terminal'));
 fitAddon.fit();
 
+
 // Bridge: Swift -> JS
 window.terminalWrite = function(base64) {
 	const bytes = atob(base64);
@@ -70,9 +71,18 @@ function postMessage(msg) {
 	}
 }
 
+function utf8ToBase64(text) {
+	const bytes = new TextEncoder().encode(text);
+	let binary = '';
+	for (const byte of bytes) {
+		binary += String.fromCharCode(byte);
+	}
+	return btoa(binary);
+}
+
 // Input from user -> Swift PTY
 term.onData(function(data) {
-	postMessage({ type: 'input', data: btoa(data) });
+	postMessage({ type: 'input', data: utf8ToBase64(data) });
 });
 
 // Binary input (for special keys)

@@ -6,6 +6,7 @@ enum Theme {
 	static let surface = Color(red: 0.14, green: 0.15, blue: 0.18)
 	static let surfaceHover = Color(white: 1, opacity: 0.06)
 	static let surfaceActive = Color(white: 1, opacity: 0.10)
+	static let surfaceSelected = Color(white: 1, opacity: 0.08)
 
 	// Text
 	static let textPrimary = Color(red: 0.88, green: 0.89, blue: 0.92)

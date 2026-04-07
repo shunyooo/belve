@@ -16,8 +16,6 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		let webView = WKWebView(frame: .zero, configuration: config)
 		webView.setValue(false, forKey: "drawsBackground")
-		// Disable WKWebView's native text selection (conflicts with xterm.js selection)
-		webView.configuration.preferences.setValue(false, forKey: "textInteractionEnabled")
 		context.coordinator.webView = webView
 		context.coordinator.project = project
 		context.coordinator.paneId = paneId
@@ -92,6 +90,7 @@ struct XTermTerminalView: NSViewRepresentable {
 				let cols = body["cols"] as? Int ?? 80
 				let rows = body["rows"] as? Int ?? 24
 				startPTY(cols: cols, rows: rows)
+				focusTerminal()
 
 			case "input":
 				if let b64 = body["data"] as? String,
@@ -190,7 +189,7 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 
 				// Agent notification transport
-				if let paneId {
+				if paneId != nil {
 					pty.agentTransport.onAgentStatus = { [weak self] agentPaneId, status, message in
 						self?.notificationStore?.updateAgentStatus(
 							paneId: agentPaneId, status: status, message: message
@@ -231,6 +230,16 @@ struct XTermTerminalView: NSViewRepresentable {
 			webView?.evaluateJavaScript("terminalWrite('\(b64)')", completionHandler: nil)
 		}
 
+		private func focusTerminal() {
+			DispatchQueue.main.async { [weak self] in
+				self?.webView?.window?.makeFirstResponder(self?.webView)
+				self?.webView?.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+					self?.webView?.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
+				}
+			}
+		}
+
 		private func handleShortcut(key: String, shift: Bool) {
 			switch key {
 			case "d":
@@ -253,6 +262,10 @@ struct XTermTerminalView: NSViewRepresentable {
 				NotificationCenter.default.post(name: .belveFileSave, object: nil)
 			case "r":
 				NotificationCenter.default.post(name: .belveReloadProject, object: nil)
+			case "z":
+				if !shift {
+					NotificationCenter.default.post(name: .belveUndo, object: nil)
+				}
 			default:
 				// Forward Cmd+1-9 for project switching
 				if let digit = Int(key), digit >= 1 && digit <= 9 {
