@@ -61,6 +61,7 @@ function handleWheelScroll(event) {
 	event.preventDefault();
 	event.stopPropagation();
 	term.scrollLines(lines);
+	postMessage({ type: 'log', msg: 'wheel deltaY=' + event.deltaY.toFixed(1) + ' lines=' + lines });
 	return false;
 }
 

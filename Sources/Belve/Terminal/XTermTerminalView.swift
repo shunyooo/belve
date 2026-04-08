@@ -7,6 +7,16 @@ final class TerminalWebView: WKWebView {
 
 	override var acceptsFirstResponder: Bool { true }
 
+	// WKWebView consumes scroll events before they reach JavaScript.
+	// Intercept and forward to xterm.js via evaluateJavaScript.
+	override func scrollWheel(with event: NSEvent) {
+		let deltaY = event.scrollingDeltaY
+		guard abs(deltaY) > 0.5 else { return }
+		let lines = Int(-deltaY / 3.0)
+		guard lines != 0 else { return }
+		evaluateJavaScript("if(window.term)term.scrollLines(\(lines))", completionHandler: nil)
+	}
+
 	override func performKeyEquivalent(with event: NSEvent) -> Bool {
 		// Only handle Cmd+C/V if this webview (or a child) is the first responder
 		guard let firstResponder = window?.firstResponder as? NSView,
