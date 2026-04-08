@@ -144,6 +144,22 @@ term.onBell(function() {
 	postMessage({ type: 'bell' });
 });
 
+// Clear previous selection on mousedown, but let xterm process the event first.
+// Use capture phase (runs before xterm's handler) to mark, then defer clear.
+var _hadSelectionOnMouseDown = false;
+document.addEventListener('mousedown', function() {
+	_hadSelectionOnMouseDown = term.hasSelection();
+	if (_hadSelectionOnMouseDown) {
+		// Defer clear to let xterm start a new selection if user drags
+		requestAnimationFrame(function() {
+			// If xterm already started a new selection, don't clear
+			if (term.getSelection() === '' || !term.hasSelection()) {
+				term.clearSelection();
+			}
+		});
+	}
+}, true);
+
 // Selection -> clipboard
 term.onSelectionChange(function() {
 	const sel = term.getSelection();

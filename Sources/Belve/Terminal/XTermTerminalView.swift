@@ -8,6 +8,13 @@ final class TerminalWebView: WKWebView {
 	override var acceptsFirstResponder: Bool { true }
 
 	override func performKeyEquivalent(with event: NSEvent) -> Bool {
+		// Only handle Cmd+C/V if this webview (or a child) is the first responder
+		guard let firstResponder = window?.firstResponder as? NSView,
+			  firstResponder === self || firstResponder.isDescendant(of: self) || isAncestor(of: firstResponder)
+		else {
+			return super.performKeyEquivalent(with: event)
+		}
+
 		let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 		guard flags == [.command],
 			  let key = event.charactersIgnoringModifiers?.lowercased() else {
@@ -24,6 +31,16 @@ final class TerminalWebView: WKWebView {
 		default:
 			return super.performKeyEquivalent(with: event)
 		}
+	}
+
+	private func isAncestor(of view: NSView?) -> Bool {
+		guard let view else { return false }
+		var current: NSView? = view
+		while let c = current {
+			if c === self { return true }
+			current = c.superview
+		}
+		return false
 	}
 
 }
@@ -153,9 +170,7 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 
 			case "paste":
-				if let text = NSPasteboard.general.string(forType: .string) {
-					ptyService?.send(text)
-				}
+				pasteFromPasteboard()
 
 			case "shortcut":
 				if let key = body["key"] as? String {
@@ -165,6 +180,11 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "title":
 				// Could update tab/pane title
 				break
+
+			case "log":
+				if let msg = body["msg"] as? String {
+					NSLog("[Belve][xterm] \(msg)")
+				}
 
 			default:
 				break
