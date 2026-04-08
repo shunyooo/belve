@@ -49,6 +49,20 @@ class ProjectStore: ObservableObject {
 		select(projects[index])
 	}
 
+	func selectNextProject() {
+		guard !projects.isEmpty else { return }
+		let currentIndex = indexOfSelected ?? 0
+		let nextIndex = (currentIndex + 1) % projects.count
+		select(projects[nextIndex])
+	}
+
+	func selectPreviousProject() {
+		guard !projects.isEmpty else { return }
+		let currentIndex = indexOfSelected ?? 0
+		let previousIndex = (currentIndex - 1 + projects.count) % projects.count
+		select(projects[previousIndex])
+	}
+
 	// MARK: - CRUD
 
 	func addProject(name: String? = nil, sshHost: String? = nil) -> Project {
@@ -116,23 +130,52 @@ class ProjectStore: ObservableObject {
 	}
 
 	/// Refocus the terminal view after palette/dialog closes
-	func refocusTerminal() {
-		if let webView = findTerminalWebView() {
+	func refocusTerminal(paneId: String? = nil) {
+		if let webView = findTerminalWebView(paneId: paneId) {
 			webView.window?.makeFirstResponder(webView)
 			webView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
 		}
 	}
 
-	private func findTerminalWebView() -> WKWebView? {
+	private func findTerminalWebView(paneId: String? = nil) -> WKWebView? {
 		guard let window = NSApp.keyWindow else { return nil }
+		let targetIdentifier = paneId.map { "BelveTerminalWebView:\($0)" }
+
 		func find(_ view: NSView) -> WKWebView? {
-			if let v = view as? WKWebView { return v }
+			if let v = view as? WKWebView {
+				if let targetIdentifier {
+					if v.identifier?.rawValue == targetIdentifier { return v }
+				} else if v.identifier?.rawValue.hasPrefix("BelveTerminalWebView") == true {
+					return v
+				}
+			}
 			for sub in view.subviews {
 				if let found = find(sub) { return found }
 			}
 			return nil
 		}
 		return find(window.contentView ?? window.contentView!)
+	}
+
+	func focusEditor() {
+		guard let window = NSApp.keyWindow,
+			  let projectId = selectedProject?.id else { return }
+		let targetIdentifier = "BelveEditorWebView:\(projectId.uuidString)"
+
+		func find(_ view: NSView) -> WKWebView? {
+			if let v = view as? WKWebView, v.identifier?.rawValue == targetIdentifier { return v }
+			for sub in view.subviews {
+				if let found = find(sub) { return found }
+			}
+			return nil
+		}
+
+		guard let webView = find(window.contentView ?? window.contentView!) else { return }
+		webView.window?.makeFirstResponder(webView)
+		webView.evaluateJavaScript(
+			"window.focus(); window.editorFocus?.(); window.markdownFocus?.(); setTimeout(() => { window.editorFocus?.(); window.markdownFocus?.(); }, 0);",
+			completionHandler: nil
+		)
 	}
 
 	// MARK: - SSH

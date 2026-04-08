@@ -23,5 +23,11 @@ html, body {
 <body>
 <div id="editor"></div>
 <script>/* EDITOR_JS */</script>
+<script>
+window.editorFocus = function() {
+	document.querySelector(".cm-content[contenteditable='true']")?.focus();
+	document.querySelector(".cm-editor")?.focus();
+};
+</script>
 </body>
 </html>

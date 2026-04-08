@@ -2,6 +2,7 @@ import SwiftUI
 import WebKit
 
 struct MarkdownEditorView: NSViewRepresentable {
+	let projectId: UUID
 	let content: String
 	let onContentChanged: (String) -> Void
 
@@ -10,6 +11,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 		config.userContentController.add(context.coordinator, name: "markdownHandler")
 
 		let webView = WKWebView(frame: .zero, configuration: config)
+		webView.identifier = NSUserInterfaceItemIdentifier("BelveEditorWebView:\(projectId.uuidString)")
 		webView.setValue(false, forKey: "drawsBackground")
 		context.coordinator.webView = webView
 		context.coordinator.pendingContent = content

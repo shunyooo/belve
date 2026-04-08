@@ -188,6 +188,14 @@ class CommandAreaState: ObservableObject {
 		removePane(targetPaneId)
 	}
 
+	func focusNextPane() {
+		cycleActivePane(step: 1)
+	}
+
+	func focusPreviousPane() {
+		cycleActivePane(step: -1)
+	}
+
 	func closePane(_ paneId: UUID) {
 		activePaneId = paneId
 		removePane(paneId)
@@ -201,6 +209,25 @@ class CommandAreaState: ObservableObject {
 			objectWillChange.send()
 			onLayoutChanged?()
 		}
+	}
+
+	private func cycleActivePane(step: Int) {
+		let paneIds = orderedPaneIds(in: root)
+		guard !paneIds.isEmpty else { return }
+		guard let current = activePaneId,
+			  let currentIndex = paneIds.firstIndex(of: current) else {
+			activePaneId = paneIds.first
+			return
+		}
+		let nextIndex = (currentIndex + step + paneIds.count) % paneIds.count
+		activePaneId = paneIds[nextIndex]
+	}
+
+	private func orderedPaneIds(in node: PaneNode) -> [UUID] {
+		if let paneId = node.paneId, node.isLeaf {
+			return [paneId]
+		}
+		return (node.children ?? []).flatMap { orderedPaneIds(in: $0) }
 	}
 
 	private func removeNode(_ paneId: UUID, from node: PaneNode, parent: PaneNode?) -> Bool {
@@ -453,6 +480,7 @@ struct CommandArea: View {
 	let project: Project
 	@ObservedObject var state: CommandAreaState
 	@State private var dragState: PaneDragState?
+	@State private var connectionLoadingPanes: Set<UUID> = []
 	private let paneHeaderHeight: CGFloat = 24
 
 	private struct PaneDragState {
@@ -509,6 +537,11 @@ struct CommandArea: View {
 								height: max(1, pane.rect.height - paneHeaderHeight)
 							)
 							.opacity(isDraggingSource ? 0.38 : 1)
+							.overlay(alignment: .topLeading) {
+								if connectionLoadingPanes.contains(pane.paneId) {
+									TerminalLoadingTopLine()
+								}
+							}
 					}
 						.overlay {
 							if let dropTarget = dropTarget(in: layout), dropTarget.paneId == pane.paneId {
@@ -545,6 +578,18 @@ struct CommandArea: View {
 		}
 		.clipped()
 		.background(Theme.bg)
+		.onReceive(NotificationCenter.default.publisher(for: .belveTerminalConnectionState)) { notif in
+			guard let projectId = notif.userInfo?["projectId"] as? UUID,
+				  projectId == project.id,
+				  let paneIdString = notif.userInfo?["paneId"] as? String,
+				  let paneId = UUID(uuidString: paneIdString),
+				  let isLoading = notif.userInfo?["isLoading"] as? Bool else { return }
+			if isLoading {
+				connectionLoadingPanes.insert(paneId)
+			} else {
+				connectionLoadingPanes.remove(paneId)
+			}
+		}
 	}
 
 	private func dropTarget(in layout: PaneLayout) -> PaneDropTarget? {
@@ -583,6 +628,16 @@ struct CommandArea: View {
 		if minDistance == bottomDistance { return .bottom }
 		if minDistance == leftDistance { return .left }
 		return .right
+	}
+}
+
+private struct TerminalLoadingTopLine: View {
+	var body: some View {
+		LoadingTrack(trackHeight: 2, widthFactor: 0.28, minimumWidth: 120)
+			.frame(height: 2)
+			.frame(maxWidth: .infinity, alignment: .leading)
+			.background(Theme.surface.opacity(0.88))
+			.allowsHitTesting(false)
 	}
 }
 

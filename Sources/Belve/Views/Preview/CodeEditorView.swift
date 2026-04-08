@@ -2,6 +2,7 @@ import SwiftUI
 import WebKit
 
 struct CodeEditorView: NSViewRepresentable {
+	let projectId: UUID
 	let filename: String
 	let content: String
 	let onContentChanged: (String) -> Void
@@ -11,6 +12,7 @@ struct CodeEditorView: NSViewRepresentable {
 		config.userContentController.add(context.coordinator, name: "editorHandler")
 
 		let webView = WKWebView(frame: .zero, configuration: config)
+		webView.identifier = NSUserInterfaceItemIdentifier("BelveEditorWebView:\(projectId.uuidString)")
 		webView.setValue(false, forKey: "drawsBackground")
 		context.coordinator.webView = webView
 		context.coordinator.pendingFile = (filename, content)

@@ -9,8 +9,10 @@ struct PreviewArea: View {
 	let project: Project
 	@ObservedObject var layoutState: ProjectLayoutState
 	@Binding var openFile: OpenFile?
+	@StateObject private var fileTreeState = FileTreeState()
 	@State private var isDirty = false
 	@State private var editedContent: String = ""
+	@State private var loadingPath: String?
 
 	private var rootPath: String {
 		project.effectivePath
@@ -20,25 +22,38 @@ struct PreviewArea: View {
 		GeometryReader { geo in
 			HStack(spacing: 0) {
 				if layoutState.showFileTree {
-					FileTreeView(
-						project: project,
-						rootPath: rootPath,
-						onFileSelect: { path in
-							loadFile(at: path)
-						}
-					)
-					.frame(width: layoutState.fileTreeWidth)
+					Group {
+						FileTreeView(
+							project: project,
+							rootPath: rootPath,
+							onFileSelect: { path in
+								loadFile(at: path)
+							},
+							state: fileTreeState
+						)
+						.frame(width: layoutState.fileTreeWidth)
 
-					SplitDivider(
-						position: Binding(
-							get: { layoutState.fileTreeWidth },
-							set: { layoutState.fileTreeWidth = $0 }
+						SplitDivider(
+							position: Binding(
+								get: { layoutState.fileTreeWidth },
+								set: { layoutState.fileTreeWidth = $0 }
+							),
+							minLeft: 120,
+							minRight: 220,
+							availableWidth: geo.size.width
+						)
+						.frame(width: DividerMetrics.absoluteHitWidth)
+					}
+					.transition(.asymmetric(
+						insertion: .modifier(
+							active: PreviewSidebarVisibilityModifier(xOffset: -10, opacity: 0),
+							identity: PreviewSidebarVisibilityModifier(xOffset: 0, opacity: 1)
 						),
-						minLeft: 120,
-						minRight: 220,
-						availableWidth: geo.size.width
-					)
-					.frame(width: DividerMetrics.absoluteHitWidth)
+						removal: .modifier(
+							active: PreviewSidebarVisibilityModifier(xOffset: -8, opacity: 0),
+							identity: PreviewSidebarVisibilityModifier(xOffset: 0, opacity: 1)
+						)
+					))
 				}
 
 				editorContent
@@ -47,6 +62,12 @@ struct PreviewArea: View {
 		.onChange(of: openFile) {
 			isDirty = false
 			editedContent = openFile?.content ?? ""
+			guard let file = openFile else { return }
+			NotificationCenter.default.post(
+				name: .belveRevealFileInTree,
+				object: nil,
+				userInfo: ["projectId": project.id, "path": file.path]
+			)
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileSave)) { _ in
 			saveCurrentFile()
@@ -98,7 +119,7 @@ struct PreviewArea: View {
 				Group {
 					switch FileType.detect(path: file.path) {
 					case .markdown:
-						MarkdownEditorView(content: file.content) { newContent in
+						MarkdownEditorView(projectId: project.id, content: file.content) { newContent in
 							editedContent = newContent
 							isDirty = newContent != file.content
 						}
@@ -106,6 +127,7 @@ struct PreviewArea: View {
 						MediaPreviewView(path: file.path, sshHost: project.sshHost)
 					case .code, .unknown:
 						CodeEditorView(
+							projectId: project.id,
 							filename: file.path,
 							content: file.content
 						) { newContent in
@@ -115,6 +137,11 @@ struct PreviewArea: View {
 					}
 				}
 				.id(file.path)
+			}
+			.overlay(alignment: .topLeading) {
+				if let loadingPath {
+					LoadingTopLine(filename: (loadingPath as NSString).lastPathComponent)
+				}
 			}
 		} else {
 			VStack(spacing: 8) {
@@ -127,6 +154,11 @@ struct PreviewArea: View {
 			}
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 			.background(Theme.surface)
+			.overlay(alignment: .topLeading) {
+				if let loadingPath {
+					LoadingTopLine(filename: (loadingPath as NSString).lastPathComponent)
+				}
+			}
 		}
 	}
 
@@ -136,22 +168,46 @@ struct PreviewArea: View {
 
 		if fileType == .image || fileType == .pdf {
 			DispatchQueue.main.async {
+				loadingPath = nil
+				postFileLoadingState(path: path, isLoading: false)
 				openFile = OpenFile(path: path, content: "")
 			}
 			return
 		}
 
+		loadingPath = path
+		postFileLoadingState(path: path, isLoading: true)
 		let ctx = project.executionContext
 		DispatchQueue.global().async {
 			if let content = ctx.readFile(path) {
 				NSLog("[Belve] File loaded: \(path), \(content.count) chars")
 				DispatchQueue.main.async {
+					loadingPath = nil
+					postFileLoadingState(path: path, isLoading: false)
 					openFile = OpenFile(path: path, content: content)
 				}
 			} else {
 				NSLog("[Belve] Failed to read file: \(path)")
+				DispatchQueue.main.async {
+					if loadingPath == path {
+						loadingPath = nil
+						postFileLoadingState(path: path, isLoading: false)
+					}
+				}
 			}
 		}
+	}
+
+	private func postFileLoadingState(path: String, isLoading: Bool) {
+		NotificationCenter.default.post(
+			name: .belveFileLoadingState,
+			object: nil,
+			userInfo: [
+				"projectId": project.id,
+				"path": path,
+				"isLoading": isLoading
+			]
+		)
 	}
 
 	func saveCurrentFile() {
@@ -165,6 +221,40 @@ struct PreviewArea: View {
 					isDirty = false
 				}
 			}
+		}
+	}
+}
+
+private struct PreviewSidebarVisibilityModifier: ViewModifier {
+	let xOffset: CGFloat
+	let opacity: Double
+
+	func body(content: Content) -> some View {
+		content
+			.opacity(opacity)
+			.offset(x: xOffset)
+	}
+}
+
+private struct LoadingTopLine: View {
+	let filename: String
+
+	var body: some View {
+		VStack(spacing: 0) {
+			LoadingTrack(trackHeight: 2, widthFactor: 0.22, minimumWidth: 120)
+				.frame(height: 2)
+
+			HStack(spacing: 6) {
+				Spacer()
+				Text("Loading")
+					.foregroundStyle(Theme.textSecondary)
+				Text(filename)
+					.foregroundStyle(Theme.textPrimary)
+					.lineLimit(1)
+			}
+			.font(.system(size: 11, weight: .medium))
+			.padding(.horizontal, 10)
+			.padding(.top, 6)
 		}
 	}
 }

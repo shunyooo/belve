@@ -74,6 +74,8 @@ struct XTermTerminalView: NSViewRepresentable {
 		config.userContentController.add(context.coordinator, name: "terminalHandler")
 
 		let webView = TerminalWebView(frame: .zero, configuration: config)
+		let terminalIdentifier = paneId.map { "BelveTerminalWebView:\($0)" } ?? "BelveTerminalWebView"
+		webView.identifier = NSUserInterfaceItemIdentifier(terminalIdentifier)
 		webView.setValue(false, forKey: "drawsBackground")
 		webView.onCopyCommand = { [weak coordinator = context.coordinator] in
 			coordinator?.copySelectionToPasteboard()
@@ -148,6 +150,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		/// Buffer PTY output and flush on a timer to avoid excessive JS calls
 		private var outputBuffer = Data()
 		private var flushTimer: Timer?
+		private var isWaitingForInitialOutput = false
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let body = message.body as? [String: Any],
@@ -211,6 +214,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		private func startPTY(cols: Int, rows: Int) {
 			guard let project else { return }
+			isWaitingForInitialOutput = project.isRemote
 
 			// Build environment
 			var env: [String: String] = [
@@ -247,6 +251,7 @@ struct XTermTerminalView: NSViewRepresentable {
 			let launcherPath = "/tmp/belve-shell/belve-launcher.sh"
 
 			do {
+				postConnectionState(isLoading: isWaitingForInitialOutput)
 				let pty = try PTYService.spawn(
 					shell: launcherPath,
 					args: [],
@@ -271,6 +276,7 @@ struct XTermTerminalView: NSViewRepresentable {
 				self.ptyService = pty
 				NSLog("[Belve] PTY started for project: \(project.name), pane: \(paneId ?? "nil")")
 			} catch {
+				postConnectionState(isLoading: false)
 				NSLog("[Belve] Failed to start PTY: \(error)")
 			}
 
@@ -285,6 +291,10 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		/// Buffer PTY output and flush every ~4ms to reduce JS calls
 		private func bufferOutput(_ data: Data) {
+			if isWaitingForInitialOutput, !data.isEmpty {
+				isWaitingForInitialOutput = false
+				postConnectionState(isLoading: false)
+			}
 			outputBuffer.append(data)
 			if flushTimer == nil {
 				flushTimer = Timer.scheduledTimer(withTimeInterval: 0.004, repeats: false) { [weak self] _ in
@@ -325,6 +335,19 @@ struct XTermTerminalView: NSViewRepresentable {
 			ptyService?.send(Data([0x15]))
 		}
 
+		private func postConnectionState(isLoading: Bool) {
+			guard let project, let paneId else { return }
+			NotificationCenter.default.post(
+				name: .belveTerminalConnectionState,
+				object: nil,
+				userInfo: [
+					"projectId": project.id,
+					"paneId": paneId,
+					"isLoading": isLoading
+				]
+			)
+		}
+
 		private func handleShortcut(key: String, shift: Bool) {
 			switch key {
 			case "d":
@@ -347,6 +370,24 @@ struct XTermTerminalView: NSViewRepresentable {
 				NotificationCenter.default.post(name: .belveFileSave, object: nil)
 			case "r":
 				NotificationCenter.default.post(name: .belveReloadProject, object: nil)
+			case "]":
+				NotificationCenter.default.post(name: .belveSelectNextProject, object: nil)
+			case "[":
+				NotificationCenter.default.post(name: .belveSelectPreviousProject, object: nil)
+			case "'":
+				NotificationCenter.default.post(name: .belveFocusNextPane, object: nil)
+			case ";":
+				NotificationCenter.default.post(name: .belveFocusPreviousPane, object: nil)
+			case "l":
+				NotificationCenter.default.post(name: .belveFocusEditor, object: nil)
+			case "\\":
+				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
+			case "e":
+				if shift {
+					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveToggleFileTree, object: nil)
+				}
 			case "z":
 				if !shift {
 					NotificationCenter.default.post(name: .belveUndo, object: nil)
@@ -361,6 +402,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		deinit {
 			flushTimer?.invalidate()
+			postConnectionState(isLoading: false)
 			ptyService = nil  // PTYService deinit closes fd and kills process
 			NSLog("[Belve] Terminal coordinator deinit")
 		}

@@ -18,209 +18,352 @@ struct MainWindow: View {
 	}
 
 	var body: some View {
-		ZStack {
-			HStack(spacing: 0) {
-				// Sidebar
-				if layoutState.showSidebar {
-					ProjectListView(
-						projects: projectStore.projects,
-						selectedProject: Binding(
-							get: { projectStore.selectedProject },
-							set: { projectStore.select($0) }
-						),
-						onAddProject: { let _ = projectStore.addProject() },
-						onToggleSidebar: { withAnimation(.easeOut(duration: 0.15)) { layoutState.showSidebar.toggle() } },
-						onOpenNotifications: {},
-						onRenameProject: { id, name in projectStore.renameProject(id, name: name) },
-						onDeleteProject: { id in projectStore.deleteProject(id) }
-					)
-					.frame(width: layoutState.sidebarWidth)
-					Rectangle()
-						.fill(Theme.borderSubtle)
-						.frame(width: 1)
-						.contentShape(Rectangle().inset(by: -3))
-						.onHover { hovering in
-							if hovering {
-								NSCursor.resizeLeftRight.push()
-							} else {
-								NSCursor.pop()
-							}
-						}
-						.gesture(
-							DragGesture(minimumDistance: 1, coordinateSpace: .global)
-								.onChanged { value in
-									if sidebarWidthAtDragStart == 0 {
-										sidebarWidthAtDragStart = layoutState.sidebarWidth
-									}
-									layoutState.sidebarWidth = max(140, min(350, sidebarWidthAtDragStart + value.translation.width))
-								}
-								.onEnded { _ in
-									sidebarWidthAtDragStart = layoutState.sidebarWidth
-								}
-						)
+		configuredContent
+	}
+
+	private var configuredContent: AnyView {
+		let base = AnyView(
+			baseContent
+				.background(Theme.bg)
+				.background(WindowFrameAutosave(name: "BelveMainWindow"))
+				.onAppear {
+					sidebarWidthAtDragStart = layoutState.sidebarWidth
 				}
+		)
 
-				// Main content
-				VStack(spacing: 0) {
-					// Top bar
-					TopBar(
-						projectName: projectStore.selectedProject?.name ?? "",
-						connectionInfo: projectStore.selectedProject.map { Self.connectionInfo(for: $0) } ?? nil,
-						showSidebar: layoutState.showSidebar,
-						onToggleSidebar: { withAnimation(.easeOut(duration: 0.15)) { layoutState.showSidebar.toggle() } },
-						sessionLabel: nil
-					)
-					Theme.borderSubtle
-						.frame(height: 1)
-
-					// Content
-					if !projectStore.projects.isEmpty {
-						GeometryReader { geo in
-							ZStack {
-								ForEach(projectStore.projects) { project in
-									let isSelected = project.id == projectStore.selectedProject?.id
-									let state = commandAreaState(for: project.id)
-									let projectLayout = layoutState.state(for: project.id)
-									let splitBinding = Binding<CGFloat>(
-										get: {
-											let preferred = projectLayout.commandAreaFraction * geo.size.width
-											return min(max(250, preferred), max(250, geo.size.width - 250))
-										},
-										set: { newValue in
-											let clamped = min(max(250, newValue), max(250, geo.size.width - 250))
-											projectLayout.commandAreaFraction = clamped / max(geo.size.width, 1)
-										}
-									)
-									let clampedSplit = splitBinding.wrappedValue
-									ZStack(alignment: .bottomTrailing) {
-										HStack(spacing: 0) {
-											CommandArea(project: project, state: state)
-												.frame(width: clampedSplit)
-												.environmentObject(state)
-
-											SplitDivider(
-												position: splitBinding,
-												minLeft: 250,
-												minRight: 250,
-												availableWidth: geo.size.width
-											)
-											.frame(width: DividerMetrics.absoluteHitWidth)
-
-											PreviewArea(
-												project: project,
-												layoutState: projectLayout,
-												openFile: isSelected ? $openFile : .constant(nil)
-											)
-												.id(project.hashValue)  // Rebuild when project properties change
-												.frame(maxWidth: .infinity)
-										}
-
-										if isSelected && projectStore.showDevContainerBanner && !project.isDevContainer {
-											DevContainerBanner(
-												onReopen: {
-													projectStore.showDevContainerBanner = false
-													projectStore.openDevContainer()
-												},
-												onDismiss: {
-													projectStore.showDevContainerBanner = false
-												}
-											)
-											.padding(.bottom, 16)
-											.padding(.trailing, 16)
-											.transition(.move(edge: .bottom).combined(with: .opacity))
-										}
-									}
-									.opacity(isSelected ? 1 : 0)
-									.allowsHitTesting(isSelected)
-								}
-							}
-						}
-					} else {
-						WelcomeView {
-							let _ = projectStore.addProject()
-						}
+		let projectShortcuts = AnyView(
+			base
+				.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notif in
+					if let index = notif.userInfo?["index"] as? Int {
+						projectStore.selectByIndex(index)
 					}
 				}
-				.background(Theme.surface)
-			}
+				.onReceive(NotificationCenter.default.publisher(for: .belveSelectNextProject)) { _ in
+					projectStore.selectNextProject()
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveSelectPreviousProject)) { _ in
+					projectStore.selectPreviousProject()
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveFocusNextPane)) { _ in
+					if let id = projectStore.selectedProject?.id {
+						let state = commandAreaState(for: id)
+						state.focusNextPane()
+						projectStore.refocusTerminal(paneId: state.activePaneId?.uuidString)
+					}
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveFocusPreviousPane)) { _ in
+					if let id = projectStore.selectedProject?.id {
+						let state = commandAreaState(for: id)
+						state.focusPreviousPane()
+						projectStore.refocusTerminal(paneId: state.activePaneId?.uuidString)
+					}
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveFocusEditor)) { _ in
+					projectStore.focusEditor()
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveToggleEditor)) { _ in
+					toggleEditor()
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveToggleSidebar)) { _ in
+					toggleSidebar()
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveToggleFileTree)) { _ in
+					toggleFileTree()
+				}
+		)
 
-			// Command palette overlay
-			if commandPaletteState.isPresented {
-				Color.black.opacity(0.3)
-					.ignoresSafeArea()
-					.onTapGesture {
+		let paletteHandlers = AnyView(
+			projectShortcuts
+				.onChange(of: projectStore.selectedProject) {
+					openFile = nil
+					DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+						projectStore.refocusTerminal()
+					}
+				}
+				.onChange(of: commandPaletteState.isPresented) {
+					if !commandPaletteState.isPresented {
+						paletteMode = .commands
+					}
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveCommandPalette)) { _ in
+					paletteMode = .commands
+					commandPaletteState.isPresented.toggle()
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveOpenFolder)) { _ in
+					if commandPaletteState.isPresented && paletteMode == .folderBrowser {
 						commandPaletteState.isPresented = false
-					}
-
-				VStack {
-					if paletteMode == .folderBrowser {
-						FolderBrowserView(
-							isPresented: $commandPaletteState.isPresented,
-							initialPath: browserPath,
-							executionContext: projectStore.selectedProject?.executionContext ?? .local
-						) { path in
-							projectStore.setProjectFolder(path)
-						}
-						.padding(.top, 80)
 					} else {
-						CommandPaletteView(
-							isPresented: $commandPaletteState.isPresented,
-							commands: buildPaletteCommands()
-						)
-						.padding(.top, 80)
+						openFolder()
 					}
-					Spacer()
+				}
+		)
+
+		return AnyView(
+			paletteHandlers
+				.onReceive(NotificationCenter.default.publisher(for: .belveFocusProject)) { notif in
+					if let projectId = notif.userInfo?["projectId"] as? UUID,
+					   let project = projectStore.projects.first(where: { $0.id == projectId }) {
+						DispatchQueue.main.async { [self] in projectStore.select(project) }
+					}
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveNewProject)) { _ in
+					DispatchQueue.main.async { [self] in let _ = projectStore.addProject() }
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveReloadProject)) { _ in
+					DispatchQueue.main.async { [self] in projectStore.reloadCurrentProject() }
+				}
+		)
+	}
+
+	private var baseContent: some View {
+		ZStack {
+			mainContent
+			commandPaletteOverlay
+		}
+	}
+
+	private var mainContent: some View {
+		HStack(spacing: 0) {
+			if layoutState.showSidebar {
+				sidebar
+					.transition(.asymmetric(
+						insertion: .modifier(
+							active: SidebarVisibilityModifier(xOffset: -14, opacity: 0),
+							identity: SidebarVisibilityModifier(xOffset: 0, opacity: 1)
+						),
+						removal: .modifier(
+							active: SidebarVisibilityModifier(xOffset: -10, opacity: 0),
+							identity: SidebarVisibilityModifier(xOffset: 0, opacity: 1)
+						)
+					))
+			}
+
+			VStack(spacing: 0) {
+				topBar
+				Theme.borderSubtle.frame(height: 1)
+				projectContent
+			}
+			.background(Theme.surface)
+		}
+	}
+
+	private var sidebar: some View {
+		Group {
+			ProjectListView(
+				projects: projectStore.projects,
+				selectedProject: Binding(
+					get: { projectStore.selectedProject },
+					set: { projectStore.select($0) }
+				),
+				onAddProject: { let _ = projectStore.addProject() },
+				onToggleSidebar: toggleSidebar,
+				onOpenNotifications: {},
+				onRenameProject: { id, name in projectStore.renameProject(id, name: name) },
+				onDeleteProject: { id in projectStore.deleteProject(id) }
+			)
+			.frame(width: layoutState.sidebarWidth)
+
+			Rectangle()
+				.fill(Theme.borderSubtle)
+				.frame(width: 1)
+				.contentShape(Rectangle().inset(by: -3))
+				.onHover { hovering in
+					if hovering {
+						NSCursor.resizeLeftRight.push()
+					} else {
+						NSCursor.pop()
+					}
+				}
+				.gesture(
+					DragGesture(minimumDistance: 1, coordinateSpace: .global)
+						.onChanged { value in
+							if sidebarWidthAtDragStart == 0 {
+								sidebarWidthAtDragStart = layoutState.sidebarWidth
+							}
+							layoutState.sidebarWidth = max(140, min(350, sidebarWidthAtDragStart + value.translation.width))
+						}
+						.onEnded { _ in
+							sidebarWidthAtDragStart = layoutState.sidebarWidth
+						}
+				)
+		}
+	}
+
+	private var topBar: some View {
+		TopBar(
+			projectName: projectStore.selectedProject?.name ?? "",
+			connectionInfo: projectStore.selectedProject.map { Self.connectionInfo(for: $0) } ?? nil,
+			showSidebar: layoutState.showSidebar,
+			onToggleSidebar: toggleSidebar,
+			sessionLabel: nil
+		)
+	}
+
+	@ViewBuilder
+	private var projectContent: some View {
+		if !projectStore.projects.isEmpty {
+			GeometryReader { geo in
+				ZStack {
+					ForEach(projectStore.projects) { project in
+						projectWorkspace(for: project, availableWidth: geo.size.width)
+					}
 				}
 			}
-		}
-		.background(Theme.bg)
-		.background(WindowFrameAutosave(name: "BelveMainWindow"))
-		// Cmd+D/W/1-9 shortcuts are handled via JS postMessage → Coordinator
-		// (WKWebView consumes key events before SwiftUI .onKeyPress sees them)
-		.onAppear {
-			sidebarWidthAtDragStart = layoutState.sidebarWidth
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveSwitchProject)) { notif in
-			if let index = notif.userInfo?["index"] as? Int {
-				projectStore.selectByIndex(index)
+		} else {
+			WelcomeView {
+				let _ = projectStore.addProject()
 			}
 		}
-		.onChange(of: projectStore.selectedProject) {
-			openFile = nil
-			// Refocus terminal after project switch
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+	}
+
+	private func projectWorkspace(for project: Project, availableWidth: CGFloat) -> some View {
+		let isSelected = project.id == projectStore.selectedProject?.id
+		let state = commandAreaState(for: project.id)
+		let projectLayout = layoutState.state(for: project.id)
+		let dividerWidth = DividerMetrics.absoluteHitWidth
+		let splitBinding = Binding<CGFloat>(
+			get: {
+				let preferred = projectLayout.commandAreaFraction * availableWidth
+				return min(max(250, preferred), max(250, availableWidth - 250))
+			},
+			set: { newValue in
+				let clamped = min(max(250, newValue), max(250, availableWidth - 250))
+				projectLayout.commandAreaFraction = clamped / max(availableWidth, 1)
+			}
+		)
+		let clampedSplit = splitBinding.wrappedValue
+		let isEditorVisible = projectLayout.showEditor
+		let commandWidth = isEditorVisible ? clampedSplit : availableWidth
+		let previewWidth = max(0, availableWidth - clampedSplit - dividerWidth)
+
+		return ZStack(alignment: .bottomTrailing) {
+			HStack(spacing: 0) {
+				CommandArea(project: project, state: state)
+					.frame(width: commandWidth)
+					.environmentObject(state)
+
+				SplitDivider(
+					position: splitBinding,
+					minLeft: 250,
+					minRight: 250,
+					availableWidth: availableWidth
+				)
+				.frame(width: isEditorVisible ? dividerWidth : 0)
+				.opacity(isEditorVisible ? 1 : 0)
+				.allowsHitTesting(isEditorVisible)
+				.clipped()
+
+				PreviewArea(
+					project: project,
+					layoutState: projectLayout,
+					openFile: isSelected ? $openFile : .constant(nil)
+				)
+				.id(project.hashValue)
+				.frame(width: previewWidth)
+				.clipped()
+				.modifier(PreviewVisibilityModifier(
+					xOffset: isEditorVisible ? 0 : 14,
+					opacity: isEditorVisible ? 1 : 0
+				))
+				.allowsHitTesting(isEditorVisible)
+			}
+
+			if isSelected && projectStore.showDevContainerBanner && !project.isDevContainer {
+				DevContainerBanner(
+					onReopen: {
+						projectStore.showDevContainerBanner = false
+						projectStore.openDevContainer()
+					},
+					onDismiss: {
+						projectStore.showDevContainerBanner = false
+					}
+				)
+				.padding(.bottom, 16)
+				.padding(.trailing, 16)
+				.transition(.move(edge: .bottom).combined(with: .opacity))
+			}
+		}
+		.opacity(isSelected ? 1 : 0)
+		.allowsHitTesting(isSelected)
+	}
+
+	@ViewBuilder
+	private var commandPaletteOverlay: some View {
+		if commandPaletteState.isPresented {
+			Color.black.opacity(0.3)
+				.ignoresSafeArea()
+				.onTapGesture {
+					commandPaletteState.isPresented = false
+				}
+
+			VStack {
+				if paletteMode == .folderBrowser {
+					FolderBrowserView(
+						isPresented: $commandPaletteState.isPresented,
+						initialPath: browserPath,
+						executionContext: projectStore.selectedProject?.executionContext ?? .local
+					) { path in
+						projectStore.setProjectFolder(path)
+					}
+					.padding(.top, 80)
+				} else {
+					CommandPaletteView(
+						isPresented: $commandPaletteState.isPresented,
+						commands: buildPaletteCommands()
+					)
+					.padding(.top, 80)
+				}
+				Spacer()
+			}
+		}
+	}
+
+	private func toggleSidebar() {
+		let isShowing = !layoutState.showSidebar
+		withAnimation(Self.toggleAnimation(isShowing: isShowing)) {
+			layoutState.showSidebar.toggle()
+		}
+	}
+
+	private func toggleFileTree() {
+		guard let project = projectStore.selectedProject else { return }
+		let projectLayout = layoutState.state(for: project.id)
+		guard projectLayout.showEditor else { return }
+		let isShowing = !projectLayout.showFileTree
+		withAnimation(Self.toggleAnimation(isShowing: isShowing)) {
+			projectLayout.showFileTree.toggle()
+		}
+		if projectLayout.showFileTree {
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+				NotificationCenter.default.post(
+					name: .belveFocusFileTree,
+					object: nil,
+					userInfo: ["projectId": project.id]
+				)
+			}
+		} else {
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
 				projectStore.refocusTerminal()
 			}
 		}
-		.onChange(of: commandPaletteState.isPresented) {
-			if !commandPaletteState.isPresented {
-				paletteMode = .commands
+	}
+
+	private func toggleEditor() {
+		guard let project = projectStore.selectedProject else { return }
+		let projectLayout = layoutState.state(for: project.id)
+		let isShowing = !projectLayout.showEditor
+		withAnimation(Self.toggleAnimation(isShowing: isShowing)) {
+			projectLayout.showEditor.toggle()
+		}
+		if projectLayout.showEditor {
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+				projectStore.focusEditor()
+			}
+		} else {
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+				projectStore.refocusTerminal()
 			}
 		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveCommandPalette)) { _ in
-			paletteMode = .commands
-			commandPaletteState.isPresented.toggle()
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveFocusProject)) { notif in
-			if let projectId = notif.userInfo?["projectId"] as? UUID,
-			   let project = projectStore.projects.first(where: { $0.id == projectId }) {
-				DispatchQueue.main.async { [self] in projectStore.select(project) }
-			}
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveNewProject)) { _ in
-			DispatchQueue.main.async { [self] in let _ = projectStore.addProject() }
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveReloadProject)) { _ in
-			DispatchQueue.main.async { [self] in projectStore.reloadCurrentProject() }
-		}
-		.onReceive(NotificationCenter.default.publisher(for: .belveOpenFolder)) { _ in
-			if commandPaletteState.isPresented && paletteMode == .folderBrowser {
-				commandPaletteState.isPresented = false
-			} else {
-				openFolder()
-			}
-		}
-		// Split/close handled via .onKeyPress above
 	}
 
 	// MARK: - Command Palette
@@ -234,6 +377,12 @@ struct MainWindow: View {
 		case .folderBrowser:
 			return []
 		}
+	}
+
+	private static func toggleAnimation(isShowing: Bool) -> Animation {
+		isShowing
+			? .interpolatingSpring(stiffness: 1280, damping: 56)
+			: .easeOut(duration: 0.05)
 	}
 
 	private func buildMainCommands() -> [PaletteCommand] {
@@ -318,6 +467,28 @@ struct MainWindow: View {
 		browserPath = projectStore.selectedProject?.effectivePath ?? NSHomeDirectory()
 		paletteMode = .folderBrowser
 		commandPaletteState.isPresented = true
+	}
+}
+
+private struct SidebarVisibilityModifier: ViewModifier {
+	let xOffset: CGFloat
+	let opacity: Double
+
+	func body(content: Content) -> some View {
+		content
+			.opacity(opacity)
+			.offset(x: xOffset)
+	}
+}
+
+private struct PreviewVisibilityModifier: ViewModifier {
+	let xOffset: CGFloat
+	let opacity: Double
+
+	func body(content: Content) -> some View {
+		content
+			.opacity(opacity)
+			.offset(x: xOffset)
 	}
 }
 

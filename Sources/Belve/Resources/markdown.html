@@ -32,5 +32,10 @@ html, body {
 <body>
 <div id="editor"></div>
 <script>/* MARKDOWN_JS */</script>
+<script>
+window.markdownFocus = function() {
+	document.querySelector(".ProseMirror")?.focus();
+};
+</script>
 </body>
 </html>

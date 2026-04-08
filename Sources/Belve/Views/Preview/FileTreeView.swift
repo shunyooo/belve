@@ -18,6 +18,8 @@ class FileTreeState: ObservableObject {
 	@Published var expandedPaths: Set<String> = []
 	@Published var childrenCache: [String: [FileItem]] = [:]
 	@Published var focusedPath: String?
+	@Published var isRootLoading = false
+	@Published var loadingDirectories: Set<String> = []
 
 	// Multi-selection
 	@Published var selectedPaths: Set<String> = []
@@ -47,6 +49,21 @@ class FileTreeState: ObservableObject {
 
 	func clearStatus() {
 		statusMessage = nil
+	}
+
+	func loadRoot(project: Project, rootPath: String, completion: (() -> Void)? = nil) {
+		isRootLoading = true
+		DispatchQueue.global().async {
+			let result = project.executionContext.listDirectory(rootPath)
+			DispatchQueue.main.async {
+				self.items = result
+				self.isRootLoading = false
+				if self.focusedPath == nil {
+					self.focusedPath = result.first?.path
+				}
+				completion?()
+			}
+		}
 	}
 
 	/// Get flat list of visible items for keyboard navigation
@@ -94,10 +111,12 @@ class FileTreeState: ObservableObject {
 		} else {
 			expandedPaths.insert(path)
 			if childrenCache[path] == nil {
+				loadingDirectories.insert(path)
 				DispatchQueue.global().async {
 					let children = project.executionContext.listDirectory(path)
 					DispatchQueue.main.async {
 						NSLog("[Belve] Loaded \(children.count) children for \(path)")
+						self.loadingDirectories.remove(path)
 						self.childrenCache[path] = children
 					}
 				}
@@ -318,25 +337,83 @@ class FileTreeState: ObservableObject {
 	func refreshParent(ofChild parentDir: String, project: Project) {
 		// Check if parentDir is in the cache (it's an expanded directory)
 		if childrenCache[parentDir] != nil {
+			loadingDirectories.insert(parentDir)
 			DispatchQueue.global().async {
 				let children = project.executionContext.listDirectory(parentDir)
 				DispatchQueue.main.async {
+					self.loadingDirectories.remove(parentDir)
 					self.childrenCache[parentDir] = children
 				}
 			}
 		} else {
 			// It might be the root level — reload items
+			isRootLoading = true
 			DispatchQueue.global().async {
 				// Find root path by checking if parentDir matches the root
 				// We re-list the parent
 				let children = project.executionContext.listDirectory(parentDir)
 				DispatchQueue.main.async {
+					self.isRootLoading = false
 					// Check if any root item's parent matches
 					if let first = self.items.first,
 					   (first.path as NSString).deletingLastPathComponent == parentDir {
 						self.items = children
 					}
 				}
+			}
+		}
+	}
+
+	func reveal(path: String, rootPath: String, project: Project) {
+		let revealPath = {
+			let directories = self.ancestorDirectories(for: path, rootPath: rootPath)
+			self.expandAncestors(directories, project: project) {
+				self.selectedPaths = [path]
+				self.focusedPath = path
+			}
+		}
+
+		if items.isEmpty {
+			loadRoot(project: project, rootPath: rootPath, completion: revealPath)
+		} else {
+			revealPath()
+		}
+	}
+
+	private func ancestorDirectories(for path: String, rootPath: String) -> [String] {
+		var directories: [String] = []
+		var current = (path as NSString).deletingLastPathComponent
+		let normalizedRoot = (rootPath as NSString).standardizingPath
+
+		while !current.isEmpty && current != normalizedRoot && current.hasPrefix(normalizedRoot) {
+			directories.append(current)
+			let parent = (current as NSString).deletingLastPathComponent
+			if parent == current { break }
+			current = parent
+		}
+
+		return directories.reversed()
+	}
+
+	private func expandAncestors(_ directories: [String], project: Project, completion: @escaping () -> Void) {
+		guard let current = directories.first else {
+			completion()
+			return
+		}
+
+		expandedPaths.insert(current)
+		if childrenCache[current] != nil {
+			expandAncestors(Array(directories.dropFirst()), project: project, completion: completion)
+			return
+		}
+
+		loadingDirectories.insert(current)
+		DispatchQueue.global().async {
+			let children = project.executionContext.listDirectory(current)
+			DispatchQueue.main.async {
+				self.loadingDirectories.remove(current)
+				self.childrenCache[current] = children
+				self.expandAncestors(Array(directories.dropFirst()), project: project, completion: completion)
 			}
 		}
 	}
@@ -433,7 +510,8 @@ struct FileTreeView: View {
 	let project: Project
 	let rootPath: String
 	let onFileSelect: (String) -> Void
-	@StateObject private var state = FileTreeState()
+	@ObservedObject var state: FileTreeState
+	@FocusState private var isTreeFocused: Bool
 
 	private var isEditing: Bool {
 		state.renamingPath != nil || state.creatingInPath != nil
@@ -441,97 +519,128 @@ struct FileTreeView: View {
 
 	var body: some View {
 		ScrollViewReader { proxy in
-		ScrollView {
-			VStack(alignment: .leading, spacing: 0) {
-				ForEach(state.items) { item in
-					FileTreeRow(
-						item: item,
-						depth: 0,
-						state: state,
-						project: project,
-						onFileSelect: onFileSelect
-					)
-				}
+		VStack(alignment: .leading, spacing: 0) {
+			if state.isRootLoading {
+				FileTreeLoadingLine()
 			}
-			.padding(.vertical, 4)
-		}
-		.background(Theme.surface)
-		.focusable()
-		.onChange(of: state.focusedPath) {
-			if let path = state.focusedPath {
-				withAnimation(.easeInOut(duration: 0.15)) {
-					proxy.scrollTo(path, anchor: nil)
+
+			ScrollView {
+				VStack(alignment: .leading, spacing: 0) {
+					ForEach(state.items) { item in
+						FileTreeRow(
+							item: item,
+							depth: 0,
+							state: state,
+							project: project,
+							onFileSelect: onFileSelect
+						)
+					}
 				}
+				.padding(.vertical, 4)
 			}
-		}
-		.onKeyPress(.upArrow) {
-			guard !isEditing else { return .ignored }
-			state.moveFocusUp()
-			return .handled
-		}
-		.onKeyPress(.downArrow) {
-			guard !isEditing else { return .ignored }
-			state.moveFocusDown()
-			return .handled
-		}
-		.onKeyPress(.rightArrow) {
-			guard !isEditing else { return .ignored }
-			state.expandOrMoveToChild(project: project)
-			return .handled
-		}
-		.onKeyPress(.leftArrow) {
-			guard !isEditing else { return .ignored }
-			state.navigateToParent()
-			return .handled
-		}
-		.onKeyPress(.return) {
-			guard !isEditing else { return .ignored }
-			if let path = state.focusedPath {
-				let visible = state.visibleItems()
-				if let item = visible.first(where: { $0.path == path }) {
-					if item.isDirectory {
-						state.toggle(path: path, project: project)
-					} else {
-						onFileSelect(path)
+			.background(Theme.surface)
+			.focusable()
+			.focused($isTreeFocused)
+			.onChange(of: state.focusedPath) {
+				if let path = state.focusedPath {
+					withAnimation(.easeInOut(duration: 0.15)) {
+						proxy.scrollTo(path, anchor: nil)
 					}
 				}
 			}
-			return .handled
-		}
-		.onKeyPress(.space) {
-			guard !isEditing else { return .ignored }
-			if let path = state.focusedPath {
-				state.toggleSelection(path)
+			.onKeyPress(.upArrow) {
+				guard !isEditing else { return .ignored }
+				state.moveFocusUp()
+				return .handled
 			}
-			return .handled
-		}
-		.onKeyPress(.delete) {
-			guard !isEditing else { return .ignored }
-			state.requestDelete(project: project)
-			return .handled
-		}
-		.onKeyPress(characters: CharacterSet(charactersIn: "\u{7F}"), phases: .down) { press in
-			guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
-			state.requestDelete(project: project)
-			return .handled
-		}
-		.onKeyPress(characters: CharacterSet(charactersIn: "z"), phases: .down) { press in
-			guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
-			state.performUndo(project: project)
-			return .handled
-		}
-		.onKeyPress(KeyEquivalent(Character(UnicodeScalar(0xF705)!))) {
-			guard !isEditing else { return .ignored }
-			state.startRename()
-			return .handled
-		}
-		.onAppear {
-			DispatchQueue.global().async {
-				let result = project.executionContext.listDirectory(rootPath)
-				DispatchQueue.main.async {
-					state.items = result
-					state.focusedPath = result.first?.path
+			.onKeyPress(.downArrow) {
+				guard !isEditing else { return .ignored }
+				state.moveFocusDown()
+				return .handled
+			}
+			.onKeyPress(.rightArrow) {
+				guard !isEditing else { return .ignored }
+				state.expandOrMoveToChild(project: project)
+				return .handled
+			}
+			.onKeyPress(.leftArrow) {
+				guard !isEditing else { return .ignored }
+				state.navigateToParent()
+				return .handled
+			}
+			.onKeyPress(.return) {
+				guard !isEditing else { return .ignored }
+				if let path = state.focusedPath {
+					let visible = state.visibleItems()
+					if let item = visible.first(where: { $0.path == path }) {
+						if item.isDirectory {
+							state.toggle(path: path, project: project)
+						} else {
+							onFileSelect(path)
+						}
+					}
 				}
+				return .handled
+			}
+			.onKeyPress(.space) {
+				guard !isEditing else { return .ignored }
+				if let path = state.focusedPath {
+					state.toggleSelection(path)
+				}
+				return .handled
+			}
+			.onKeyPress(.delete) {
+				guard !isEditing else { return .ignored }
+				state.requestDelete(project: project)
+				return .handled
+			}
+			.onKeyPress(characters: CharacterSet(charactersIn: "\u{7F}"), phases: .down) { press in
+				guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
+				state.requestDelete(project: project)
+				return .handled
+			}
+			.onKeyPress(characters: CharacterSet(charactersIn: "z"), phases: .down) { press in
+				guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
+				state.performUndo(project: project)
+				return .handled
+			}
+			.onKeyPress(characters: CharacterSet(charactersIn: "e"), phases: .down) { press in
+				guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
+				if press.modifiers.contains(.shift) {
+					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveToggleFileTree, object: nil)
+				}
+				return .handled
+			}
+			.onKeyPress(characters: CharacterSet(charactersIn: "\\"), phases: .down) { press in
+				guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
+				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
+				return .handled
+			}
+			.onKeyPress(KeyEquivalent(Character(UnicodeScalar(0xF705)!))) {
+				guard !isEditing else { return .ignored }
+				state.startRename()
+				return .handled
+			}
+			.onAppear {
+				if state.items.isEmpty {
+					state.loadRoot(project: project, rootPath: rootPath)
+				}
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .belveFocusFileTree)) { notif in
+				guard let projectId = notif.userInfo?["projectId"] as? UUID,
+					  projectId == project.id else { return }
+				isTreeFocused = true
+				if state.focusedPath == nil {
+					state.focusedPath = state.visibleItems().first?.path
+				}
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .belveRevealFileInTree)) { notif in
+				guard let projectId = notif.userInfo?["projectId"] as? UUID,
+					  projectId == project.id,
+					  let path = notif.userInfo?["path"] as? String else { return }
+				state.reveal(path: path, rootPath: rootPath, project: project)
 			}
 		}
 		} // ScrollViewReader
@@ -573,6 +682,10 @@ struct FileTreeRow: View {
 
 	private var isSelected: Bool {
 		state.selectedPaths.contains(item.path)
+	}
+
+	private var isLoading: Bool {
+		state.loadingDirectories.contains(item.path)
 	}
 
 	private var isExpanded: Bool {
@@ -681,6 +794,18 @@ struct FileTreeRow: View {
 			.id(item.path)
 			.accessibilityLabel(item.name)
 
+			if item.isDirectory && isLoading {
+				HStack {
+					DirectoryLoadingLine()
+						.frame(maxWidth: .infinity, minHeight: 10, maxHeight: 10)
+					Spacer()
+				}
+				.padding(.leading, CGFloat(depth) * 14 + 28)
+				.padding(.trailing, 6)
+				.padding(.top, 1)
+				.padding(.bottom, 4)
+			}
+
 			// New file input (shown as first child when creating in this directory)
 			if item.isDirectory && state.creatingInPath == item.path {
 				HStack(spacing: 4) {
@@ -739,5 +864,20 @@ struct FileTreeRow: View {
 		case "sh", "bash", "zsh": return "terminal"
 		default: return "doc"
 		}
+	}
+}
+
+private struct FileTreeLoadingLine: View {
+	var body: some View {
+		LoadingTrack(trackHeight: 2, widthFactor: 0.3, minimumWidth: 110)
+			.frame(height: 2)
+			.frame(maxWidth: .infinity, alignment: .leading)
+			.allowsHitTesting(false)
+	}
+}
+
+private struct DirectoryLoadingLine: View {
+	var body: some View {
+		LoadingTrack(trackHeight: 2, widthFactor: 0.45, minimumWidth: 18, capsuleTrack: true)
 	}
 }
