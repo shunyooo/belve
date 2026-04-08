@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 
 const fitAddon = new FitAddon();
+const terminalContainer = document.getElementById('terminal');
 
 const term = new Terminal({
 	cursorBlink: true,
@@ -39,8 +40,32 @@ const term = new Terminal({
 term.loadAddon(fitAddon);
 term.loadAddon(new WebLinksAddon());
 
-term.open(document.getElementById('terminal'));
+term.open(terminalContainer);
 fitAddon.fit();
+
+function wheelDeltaToLines(event) {
+	if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+		return event.deltaY;
+	}
+	if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+		return event.deltaY * term.rows;
+	}
+	return event.deltaY / 20;
+}
+
+function handleWheelScroll(event) {
+	const lines = Math.trunc(wheelDeltaToLines(event));
+	if (lines === 0) {
+		return false;
+	}
+	event.preventDefault();
+	event.stopPropagation();
+	term.scrollLines(lines);
+	return false;
+}
+
+term.attachCustomWheelEventHandler(handleWheelScroll);
+terminalContainer.addEventListener('wheel', handleWheelScroll, { passive: false, capture: true });
 
 
 // Bridge: Swift -> JS
@@ -62,6 +87,14 @@ window.terminalSetTheme = function(themeJson) {
 
 window.terminalClear = function() {
 	term.clear();
+};
+
+window.terminalGetSelection = function() {
+	return term.getSelection();
+};
+
+window.terminalHasSelection = function() {
+	return term.hasSelection();
 };
 
 // Bridge: JS -> Swift
@@ -99,7 +132,7 @@ const resizeObserver = new ResizeObserver(function() {
 		postMessage({ type: 'resize', cols: term.cols, rows: term.rows });
 	}, 16);
 });
-resizeObserver.observe(document.getElementById('terminal'));
+resizeObserver.observe(terminalContainer);
 
 // Title change
 term.onTitleChange(function(title) {

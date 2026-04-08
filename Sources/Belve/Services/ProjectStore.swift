@@ -120,9 +120,6 @@ class ProjectStore: ObservableObject {
 		if let webView = findTerminalWebView() {
 			webView.window?.makeFirstResponder(webView)
 			webView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-				webView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
-			}
 		}
 	}
 

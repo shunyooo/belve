@@ -35,11 +35,11 @@ enum LauncherScriptGenerator {
 		        TMUX_SESSION="belve-${PROJ_SHORT}-${BELVE_PANE_INDEX}"
 		    fi
 		    # tmux transparent mode: session-local settings (no UI, no prefix)
-		    TMUX_APPLY="tmux set -t $TMUX_SESSION status off; tmux set -t $TMUX_SESSION prefix None; tmux set -t $TMUX_SESSION mouse on; tmux set -t $TMUX_SESSION escape-time 0; tmux setw -t $TMUX_SESSION pane-border-status off"
+		    TMUX_APPLY="tmux set -t $TMUX_SESSION status off; tmux set -t $TMUX_SESSION prefix None; tmux set -t $TMUX_SESSION mouse off; tmux set -t $TMUX_SESSION escape-time 0; tmux setw -t $TMUX_SESSION pane-border-status off"
 
 		    if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_REMOTE_PATH" ]; then
 		        # DevContainer: use tmux inside the container for session persistence
-		        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && devcontainer up --workspace-folder . >/dev/null 2>&1 && devcontainer exec --workspace-folder . sh -c 'S=$TMUX_SESSION; if command -v tmux >/dev/null 2>&1; then tmux has-session -t \$S 2>/dev/null || tmux new-session -d -s \$S; tmux set -t \$S status off 2>/dev/null; tmux set -t \$S prefix None 2>/dev/null; tmux set -t \$S mouse on 2>/dev/null; tmux set -t \$S escape-time 0 2>/dev/null; tmux setw -t \$S pane-border-status off 2>/dev/null; exec tmux attach -t \$S; else exec \$SHELL -l; fi' 2>/dev/null"
+		        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && devcontainer up --workspace-folder . >/dev/null 2>&1 && devcontainer exec --workspace-folder . sh -c 'S=$TMUX_SESSION; if command -v tmux >/dev/null 2>&1; then tmux has-session -t \$S 2>/dev/null || tmux new-session -d -s \$S; tmux set -t \$S status off 2>/dev/null; tmux set -t \$S prefix None 2>/dev/null; tmux set -t \$S mouse off 2>/dev/null; tmux set -t \$S escape-time 0 2>/dev/null; tmux setw -t \$S pane-border-status off 2>/dev/null; exec tmux attach -t \$S; else exec \$SHELL -l; fi' 2>/dev/null"
 		    elif [ -n "$BELVE_REMOTE_PATH" ]; then
 		        # Create or attach to existing tmux session, apply transparent settings
 		        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "export TERM=xterm-256color; command -v tmux >/dev/null && { tmux has-session -t $TMUX_SESSION 2>/dev/null || tmux new-session -d -s $TMUX_SESSION -c $BELVE_REMOTE_PATH; $TMUX_APPLY; exec tmux attach -t $TMUX_SESSION; } || { cd $BELVE_REMOTE_PATH && exec \$SHELL -l; }"

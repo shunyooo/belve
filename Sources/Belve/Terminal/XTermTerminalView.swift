@@ -1,6 +1,33 @@
 import SwiftUI
 import WebKit
 
+final class TerminalWebView: WKWebView {
+	var onCopyCommand: (() -> Void)?
+	var onPasteCommand: (() -> Void)?
+
+	override var acceptsFirstResponder: Bool { true }
+
+	override func performKeyEquivalent(with event: NSEvent) -> Bool {
+		let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+		guard flags == [.command],
+			  let key = event.charactersIgnoringModifiers?.lowercased() else {
+			return super.performKeyEquivalent(with: event)
+		}
+
+		switch key {
+		case "c":
+			onCopyCommand?()
+			return true
+		case "v":
+			onPasteCommand?()
+			return true
+		default:
+			return super.performKeyEquivalent(with: event)
+		}
+	}
+
+}
+
 /// SwiftUI wrapper for xterm.js running in WKWebView.
 /// Replaces GhosttyTerminalView with a fully embeddable terminal.
 struct XTermTerminalView: NSViewRepresentable {
@@ -14,8 +41,14 @@ struct XTermTerminalView: NSViewRepresentable {
 		let config = WKWebViewConfiguration()
 		config.userContentController.add(context.coordinator, name: "terminalHandler")
 
-		let webView = WKWebView(frame: .zero, configuration: config)
+		let webView = TerminalWebView(frame: .zero, configuration: config)
 		webView.setValue(false, forKey: "drawsBackground")
+		webView.onCopyCommand = { [weak coordinator = context.coordinator] in
+			coordinator?.copySelectionToPasteboard()
+		}
+		webView.onPasteCommand = { [weak coordinator = context.coordinator] in
+			coordinator?.pasteFromPasteboard()
+		}
 		context.coordinator.webView = webView
 		context.coordinator.project = project
 		context.coordinator.paneId = paneId
@@ -234,10 +267,20 @@ struct XTermTerminalView: NSViewRepresentable {
 			DispatchQueue.main.async { [weak self] in
 				self?.webView?.window?.makeFirstResponder(self?.webView)
 				self?.webView?.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
-				DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-					self?.webView?.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
-				}
 			}
+		}
+
+		func copySelectionToPasteboard() {
+			webView?.evaluateJavaScript("window.terminalGetSelection ? window.terminalGetSelection() : ''") { result, _ in
+				guard let text = result as? String, !text.isEmpty else { return }
+				NSPasteboard.general.clearContents()
+				NSPasteboard.general.setString(text, forType: .string)
+			}
+		}
+
+		func pasteFromPasteboard() {
+			guard let text = NSPasteboard.general.string(forType: .string) else { return }
+			ptyService?.send(text)
 		}
 
 		private func handleShortcut(key: String, shift: Bool) {
