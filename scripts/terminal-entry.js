@@ -43,31 +43,6 @@ term.loadAddon(new WebLinksAddon());
 term.open(terminalContainer);
 fitAddon.fit();
 
-function wheelDeltaToLines(event) {
-	if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
-		return event.deltaY;
-	}
-	if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
-		return event.deltaY * term.rows;
-	}
-	return event.deltaY / 20;
-}
-
-function handleWheelScroll(event) {
-	const lines = Math.trunc(wheelDeltaToLines(event));
-	if (lines === 0) {
-		return false;
-	}
-	event.preventDefault();
-	event.stopPropagation();
-	term.scrollLines(lines);
-	postMessage({ type: 'log', msg: 'wheel deltaY=' + event.deltaY.toFixed(1) + ' lines=' + lines });
-	return false;
-}
-
-term.attachCustomWheelEventHandler(handleWheelScroll);
-terminalContainer.addEventListener('wheel', handleWheelScroll, { passive: false, capture: true });
-
 
 // Bridge: Swift -> JS
 window.terminalWrite = function(base64) {
@@ -171,6 +146,12 @@ term.onSelectionChange(function() {
 
 // Paste handling: listen for Cmd+V
 document.addEventListener('keydown', function(e) {
+	if (e.metaKey) {
+		postMessage({
+			type: 'log',
+			msg: 'keydown key=' + e.key + ' code=' + e.code + ' meta=' + e.metaKey + ' shift=' + e.shiftKey
+		});
+	}
 	if (e.metaKey && e.key === 'v') {
 		e.preventDefault();
 		postMessage({ type: 'paste' });

@@ -4,18 +4,9 @@ import WebKit
 final class TerminalWebView: WKWebView {
 	var onCopyCommand: (() -> Void)?
 	var onPasteCommand: (() -> Void)?
+	var onLineDeleteCommand: (() -> Void)?
 
 	override var acceptsFirstResponder: Bool { true }
-
-	// WKWebView consumes scroll events before they reach JavaScript.
-	// Intercept and forward to xterm.js via evaluateJavaScript.
-	override func scrollWheel(with event: NSEvent) {
-		let deltaY = event.scrollingDeltaY
-		guard abs(deltaY) > 0.5 else { return }
-		let lines = Int(-deltaY / 3.0)
-		guard lines != 0 else { return }
-		evaluateJavaScript("if(window.term)term.scrollLines(\(lines))", completionHandler: nil)
-	}
 
 	override func performKeyEquivalent(with event: NSEvent) -> Bool {
 		// Only handle Cmd+C/V if this webview (or a child) is the first responder
@@ -26,6 +17,13 @@ final class TerminalWebView: WKWebView {
 		}
 
 		let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+		NSLog(
+			"[Belve][keys] performKeyEquivalent chars=%@ ignoring=%@ keyCode=%d flags=%@",
+			event.characters ?? "nil",
+			event.charactersIgnoringModifiers ?? "nil",
+			event.keyCode,
+			String(describing: flags)
+		)
 		guard flags == [.command],
 			  let key = event.charactersIgnoringModifiers?.lowercased() else {
 			return super.performKeyEquivalent(with: event)
@@ -38,7 +36,14 @@ final class TerminalWebView: WKWebView {
 		case "v":
 			onPasteCommand?()
 			return true
+		case String(UnicodeScalar(NSDeleteCharacter)!):
+			onLineDeleteCommand?()
+			return true
 		default:
+			if event.keyCode == 51 {
+				onLineDeleteCommand?()
+				return true
+			}
 			return super.performKeyEquivalent(with: event)
 		}
 	}
@@ -75,6 +80,9 @@ struct XTermTerminalView: NSViewRepresentable {
 		}
 		webView.onPasteCommand = { [weak coordinator = context.coordinator] in
 			coordinator?.pasteFromPasteboard()
+		}
+		webView.onLineDeleteCommand = { [weak coordinator = context.coordinator] in
+			coordinator?.sendLineDelete()
 		}
 		context.coordinator.webView = webView
 		context.coordinator.project = project
@@ -311,6 +319,10 @@ struct XTermTerminalView: NSViewRepresentable {
 		func pasteFromPasteboard() {
 			guard let text = NSPasteboard.general.string(forType: .string) else { return }
 			ptyService?.send(text)
+		}
+
+		func sendLineDelete() {
+			ptyService?.send(Data([0x15]))
 		}
 
 		private func handleShortcut(key: String, shift: Bool) {
