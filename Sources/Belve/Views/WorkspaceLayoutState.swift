@@ -1,7 +1,7 @@
 import SwiftUI
 
 final class ProjectLayoutState: ObservableObject, Codable {
-	@Published var commandAreaFraction: CGFloat = 0.5 {
+	@Published var commandAreaFraction: CGFloat = 0.65 {
 		didSet { onChanged?() }
 	}
 	@Published var showEditor: Bool = true {
@@ -16,7 +16,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 
 	var onChanged: (() -> Void)?
 
-	init(commandAreaFraction: CGFloat = 0.5, showEditor: Bool = true, showFileTree: Bool = true, fileTreeWidth: CGFloat = 200) {
+	init(commandAreaFraction: CGFloat = 0.65, showEditor: Bool = true, showFileTree: Bool = true, fileTreeWidth: CGFloat = 200) {
 		self.commandAreaFraction = commandAreaFraction
 		self.showEditor = showEditor
 		self.showFileTree = showFileTree
