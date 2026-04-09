@@ -40,8 +40,124 @@ const term = new Terminal({
 term.loadAddon(fitAddon);
 term.loadAddon(new WebLinksAddon());
 
+term.attachCustomKeyEventHandler(function(e) {
+	if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+		postMessage({ type: 'input', data: utf8ToBase64('\u001b[13;2u') });
+		return false;
+	}
+	return true;
+});
+
 term.open(terminalContainer);
 fitAddon.fit();
+
+const terminalPathRegex = /(?:^|[\s("'`\[])(\.{1,2}\/[^\s"'`)\]]+|\/[^\s"'`)\]]+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)(?::\d+)?(?::\d+)?/g;
+let isMetaPressed = false;
+let hoveredPathLink = null;
+let pathLinkProviderDisposable = null;
+
+function updateHoveredPathDecorations() {
+	if (!hoveredPathLink || !hoveredPathLink.decorations) return;
+	hoveredPathLink.decorations.underline = isMetaPressed;
+	hoveredPathLink.decorations.pointerCursor = isMetaPressed;
+}
+
+window.terminalSetMetaPressed = function(pressed) {
+	setMetaPressed(!!pressed);
+};
+
+function setMetaPressed(pressed) {
+	isMetaPressed = pressed;
+	if (isMetaPressed) {
+		ensurePathLinkProvider();
+	} else {
+		if (hoveredPathLink && hoveredPathLink.decorations) {
+			hoveredPathLink.decorations.underline = false;
+			hoveredPathLink.decorations.pointerCursor = false;
+		}
+		hoveredPathLink = null;
+		if (pathLinkProviderDisposable) {
+			pathLinkProviderDisposable.dispose();
+			pathLinkProviderDisposable = null;
+		}
+	}
+	updateHoveredPathDecorations();
+}
+
+function mapStringIndexToCell(line, targetIndex) {
+	const cell = line.getCell(0);
+	if (!cell) return 0;
+
+	let stringOffset = 0;
+	for (let x = 0; x < line.length; x++) {
+		line.getCell(x, cell);
+		const chars = cell.getChars();
+		const width = cell.getWidth();
+		if (!width) continue;
+
+		const charLength = chars.length || 1;
+		if (stringOffset >= targetIndex) {
+			return x;
+		}
+		stringOffset += charLength;
+		if (stringOffset > targetIndex) {
+			return x;
+		}
+	}
+
+	return line.length;
+}
+
+function ensurePathLinkProvider() {
+	if (pathLinkProviderDisposable) return;
+	pathLinkProviderDisposable = term.registerLinkProvider({
+		provideLinks(y, callback) {
+			const line = term.buffer.active.getLine(y - 1);
+			if (!line) {
+				callback([]);
+				return;
+			}
+
+			const text = line.translateToString(true);
+			const links = [];
+			terminalPathRegex.lastIndex = 0;
+			let match;
+
+			while ((match = terminalPathRegex.exec(text)) !== null) {
+				const rawPath = match[1];
+				if (!rawPath) continue;
+				const startIndex = match.index + match[0].lastIndexOf(rawPath);
+				const endIndex = startIndex + rawPath.length;
+				const startCell = mapStringIndexToCell(line, startIndex);
+				const endCell = mapStringIndexToCell(line, endIndex);
+
+				const link = {
+					range: {
+						start: { x: startCell + 1, y },
+						end: { x: Math.max(startCell + 1, endCell), y }
+					},
+					text: rawPath,
+					decorations: {
+						underline: true,
+						pointerCursor: true
+					},
+					hover: () => {
+						hoveredPathLink = link;
+					},
+					leave: () => {
+						hoveredPathLink = null;
+					},
+					activate: () => {
+						postMessage({ type: 'openPath', path: rawPath });
+					}
+				};
+				links.push(link);
+			}
+
+			callback(links);
+		}
+	});
+}
 
 
 // Bridge: Swift -> JS
@@ -146,6 +262,9 @@ term.onSelectionChange(function() {
 
 // Paste handling: listen for Cmd+V
 document.addEventListener('keydown', function(e) {
+	if (e.key === 'Meta') {
+		setMetaPressed(true);
+	}
 	if (e.metaKey) {
 		postMessage({
 			type: 'log',
@@ -166,6 +285,23 @@ document.addEventListener('keydown', function(e) {
 		e.preventDefault();
 		postMessage({ type: 'shortcut', key: e.key, shift: e.shiftKey });
 	}
+});
+
+document.addEventListener('keyup', function(e) {
+	if (e.key === 'Meta') {
+		setMetaPressed(false);
+	}
+});
+
+document.addEventListener('mousemove', function(e) {
+	if (!hoveredPathLink) return;
+	if (isMetaPressed !== e.metaKey) {
+		setMetaPressed(e.metaKey);
+	}
+});
+
+window.addEventListener('blur', function() {
+	setMetaPressed(false);
 });
 
 // Notify Swift that terminal is ready (after layout settles)

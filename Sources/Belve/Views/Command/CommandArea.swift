@@ -481,6 +481,7 @@ struct CommandArea: View {
 	@ObservedObject var state: CommandAreaState
 	@State private var dragState: PaneDragState?
 	@State private var connectionLoadingPanes: Set<UUID> = []
+	@State private var disconnectedPanes: Set<UUID> = []
 	private let paneHeaderHeight: CGFloat = 24
 
 	private struct PaneDragState {
@@ -542,6 +543,11 @@ struct CommandArea: View {
 									TerminalLoadingTopLine()
 								}
 							}
+							.overlay {
+								if disconnectedPanes.contains(pane.paneId) {
+									TerminalDisconnectedOverlay(projectId: project.id)
+								}
+							}
 					}
 						.overlay {
 							if let dropTarget = dropTarget(in: layout), dropTarget.paneId == pane.paneId {
@@ -585,9 +591,23 @@ struct CommandArea: View {
 				  let paneId = UUID(uuidString: paneIdString),
 				  let isLoading = notif.userInfo?["isLoading"] as? Bool else { return }
 			if isLoading {
+				disconnectedPanes.remove(paneId)
 				connectionLoadingPanes.insert(paneId)
 			} else {
 				connectionLoadingPanes.remove(paneId)
+			}
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveTerminalDisconnected)) { notif in
+			guard let projectId = notif.userInfo?["projectId"] as? UUID,
+				  projectId == project.id,
+				  let paneIdString = notif.userInfo?["paneId"] as? String,
+				  let paneId = UUID(uuidString: paneIdString),
+				  let isDisconnected = notif.userInfo?["isDisconnected"] as? Bool else { return }
+			if isDisconnected {
+				connectionLoadingPanes.remove(paneId)
+				disconnectedPanes.insert(paneId)
+			} else {
+				disconnectedPanes.remove(paneId)
 			}
 		}
 	}
@@ -638,6 +658,53 @@ private struct TerminalLoadingTopLine: View {
 			.frame(maxWidth: .infinity, alignment: .leading)
 			.background(Theme.surface.opacity(0.88))
 			.allowsHitTesting(false)
+	}
+}
+
+private struct TerminalDisconnectedOverlay: View {
+	let projectId: UUID
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 10) {
+			Text("SSH disconnected")
+				.font(.system(size: 13, weight: .semibold))
+				.foregroundStyle(Theme.textPrimary)
+
+			Text("Reconnect to resume this terminal.")
+				.font(.system(size: 11))
+				.foregroundStyle(Theme.textSecondary)
+
+			Button("Reconnect") {
+				NotificationCenter.default.post(
+					name: .belveReloadProject,
+					object: nil,
+					userInfo: ["projectId": projectId]
+				)
+			}
+			.buttonStyle(.plain)
+			.padding(.horizontal, 10)
+			.padding(.vertical, 6)
+			.background(
+				RoundedRectangle(cornerRadius: 8)
+					.fill(Theme.surface)
+			)
+			.overlay(
+				RoundedRectangle(cornerRadius: 8)
+					.stroke(Theme.borderSubtle, lineWidth: 1)
+			)
+		}
+		.padding(16)
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+		.background(
+			LinearGradient(
+				colors: [
+					Theme.bg.opacity(0.84),
+					Theme.bg.opacity(0.7)
+				],
+				startPoint: .top,
+				endPoint: .bottom
+			)
+		)
 	}
 }
 

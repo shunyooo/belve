@@ -607,9 +607,9 @@ struct FileTreeView: View {
 			.onKeyPress(characters: CharacterSet(charactersIn: "e"), phases: .down) { press in
 				guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
 				if press.modifiers.contains(.shift) {
-					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
-				} else {
 					NotificationCenter.default.post(name: .belveToggleFileTree, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
 				}
 				return .handled
 			}

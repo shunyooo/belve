@@ -24,6 +24,9 @@ struct BelveApp: App {
 					NotificationCenter.default.post(name: .belveCommandPalette, object: nil)
 				}
 				.keyboardShortcut("p", modifiers: [.command, .shift])
+				Button("Search Files") {
+					NotificationCenter.default.post(name: .belveOpenFileSearch, object: nil)
+				}
 			}
 			CommandGroup(replacing: .newItem) {
 				Button("New Project") {
@@ -76,7 +79,11 @@ extension Notification.Name {
 	static let belveFocusFileTree = Notification.Name("belveFocusFileTree")
 	static let belveRevealFileInTree = Notification.Name("belveRevealFileInTree")
 	static let belveFileLoadingState = Notification.Name("belveFileLoadingState")
+	static let belveOpenFileFromTerminal = Notification.Name("belveOpenFileFromTerminal")
+	static let belveOpenFileSearch = Notification.Name("belveOpenFileSearch")
+	static let belvePresentFileSearch = Notification.Name("belvePresentFileSearch")
 	static let belveTerminalConnectionState = Notification.Name("belveTerminalConnectionState")
+	static let belveTerminalDisconnected = Notification.Name("belveTerminalDisconnected")
 	static let belveSplitVertical = Notification.Name("belveSplitVertical")
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
 	static let belveFocusProject = Notification.Name("belveFocusProject")
@@ -97,6 +104,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 	let notificationStore = NotificationStore()
 	let projectStore = ProjectStore()
 	let agentFileMonitor = AgentEventFileMonitor()
+	private var localKeyMonitor: Any?
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		// Log build info for verifying correct binary is running
@@ -135,6 +143,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		}
 
 		// Cmd+1-9 handled via .onKeyPress in MainWindow (SwiftUI native)
+		localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+			let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+			guard flags == [.command],
+				  event.charactersIgnoringModifiers?.lowercased() == "p" else {
+				return event
+			}
+			NotificationCenter.default.post(name: .belveOpenFileSearch, object: nil)
+			return nil
+		}
 
 		// Start monitoring agent events file
 		agentFileMonitor.onEvent = { [weak self] paneId, status, message in
@@ -154,6 +171,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		}
 
 		NSLog("[Belve] App launched")
+	}
+
+	func applicationWillTerminate(_ notification: Notification) {
+		if let localKeyMonitor {
+			NSEvent.removeMonitor(localKeyMonitor)
+		}
 	}
 
 	func applicationDidBecomeActive(_ notification: Notification) {

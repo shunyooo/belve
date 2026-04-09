@@ -7,6 +7,13 @@ enum ExecutionContext: Codable, Hashable {
 	case ssh(host: String)
 	case devContainer(host: String, workspacePath: String)
 
+	struct SearchMatch {
+		let path: String
+		let lineNumber: Int?
+		let snippet: String?
+		let matchedFilename: Bool
+	}
+
 	private struct CommandResult {
 		let output: String
 		let status: Int32
@@ -192,6 +199,29 @@ enum ExecutionContext: Codable, Hashable {
 		}
 	}
 
+	func searchFileNames(rootPath: String, query: String, limit: Int = 80) -> [SearchMatch] {
+		let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !trimmed.isEmpty else { return [] }
+		if let matches = searchFileNamesWithRipgrep(rootPath: rootPath, query: trimmed, limit: limit) {
+			return matches
+		}
+		return []
+	}
+
+	func searchFileContents(rootPath: String, query: String, limit: Int = 80, excludingPaths: Set<String> = []) -> [SearchMatch] {
+		let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !trimmed.isEmpty else { return [] }
+		if let matches = searchFileContentsWithRipgrep(
+			rootPath: rootPath,
+			query: trimmed,
+			limit: limit,
+			excludingPaths: excludingPaths
+		) {
+			return matches
+		}
+		return []
+	}
+
 	/// The home/default directory for this context.
 	var homeDirectory: String {
 		switch self {
@@ -238,6 +268,81 @@ enum ExecutionContext: Codable, Hashable {
 			"-o", "ControlPersist=600",
 			host,
 		]
+	}
+
+	private func searchFileNamesWithRipgrep(rootPath: String, query: String, limit: Int) -> [SearchMatch]? {
+		let quotedRoot = shellQuote(rootPath)
+		let quotedQuery = shellQuote(query)
+		let filenameCommand = """
+		cd \(quotedRoot) 2>/dev/null && command -v rg >/dev/null 2>&1 && rg --files | rg -i --fixed-strings -- \(quotedQuery) | head -n \(limit)
+		"""
+		guard let filenameOutput = run(filenameCommand) else { return nil }
+
+		var results: [SearchMatch] = []
+		for relativePath in filenameOutput.components(separatedBy: "\n").filter({ !$0.isEmpty }) {
+			let fullPath = resolveSearchPath(relativePath, rootPath: rootPath)
+			results.append(
+				SearchMatch(
+					path: fullPath,
+					lineNumber: nil,
+					snippet: nil,
+					matchedFilename: true
+				)
+			)
+		}
+		return results
+	}
+
+	private func searchFileContentsWithRipgrep(
+		rootPath: String,
+		query: String,
+		limit: Int,
+		excludingPaths: Set<String>
+	) -> [SearchMatch]? {
+		let quotedRoot = shellQuote(rootPath)
+		let quotedQuery = shellQuote(query)
+		let contentCommand = """
+		cd \(quotedRoot) 2>/dev/null && command -v rg >/dev/null 2>&1 && rg -n -i --fixed-strings --color never -m 1 -- \(quotedQuery) . | head -n \(limit * 2)
+		"""
+		guard let contentOutput = run(contentCommand) else { return nil }
+
+		var results: [SearchMatch] = []
+		var seenPaths = excludingPaths
+
+		for line in contentOutput.components(separatedBy: "\n").filter({ !$0.isEmpty }) {
+			let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+			guard parts.count >= 3 else { continue }
+			let rawPath = String(parts[0])
+			let normalizedPath = rawPath.hasPrefix("./") ? String(rawPath.dropFirst(2)) : rawPath
+			let fullPath = resolveSearchPath(normalizedPath, rootPath: rootPath)
+			guard !seenPaths.contains(fullPath) else { continue }
+			guard let lineNumber = Int(parts[1]) else { continue }
+			let snippet = String(parts[2]).trimmingCharacters(in: .whitespaces)
+			results.append(
+				SearchMatch(
+					path: fullPath,
+					lineNumber: lineNumber,
+					snippet: snippet,
+					matchedFilename: false
+				)
+			)
+			seenPaths.insert(fullPath)
+			if results.count >= limit {
+				break
+			}
+		}
+
+		return results
+	}
+
+	private func resolveSearchPath(_ path: String, rootPath: String) -> String {
+		if path.hasPrefix("/") {
+			return path
+		}
+		if rootPath == "." {
+			return path
+		}
+		return (rootPath as NSString).appendingPathComponent(path)
 	}
 
 	private func shellQuote(_ path: String) -> String {

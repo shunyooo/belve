@@ -6,6 +6,14 @@ struct MainWindow: View {
 	@EnvironmentObject var projectStore: ProjectStore
 	@State private var sidebarWidthAtDragStart: CGFloat = 0
 	@State private var openFile: OpenFile?
+	@State private var isFileSearchPresented = false
+	@State private var fileSearchQuery = ""
+	@State private var fileSearchResults: [MainWindowFileSearchResult] = []
+	@State private var selectedFileSearchIndex = 0
+	@State private var isSearchingFiles = false
+	@State private var fileSearchRevision = 0
+	@State private var fileSearchWorkItem: DispatchWorkItem?
+	@State private var fileSearchKeyMonitor: Any?
 	@State private var paletteMode: PaletteMode = .commands
 	@StateObject private var stateManager = CommandAreaStateManager()
 	@StateObject private var layoutState = WorkspaceLayoutStateManager()
@@ -61,6 +69,9 @@ struct MainWindow: View {
 				.onReceive(NotificationCenter.default.publisher(for: .belveFocusEditor)) { _ in
 					projectStore.focusEditor()
 				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveOpenFileSearch)) { _ in
+					presentFileSearch()
+				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveToggleEditor)) { _ in
 					toggleEditor()
 				}
@@ -109,8 +120,14 @@ struct MainWindow: View {
 				.onReceive(NotificationCenter.default.publisher(for: .belveNewProject)) { _ in
 					DispatchQueue.main.async { [self] in let _ = projectStore.addProject() }
 				}
-				.onReceive(NotificationCenter.default.publisher(for: .belveReloadProject)) { _ in
-					DispatchQueue.main.async { [self] in projectStore.reloadCurrentProject() }
+				.onReceive(NotificationCenter.default.publisher(for: .belveReloadProject)) { notif in
+					DispatchQueue.main.async { [self] in
+						if let projectId = notif.userInfo?["projectId"] as? UUID {
+							projectStore.reloadProject(projectId)
+						} else {
+							projectStore.reloadCurrentProject()
+						}
+					}
 				}
 		)
 	}
@@ -119,6 +136,7 @@ struct MainWindow: View {
 		ZStack {
 			mainContent
 			commandPaletteOverlay
+			fileSearchOverlay
 		}
 	}
 
@@ -239,6 +257,7 @@ struct MainWindow: View {
 		return ZStack(alignment: .bottomTrailing) {
 			HStack(spacing: 0) {
 				CommandArea(project: project, state: state)
+					.id("command-\(project.id.uuidString)-\(projectStore.terminalReloadToken(for: project.id))")
 					.frame(width: commandWidth)
 					.environmentObject(state)
 
@@ -318,6 +337,49 @@ struct MainWindow: View {
 		}
 	}
 
+	@ViewBuilder
+	private var fileSearchOverlay: some View {
+		if isFileSearchPresented {
+			GeometryReader { geo in
+				Color.black.opacity(0.16)
+					.ignoresSafeArea()
+					.onTapGesture {
+						closeFileSearch()
+					}
+
+				VStack {
+					HStack {
+						Spacer(minLength: 0)
+						MainWindowFileSearchPanel(
+							availableHeight: geo.size.height,
+							query: $fileSearchQuery,
+							results: fileSearchResults,
+							selectedIndex: $selectedFileSearchIndex,
+							isSearching: isSearchingFiles,
+							onSubmit: openSelectedFileSearchResult,
+							onCancel: closeFileSearch,
+							onSelect: { result in
+								openFileSearchResult(result)
+							}
+						)
+						.id(projectStore.selectedProject?.id)
+						.onAppear {
+							scheduleFileSearch()
+						}
+						.onChange(of: fileSearchQuery) {
+							selectedFileSearchIndex = 0
+							scheduleFileSearch()
+						}
+						Spacer(minLength: 0)
+					}
+					.padding(.top, 80)
+					Spacer()
+				}
+				.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+			}
+		}
+	}
+
 	private func toggleSidebar() {
 		let isShowing = !layoutState.showSidebar
 		withAnimation(Self.toggleAnimation(isShowing: isShowing)) {
@@ -363,6 +425,144 @@ struct MainWindow: View {
 			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
 				projectStore.refocusTerminal()
 			}
+		}
+	}
+
+	private func presentFileSearch() {
+		if isFileSearchPresented {
+			closeFileSearch()
+			return
+		}
+		guard let project = projectStore.selectedProject else { return }
+		let projectLayout = layoutState.state(for: project.id)
+		if !projectLayout.showEditor {
+			withAnimation(Self.toggleAnimation(isShowing: true)) {
+				projectLayout.showEditor = true
+			}
+		}
+		withAnimation(.easeOut(duration: 0.12)) {
+			isFileSearchPresented = true
+		}
+		installFileSearchKeyMonitor()
+	}
+
+	private func closeFileSearch() {
+		withAnimation(.easeOut(duration: 0.1)) {
+			isFileSearchPresented = false
+		}
+		fileSearchWorkItem?.cancel()
+		fileSearchQuery = ""
+		fileSearchResults = []
+		selectedFileSearchIndex = 0
+		isSearchingFiles = false
+		removeFileSearchKeyMonitor()
+	}
+
+	private func scheduleFileSearch() {
+		fileSearchWorkItem?.cancel()
+		let query = fileSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !query.isEmpty else {
+			fileSearchResults = []
+			isSearchingFiles = false
+			return
+		}
+
+		let revision = fileSearchRevision + 1
+		fileSearchRevision = revision
+		let workItem = DispatchWorkItem {
+			runFileSearch(query: query, revision: revision)
+		}
+		fileSearchWorkItem = workItem
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+	}
+
+	private func runFileSearch(query: String, revision: Int) {
+		guard let project = projectStore.selectedProject else { return }
+		isSearchingFiles = true
+		DispatchQueue.global(qos: .userInitiated).async {
+			let matches = project.executionContext.searchFileNames(rootPath: project.effectivePath, query: query, limit: 60)
+			let results = matches.map {
+				MainWindowFileSearchResult(
+					path: $0.path,
+					relativePath: relativeDisplayPath($0.path, rootPath: project.effectivePath),
+					lineNumber: $0.lineNumber,
+					snippet: $0.snippet,
+					matchedFilename: $0.matchedFilename
+				)
+			}
+			DispatchQueue.main.async {
+				guard revision == fileSearchRevision else { return }
+				fileSearchResults = results
+				isSearchingFiles = false
+			}
+		}
+	}
+
+	private func openSelectedFileSearchResult() {
+		guard selectedFileSearchIndex >= 0,
+			  selectedFileSearchIndex < fileSearchResults.count else { return }
+		openFileSearchResult(fileSearchResults[selectedFileSearchIndex])
+	}
+
+	private func openFileSearchResult(_ result: MainWindowFileSearchResult) {
+		guard let project = projectStore.selectedProject else { return }
+		closeFileSearch()
+		NotificationCenter.default.post(
+			name: .belveOpenFileFromTerminal,
+			object: nil,
+			userInfo: [
+				"projectId": project.id,
+				"path": result.path
+			]
+		)
+	}
+
+	private func relativeDisplayPath(_ path: String, rootPath: String) -> String {
+		var relative = path
+		if rootPath != ".", path.hasPrefix(rootPath) {
+			relative = String(path.dropFirst(rootPath.count))
+			if relative.hasPrefix("/") {
+				relative.removeFirst()
+			}
+		}
+		if relative.hasPrefix("./") {
+			relative = String(relative.dropFirst(2))
+		}
+		return relative.isEmpty ? (path as NSString).lastPathComponent : relative
+	}
+
+	private func moveFileSearchSelection(by delta: Int) {
+		guard !fileSearchResults.isEmpty else { return }
+		selectedFileSearchIndex = min(max(0, selectedFileSearchIndex + delta), fileSearchResults.count - 1)
+	}
+
+	private func installFileSearchKeyMonitor() {
+		guard fileSearchKeyMonitor == nil else { return }
+		fileSearchKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+			guard isFileSearchPresented else { return event }
+			switch event.keyCode {
+			case 125:
+				moveFileSearchSelection(by: 1)
+				return nil
+			case 126:
+				moveFileSearchSelection(by: -1)
+				return nil
+			case 36:
+				openSelectedFileSearchResult()
+				return nil
+			case 53:
+				closeFileSearch()
+				return nil
+			default:
+				return event
+			}
+		}
+	}
+
+	private func removeFileSearchKeyMonitor() {
+		if let fileSearchKeyMonitor {
+			NSEvent.removeMonitor(fileSearchKeyMonitor)
+			self.fileSearchKeyMonitor = nil
 		}
 	}
 
@@ -489,6 +689,165 @@ private struct PreviewVisibilityModifier: ViewModifier {
 		content
 			.opacity(opacity)
 			.offset(x: xOffset)
+	}
+}
+
+private struct MainWindowFileSearchResult: Identifiable, Hashable {
+	let id = UUID()
+	let path: String
+	let relativePath: String
+	let lineNumber: Int?
+	let snippet: String?
+	let matchedFilename: Bool
+}
+
+private struct MainWindowFileSearchPanel: View {
+	let availableHeight: CGFloat
+	@Binding var query: String
+	let results: [MainWindowFileSearchResult]
+	@Binding var selectedIndex: Int
+	let isSearching: Bool
+	let onSubmit: () -> Void
+	let onCancel: () -> Void
+	let onSelect: (MainWindowFileSearchResult) -> Void
+	@FocusState private var isFocused: Bool
+
+	var body: some View {
+		VStack(spacing: 0) {
+			HStack(spacing: 10) {
+				Image(systemName: "magnifyingglass")
+					.font(.system(size: 12, weight: .semibold))
+					.foregroundStyle(Theme.textTertiary)
+
+				TextField("Search files...", text: $query)
+					.textFieldStyle(.plain)
+					.font(.system(size: 14))
+					.foregroundStyle(Theme.textPrimary)
+					.focused($isFocused)
+					.onSubmit {
+						onSubmit()
+					}
+
+				if isSearching {
+					Text("Searching…")
+						.font(.system(size: 11, weight: .medium))
+						.foregroundStyle(Theme.textSecondary)
+				} else if !query.isEmpty {
+					Text("\(results.count)")
+						.font(.system(size: 11, weight: .medium))
+						.foregroundStyle(Theme.textSecondary)
+				}
+			}
+			.padding(.horizontal, 14)
+			.padding(.vertical, 12)
+
+			Theme.borderSubtle.frame(height: 1)
+
+			Group {
+				if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+					searchEmptyState("Type to search files")
+				} else if results.isEmpty && isSearching {
+					searchEmptyState("Searching…")
+				} else if results.isEmpty {
+					searchEmptyState("No matches")
+				} else {
+					ScrollViewReader { proxy in
+						ScrollView {
+							VStack(spacing: 0) {
+								ForEach(Array(results.enumerated()), id: \.element.id) { index, result in
+									MainWindowFileSearchRow(result: result, isSelected: index == selectedIndex)
+										.id(result.id)
+										.onTapGesture {
+											selectedIndex = index
+											onSelect(result)
+										}
+								}
+							}
+						}
+						.onChange(of: selectedIndex) {
+							guard selectedIndex >= 0, selectedIndex < results.count else { return }
+							withAnimation(.easeOut(duration: 0.12)) {
+								proxy.scrollTo(results[selectedIndex].id, anchor: .center)
+							}
+						}
+						.onAppear {
+							guard selectedIndex >= 0, selectedIndex < results.count else { return }
+							proxy.scrollTo(results[selectedIndex].id, anchor: .center)
+						}
+					}
+					.frame(maxHeight: .infinity)
+				}
+			}
+		}
+		.frame(width: 560, height: max(360, availableHeight - 120), alignment: .top)
+		.background(Theme.surface)
+		.cornerRadius(Theme.radiusLg)
+		.overlay(
+			RoundedRectangle(cornerRadius: Theme.radiusLg)
+				.stroke(Theme.border, lineWidth: 1)
+		)
+		.shadow(color: .black.opacity(0.34), radius: 18, y: 8)
+		.onAppear {
+			isFocused = true
+		}
+	}
+
+	private func searchEmptyState(_ label: String) -> some View {
+		HStack {
+			Text(label)
+				.font(.system(size: 12))
+				.foregroundStyle(Theme.textSecondary)
+			Spacer()
+		}
+		.padding(.horizontal, 14)
+		.padding(.vertical, 14)
+	}
+
+}
+
+private struct MainWindowFileSearchRow: View {
+	let result: MainWindowFileSearchResult
+	let isSelected: Bool
+	@State private var isHovering = false
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 4) {
+			HStack(spacing: 8) {
+				Image(systemName: result.matchedFilename ? "doc.text" : "text.alignleft")
+					.font(.system(size: 11))
+					.foregroundStyle(Theme.textSecondary)
+					.frame(width: 14)
+
+				Text((result.path as NSString).lastPathComponent)
+					.font(.system(size: 13, weight: .medium))
+					.foregroundStyle(Theme.textPrimary)
+					.lineLimit(1)
+
+				Spacer()
+
+				if let lineNumber = result.lineNumber {
+					Text("L\(lineNumber)")
+						.font(.system(size: 10, weight: .semibold))
+						.foregroundStyle(Theme.textSecondary)
+				}
+			}
+
+			Text(result.relativePath)
+				.font(.system(size: 11))
+				.foregroundStyle(Theme.textSecondary)
+				.lineLimit(1)
+
+			if let snippet = result.snippet, !snippet.isEmpty {
+				Text(snippet)
+					.font(.system(size: 11))
+					.foregroundStyle(Theme.textPrimary.opacity(0.88))
+					.lineLimit(2)
+			}
+		}
+		.padding(.horizontal, 14)
+		.padding(.vertical, 9)
+		.background(isSelected ? Theme.surfaceActive : (isHovering ? Theme.surfaceHover : Color.clear))
+		.onHover { isHovering = $0 }
 	}
 }
 

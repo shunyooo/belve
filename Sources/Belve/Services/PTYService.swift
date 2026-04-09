@@ -7,8 +7,11 @@ class PTYService {
 	let masterFd: Int32
 	let pid: pid_t
 	private var readSource: DispatchSourceRead?
+	private let exitStateLock = NSLock()
+	private var didExit = false
 
 	var onData: ((Data) -> Void)?
+	var onExit: ((Int32) -> Void)?
 	var onNotification: ((String, String) -> Void)? // (title, body)
 	var agentTransport = OSCAgentTransport()
 	private var oscBuffer = ""
@@ -97,6 +100,7 @@ class PTYService {
 
 		let service = PTYService(masterFd: master, pid: pid)
 		service.startReading()
+		service.startMonitoringExit()
 		return service
 	}
 
@@ -133,10 +137,33 @@ class PTYService {
 				DispatchQueue.main.async {
 					self?.onData?(data)
 				}
+			} else {
+				source.cancel()
 			}
 		}
 		source.resume()
 		self.readSource = source
+	}
+
+	private func startMonitoringExit() {
+		let childPid = pid
+		DispatchQueue.global(qos: .utility).async { [weak self] in
+			var status: Int32 = 0
+			let result = waitpid(childPid, &status, 0)
+			guard result == childPid else { return }
+			self?.finishExit(status: status)
+		}
+	}
+
+	private func finishExit(status: Int32) {
+		exitStateLock.lock()
+		defer { exitStateLock.unlock() }
+		guard !didExit else { return }
+		didExit = true
+		readSource?.cancel()
+		DispatchQueue.main.async { [weak self] in
+			self?.onExit?(status)
+		}
 	}
 
 	/// Scan for OSC 9/99/777 notification sequences: \e]9;text\a or \e]9;text\e\\
@@ -202,7 +229,12 @@ class PTYService {
 	deinit {
 		readSource?.cancel()
 		close(masterFd)
-		kill(pid, SIGTERM)
+		exitStateLock.lock()
+		let alreadyExited = didExit
+		exitStateLock.unlock()
+		if !alreadyExited {
+			kill(pid, SIGTERM)
+		}
 	}
 }
 

@@ -1,6 +1,30 @@
 import SwiftUI
 import WebKit
 
+final class EditorWebView: WKWebView {
+	override var acceptsFirstResponder: Bool { true }
+
+	override func performKeyEquivalent(with event: NSEvent) -> Bool {
+		guard let firstResponder = window?.firstResponder as? NSView,
+			  firstResponder === self || firstResponder.isDescendant(of: self) || isAncestor(of: firstResponder)
+		else {
+			return super.performKeyEquivalent(with: event)
+		}
+
+		return super.performKeyEquivalent(with: event)
+	}
+
+	private func isAncestor(of view: NSView?) -> Bool {
+		guard let view else { return false }
+		var current: NSView? = view
+		while let c = current {
+			if c === self { return true }
+			current = c.superview
+		}
+		return false
+	}
+}
+
 struct CodeEditorView: NSViewRepresentable {
 	let projectId: UUID
 	let filename: String
@@ -11,7 +35,7 @@ struct CodeEditorView: NSViewRepresentable {
 		let config = WKWebViewConfiguration()
 		config.userContentController.add(context.coordinator, name: "editorHandler")
 
-		let webView = WKWebView(frame: .zero, configuration: config)
+		let webView = EditorWebView(frame: .zero, configuration: config)
 		webView.identifier = NSUserInterfaceItemIdentifier("BelveEditorWebView:\(projectId.uuidString)")
 		webView.setValue(false, forKey: "drawsBackground")
 		context.coordinator.webView = webView

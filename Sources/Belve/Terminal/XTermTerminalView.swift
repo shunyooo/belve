@@ -5,6 +5,8 @@ final class TerminalWebView: WKWebView {
 	var onCopyCommand: (() -> Void)?
 	var onPasteCommand: (() -> Void)?
 	var onLineDeleteCommand: (() -> Void)?
+	var onMetaKeyChanged: ((Bool) -> Void)?
+	var onMouseFocus: (() -> Void)?
 
 	override var acceptsFirstResponder: Bool { true }
 
@@ -58,6 +60,27 @@ final class TerminalWebView: WKWebView {
 		return false
 	}
 
+	override func flagsChanged(with event: NSEvent) {
+		let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+		onMetaKeyChanged?(flags.contains(.command))
+		super.flagsChanged(with: event)
+	}
+
+	override func mouseDown(with event: NSEvent) {
+		onMouseFocus?()
+		super.mouseDown(with: event)
+	}
+
+	override func rightMouseDown(with event: NSEvent) {
+		onMouseFocus?()
+		super.rightMouseDown(with: event)
+	}
+
+	override func otherMouseDown(with event: NSEvent) {
+		onMouseFocus?()
+		super.otherMouseDown(with: event)
+	}
+
 }
 
 /// SwiftUI wrapper for xterm.js running in WKWebView.
@@ -85,6 +108,12 @@ struct XTermTerminalView: NSViewRepresentable {
 		}
 		webView.onLineDeleteCommand = { [weak coordinator = context.coordinator] in
 			coordinator?.sendLineDelete()
+		}
+		webView.onMetaKeyChanged = { [weak coordinator = context.coordinator] isPressed in
+			coordinator?.setMetaPressed(isPressed)
+		}
+		webView.onMouseFocus = { [weak coordinator = context.coordinator] in
+			coordinator?.activatePane()
 		}
 		context.coordinator.webView = webView
 		context.coordinator.project = project
@@ -193,6 +222,11 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "paste":
 				pasteFromPasteboard()
 
+			case "openPath":
+				if let rawPath = body["path"] as? String {
+					openPathFromTerminal(rawPath)
+				}
+
 			case "shortcut":
 				if let key = body["key"] as? String {
 					handleShortcut(key: key, shift: body["shift"] as? Bool ?? false)
@@ -252,6 +286,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			do {
 				postConnectionState(isLoading: isWaitingForInitialOutput)
+				postDisconnectedState(isDisconnected: false)
 				let pty = try PTYService.spawn(
 					shell: launcherPath,
 					args: [],
@@ -262,6 +297,9 @@ struct XTermTerminalView: NSViewRepresentable {
 
 				pty.onData = { [weak self] data in
 					self?.bufferOutput(data)
+				}
+				pty.onExit = { [weak self] status in
+					self?.handlePTYExit(status: status)
 				}
 
 				// Agent notification transport
@@ -277,6 +315,7 @@ struct XTermTerminalView: NSViewRepresentable {
 				NSLog("[Belve] PTY started for project: \(project.name), pane: \(paneId ?? "nil")")
 			} catch {
 				postConnectionState(isLoading: false)
+				postDisconnectedState(isDisconnected: project.isRemote)
 				NSLog("[Belve] Failed to start PTY: \(error)")
 			}
 
@@ -318,6 +357,11 @@ struct XTermTerminalView: NSViewRepresentable {
 			}
 		}
 
+		func activatePane() {
+			guard let paneId, let paneUUID = UUID(uuidString: paneId) else { return }
+			commandAreaState?.activePaneId = paneUUID
+		}
+
 		func copySelectionToPasteboard() {
 			webView?.evaluateJavaScript("window.terminalGetSelection ? window.terminalGetSelection() : ''") { result, _ in
 				guard let text = result as? String, !text.isEmpty else { return }
@@ -335,6 +379,74 @@ struct XTermTerminalView: NSViewRepresentable {
 			ptyService?.send(Data([0x15]))
 		}
 
+		func setMetaPressed(_ isPressed: Bool) {
+			webView?.evaluateJavaScript("window.terminalSetMetaPressed?.(\(isPressed ? "true" : "false"))", completionHandler: nil)
+		}
+
+		private func openPathFromTerminal(_ rawPath: String) {
+			guard let project else { return }
+			let resolved = resolveTerminalPath(rawPath, in: project)
+			guard let resolved else { return }
+			NotificationCenter.default.post(
+				name: .belveOpenFileFromTerminal,
+				object: nil,
+				userInfo: [
+					"projectId": project.id,
+					"path": resolved
+				]
+			)
+		}
+
+		private func resolveTerminalPath(_ rawPath: String, in project: Project) -> String? {
+			let trimmed = rawPath.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n\"'`()[]{}<>"))
+			guard !trimmed.isEmpty else { return nil }
+
+			let parts = splitPathAndLocation(trimmed)
+			let candidate = parts.path
+			let ctx = project.executionContext
+			let basePath = project.effectivePath
+
+			let candidates: [String]
+			if candidate.hasPrefix("/") {
+				candidates = [candidate]
+			} else if candidate.hasPrefix("./") || candidate.hasPrefix("../") {
+				candidates = [
+					(basePath as NSString).appendingPathComponent(candidate)
+				]
+			} else {
+				candidates = [
+					(basePath as NSString).appendingPathComponent(candidate),
+					candidate
+				]
+			}
+
+			for path in candidates {
+				if ctx.fileExists(path) {
+					return path
+				}
+			}
+			return nil
+		}
+
+		private func splitPathAndLocation(_ rawPath: String) -> (path: String, line: Int?, column: Int?) {
+			let parts = rawPath.split(separator: ":").map(String.init)
+			guard parts.count >= 2 else { return (rawPath, nil, nil) }
+
+			if parts.count >= 3,
+			   let line = Int(parts[parts.count - 2]),
+			   let column = Int(parts[parts.count - 1]) {
+				let path = parts.dropLast(2).joined(separator: ":")
+				return (path, line, column)
+			}
+
+			if let last = parts.last, let line = Int(last) {
+				let path = parts.dropLast().joined(separator: ":")
+				return (path, line, nil)
+			}
+
+			return (rawPath, nil, nil)
+		}
+
 		private func postConnectionState(isLoading: Bool) {
 			guard let project, let paneId else { return }
 			NotificationCenter.default.post(
@@ -345,6 +457,33 @@ struct XTermTerminalView: NSViewRepresentable {
 					"paneId": paneId,
 					"isLoading": isLoading
 				]
+			)
+		}
+
+		private func postDisconnectedState(isDisconnected: Bool) {
+			guard let project, let paneId else { return }
+			NotificationCenter.default.post(
+				name: .belveTerminalDisconnected,
+				object: nil,
+				userInfo: [
+					"projectId": project.id,
+					"paneId": paneId,
+					"isDisconnected": isDisconnected
+				]
+			)
+		}
+
+		private func handlePTYExit(status: Int32) {
+			postConnectionState(isLoading: false)
+			guard let project else { return }
+			if project.isRemote {
+				postDisconnectedState(isDisconnected: true)
+			}
+			NSLog(
+				"[Belve] PTY exited for project=%@ pane=%@ status=%d",
+				project.name,
+				paneId ?? "nil",
+				status
 			)
 		}
 
@@ -384,9 +523,9 @@ struct XTermTerminalView: NSViewRepresentable {
 				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
 			case "e":
 				if shift {
-					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
-				} else {
 					NotificationCenter.default.post(name: .belveToggleFileTree, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
 				}
 			case "z":
 				if !shift {
@@ -403,6 +542,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		deinit {
 			flushTimer?.invalidate()
 			postConnectionState(isLoading: false)
+			postDisconnectedState(isDisconnected: false)
 			ptyService = nil  // PTYService deinit closes fd and kills process
 			NSLog("[Belve] Terminal coordinator deinit")
 		}

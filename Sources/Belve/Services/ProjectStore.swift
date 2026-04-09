@@ -8,6 +8,7 @@ class ProjectStore: ObservableObject {
 	@Published var projects: [Project] = []
 	@Published var selectedProject: Project?
 	@Published var showDevContainerBanner = false
+	@Published private var terminalReloadTokens: [UUID: Int] = [:]
 
 	init() {
 		loadProjects()
@@ -18,7 +19,12 @@ class ProjectStore: ObservableObject {
 	/// Reload the current project (re-create terminal, file tree, etc.)
 	/// Uses ID change to force SwiftUI view recreation without nil transition.
 	func reloadCurrentProject() {
-		guard let index = indexOfSelected else { return }
+		guard let projectId = selectedProject?.id else { return }
+		reloadProject(projectId)
+	}
+
+	func reloadProject(_ projectId: UUID) {
+		guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
 		let project = projects[index]
 
 		// Refresh project metadata without recreating terminals
@@ -26,9 +32,13 @@ class ProjectStore: ObservableObject {
 			fetchContainerImageName(sshHost: sshHost, remotePath: workspacePath)
 		}
 
-		// Refresh file tree
+		terminalReloadTokens[projectId, default: 0] += 1
 		objectWillChange.send()
 		NSLog("[Belve] Reloaded project: \(project.name)")
+	}
+
+	func terminalReloadToken(for projectId: UUID) -> Int {
+		terminalReloadTokens[projectId, default: 0]
 	}
 
 	// MARK: - Selection

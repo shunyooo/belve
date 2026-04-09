@@ -47,8 +47,10 @@ enum LauncherScriptGenerator {
 		    else
 		        /usr/bin/ssh $SSH_OPTS -t "$BELVE_SSH_HOST" "command -v tmux >/dev/null && { tmux has-session -t $TMUX_SESSION 2>/dev/null || tmux new-session -d -s $TMUX_SESSION; $TMUX_APPLY; exec tmux attach -t $TMUX_SESSION; } || exec \$SHELL -l"
 		    fi
-		    # SSH exited — fall through to local shell below
-		    echo "🔌 SSH disconnected. Local shell:"
+		    echo ""
+		    echo "🔌 SSH disconnected."
+		    echo "Reconnect from Belve when you're ready."
+		    exit 0
 		fi
 		# Local shell setup
 		export BELVE_SESSION=1

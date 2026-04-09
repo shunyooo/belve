@@ -10,7 +10,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 		let config = WKWebViewConfiguration()
 		config.userContentController.add(context.coordinator, name: "markdownHandler")
 
-		let webView = WKWebView(frame: .zero, configuration: config)
+		let webView = EditorWebView(frame: .zero, configuration: config)
 		webView.identifier = NSUserInterfaceItemIdentifier("BelveEditorWebView:\(projectId.uuidString)")
 		webView.setValue(false, forKey: "drawsBackground")
 		context.coordinator.webView = webView
