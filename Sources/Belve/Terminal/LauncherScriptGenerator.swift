@@ -187,44 +187,11 @@ enum LauncherScriptGenerator {
 		        # Single SSH command — no ControlMaster (avoids being killed when old PTY's master dies)
 		        DC_SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
 		        /usr/bin/ssh $DC_SSH_OPTS -tt "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && INFO=\$(devcontainer up --workspace-folder . --log-format json 2>/dev/null | tail -1) && CID=\$(printf '%s' \"\$INFO\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"containerId\",\"\"))') && RWS=\$(printf '%s' \"\$INFO\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"remoteWorkspaceFolder\",\"\"))') && exec docker exec -it -w \"\$RWS\" \"\$CID\" /bin/bash -c 'command -v tmux >/dev/null && { tmux -f /dev/null -L belve bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null; tmux -f /dev/null -L belve bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null; }; exec /bin/bash ./.belve-devcontainer-entry-${BELVE_PANE_INDEX:-0}.sh'"
-		    elif [ -n "$BELVE_REMOTE_PATH" ]; then
-		        /usr/bin/ssh $SSH_OPTS -tt "$BELVE_SSH_HOST" /bin/bash <<BELVE_REMOTE
-		stty -echo 2>/dev/null
-		export TERM=xterm-256color
-		export BELVE_PROJECT_ID='${BELVE_PROJECT_ID:-}'
-		export BELVE_PANE_INDEX='${BELVE_PANE_INDEX:-0}'
-		export BELVE_PANE_ID='${BELVE_PANE_ID:-}'
-		BELVE_SCRIPT_B64="$BELVE_SCRIPT_B64"
-		CLAUDE_SCRIPT_B64="$CLAUDE_SCRIPT_B64"
-		$(typeset -f decode_to_file)
-		$(typeset -f write_remote_belve_files)
-		$(typeset -f write_remote_bootstrap)
-		$(typeset -f belve_tmux)
-		$(typeset -f prepare_belve_tmux_session)
-		$(typeset -f begin_remote_log)
-		begin_remote_log
-		write_remote_belve_files
-		write_remote_bootstrap
-		cd "$BELVE_REMOTE_PATH" || exit 1
-		if command -v tmux >/dev/null 2>&1; then
-		    belve_tmux start-server 2>/dev/null || true
-		    belve_tmux set -s default-terminal xterm-256color 2>/dev/null
-		    belve_tmux has-session -t "$TMUX_SESSION" 2>/dev/null || belve_tmux new-session -d -s "$TMUX_SESSION" -c "$BELVE_REMOTE_PATH" "\$HOME/.belve/session-bootstrap.sh"
-		    prepare_belve_tmux_session "$TMUX_SESSION"
-		    belve_tmux set -t "$TMUX_SESSION" status off 2>/dev/null
-		    belve_tmux set -t "$TMUX_SESSION" prefix None 2>/dev/null
-		    belve_tmux set -t "$TMUX_SESSION" mouse on 2>/dev/null
-		    belve_tmux set -t "$TMUX_SESSION" escape-time 0 2>/dev/null
-		    belve_tmux setw -t "$TMUX_SESSION" pane-border-status off 2>/dev/null
-		    belve_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null
-		    belve_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null
-		    exec tmux -f /dev/null -L belve attach-session -d -t "$TMUX_SESSION"
-		fi
-		exec "\$HOME/.belve/session-bootstrap.sh"
-		BELVE_REMOTE
 		    else
-		        /usr/bin/ssh $SSH_OPTS -tt "$BELVE_SSH_HOST" /bin/bash <<BELVE_REMOTE
-		stty -echo 2>/dev/null
+		        # SSH (with or without remote path): upload script, then execute with TTY
+		        SSH_SCRIPT="/tmp/belve-ssh-${BELVE_PANE_INDEX:-0}.sh"
+		        /usr/bin/ssh -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$BELVE_SSH_HOST" "cat > $SSH_SCRIPT && chmod +x $SSH_SCRIPT" <<BELVE_REMOTE
+		#!/bin/bash
 		export TERM=xterm-256color
 		export BELVE_PROJECT_ID='${BELVE_PROJECT_ID:-}'
 		export BELVE_PANE_INDEX='${BELVE_PANE_INDEX:-0}'
@@ -236,14 +203,14 @@ enum LauncherScriptGenerator {
 		$(typeset -f write_remote_bootstrap)
 		$(typeset -f belve_tmux)
 		$(typeset -f prepare_belve_tmux_session)
-		$(typeset -f begin_remote_log)
-		begin_remote_log
 		write_remote_belve_files
 		write_remote_bootstrap
+		TMUX_CD="${BELVE_REMOTE_PATH:+"-c $BELVE_REMOTE_PATH"}"
+		[ -n "$BELVE_REMOTE_PATH" ] && cd "$BELVE_REMOTE_PATH"
 		if command -v tmux >/dev/null 2>&1; then
 		    belve_tmux start-server 2>/dev/null || true
 		    belve_tmux set -s default-terminal xterm-256color 2>/dev/null
-		    belve_tmux has-session -t "$TMUX_SESSION" 2>/dev/null || belve_tmux new-session -d -s "$TMUX_SESSION" "\$HOME/.belve/session-bootstrap.sh"
+		    belve_tmux has-session -t "$TMUX_SESSION" 2>/dev/null || belve_tmux new-session -d -s "$TMUX_SESSION" \$TMUX_CD "\$HOME/.belve/session-bootstrap.sh"
 		    prepare_belve_tmux_session "$TMUX_SESSION"
 		    belve_tmux set -t "$TMUX_SESSION" status off 2>/dev/null
 		    belve_tmux set -t "$TMUX_SESSION" prefix None 2>/dev/null
@@ -256,6 +223,9 @@ enum LauncherScriptGenerator {
 		fi
 		exec "\$HOME/.belve/session-bootstrap.sh"
 		BELVE_REMOTE
+		        [ $? -eq 0 ] || { echo "SSH setup failed"; exit 1; }
+		        DC_SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
+		        /usr/bin/ssh $DC_SSH_OPTS -tt "$BELVE_SSH_HOST" "exec $SSH_SCRIPT"
 		    fi
 		    echo ""
 		    echo "🔌 SSH disconnected."
