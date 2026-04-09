@@ -151,8 +151,8 @@ enum LauncherScriptGenerator {
 		    belve_tmux set -t "$TMUX_SESSION" mouse on 2>/dev/null
 		    belve_tmux set -t "$TMUX_SESSION" escape-time 0 2>/dev/null
 		    belve_tmux setw -t "$TMUX_SESSION" pane-border-status off 2>/dev/null
-		    belve_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null
-		    belve_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null
+		    belve_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null
+		    belve_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null
 		    exec tmux -f /dev/null -L belve attach-session -d -t "$TMUX_SESSION"
 		fi
 		exec "\$HOME/.belve/session-bootstrap.sh"
@@ -186,7 +186,7 @@ enum LauncherScriptGenerator {
 		    if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_REMOTE_PATH" ]; then
 		        # Single SSH command — no ControlMaster (avoids being killed when old PTY's master dies)
 		        DC_SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
-		        /usr/bin/ssh $DC_SSH_OPTS -tt "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && INFO=\$(devcontainer up --workspace-folder . --log-format json 2>/dev/null | tail -1) && CID=\$(printf '%s' \"\$INFO\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"containerId\",\"\"))') && RWS=\$(printf '%s' \"\$INFO\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"remoteWorkspaceFolder\",\"\"))') && exec docker exec -it -w \"\$RWS\" \"\$CID\" /bin/bash -c 'command -v tmux >/dev/null && { tmux -f /dev/null -L belve bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null; tmux -f /dev/null -L belve bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null; }; exec /bin/bash ./.belve-devcontainer-entry-${BELVE_PANE_INDEX:-0}.sh'"
+		        /usr/bin/ssh $DC_SSH_OPTS -tt "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && INFO=\$(devcontainer up --workspace-folder . --log-format json 2>/dev/null | tail -1) && CID=\$(printf '%s' \"\$INFO\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"containerId\",\"\"))') && RWS=\$(printf '%s' \"\$INFO\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"remoteWorkspaceFolder\",\"\"))') && exec docker exec -it -w \"\$RWS\" \"\$CID\" /bin/bash -c 'command -v tmux >/dev/null && { tmux -f /dev/null -L belve bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null; tmux -f /dev/null -L belve bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null; }; exec /bin/bash ./.belve-devcontainer-entry-${BELVE_PANE_INDEX:-0}.sh'"
 		    else
 		        # SSH (with or without remote path): upload script, then execute with TTY
 		        SSH_SCRIPT="/tmp/belve-ssh-${BELVE_PANE_INDEX:-0}.sh"
@@ -217,8 +217,8 @@ enum LauncherScriptGenerator {
 		    belve_tmux set -t "$TMUX_SESSION" mouse on 2>/dev/null
 		    belve_tmux set -t "$TMUX_SESSION" escape-time 0 2>/dev/null
 		    belve_tmux setw -t "$TMUX_SESSION" pane-border-status off 2>/dev/null
-		    belve_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null
-		    belve_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection 2>/dev/null
+		    belve_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null
+		    belve_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null
 		    exec tmux -f /dev/null -L belve attach-session -d -t "$TMUX_SESSION"
 		fi
 		exec "\$HOME/.belve/session-bootstrap.sh"
