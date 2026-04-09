@@ -122,21 +122,19 @@ class ProjectStore: ObservableObject {
 		projects[index].name = (path as NSString).lastPathComponent
 		saveProjects()
 		selectedProject = projects[index]
-		// Send cd to active terminal
-		let cdPath = path.hasPrefix("~") ? path : "'\(path.replacingOccurrences(of: "'", with: "'\\''"))'"
-		// Small delay to let palette close, then send cd and refocus terminal
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
-			sendToActiveTerminal(" cd \(cdPath)\n")
-			refocusTerminal()
-		}
+		// Reload project to reinitialize terminal with new path
+		reloadProject(projects[index].id)
 		NSLog("[Belve] Opened folder: \(path)")
 	}
 
-	/// Send text to the currently focused terminal (via WKWebView PTY bridge)
+	/// Send text as input to the currently focused terminal's PTY
 	func sendToActiveTerminal(_ text: String) {
 		guard let webView = findTerminalWebView() else { return }
 		let b64 = Data(text.utf8).base64EncodedString()
-		webView.evaluateJavaScript("terminalWrite('\(b64)')", completionHandler: nil)
+		webView.evaluateJavaScript(
+			"window.webkit.messageHandlers.terminalHandler.postMessage({type:'input',data:'\(b64)'})",
+			completionHandler: nil
+		)
 	}
 
 	/// Refocus the terminal view after palette/dialog closes

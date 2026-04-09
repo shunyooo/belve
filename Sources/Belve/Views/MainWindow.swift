@@ -87,7 +87,7 @@ struct MainWindow: View {
 			projectShortcuts
 				.onChange(of: projectStore.selectedProject) {
 					openFile = nil
-					DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+					DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
 						projectStore.refocusTerminal()
 					}
 				}
