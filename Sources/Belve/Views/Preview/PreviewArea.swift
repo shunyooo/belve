@@ -3,6 +3,8 @@ import SwiftUI
 struct OpenFile: Equatable {
 	let path: String
 	let content: String
+	let line: Int?
+	let column: Int?
 }
 
 private struct FileSearchResult: Identifiable, Hashable {
@@ -107,7 +109,11 @@ struct PreviewArea: View {
 			guard let projectId = notif.userInfo?["projectId"] as? UUID,
 				  projectId == project.id,
 				  let path = notif.userInfo?["path"] as? String else { return }
-			loadFile(at: path)
+			loadFile(
+				at: path,
+				line: notif.userInfo?["line"] as? Int,
+				column: notif.userInfo?["column"] as? Int
+			)
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belvePresentFileSearch)) { notif in
 			if let projectId = notif.userInfo?["projectId"] as? UUID, projectId != project.id {
@@ -169,7 +175,11 @@ struct PreviewArea: View {
 						CodeEditorView(
 							projectId: project.id,
 							filename: file.path,
-							content: file.content
+							content: file.content,
+							line: file.line,
+							column: file.column,
+							onDefinitionRequest: handleDefinitionRequest,
+							onDefinitionHoverRequest: handleDefinitionHoverRequest
 						) { newContent in
 							editedContent = newContent
 							isDirty = newContent != file.content
@@ -323,7 +333,7 @@ struct PreviewArea: View {
 
 	private func open(_ result: FileSearchResult) {
 		closeFileSearch()
-		loadFile(at: result.path)
+		loadFile(at: result.path, line: result.lineNumber)
 	}
 
 	private func scheduleFileSearch() {
@@ -391,7 +401,7 @@ struct PreviewArea: View {
 		return relative.isEmpty ? (path as NSString).lastPathComponent : relative
 	}
 
-	private func loadFile(at path: String) {
+	private func loadFile(at path: String, line: Int? = nil, column: Int? = nil) {
 		NSLog("[Belve] loadFile: \(path)")
 		let fileType = FileType.detect(path: path)
 
@@ -399,7 +409,7 @@ struct PreviewArea: View {
 			DispatchQueue.main.async {
 				loadingPath = nil
 				postFileLoadingState(path: path, isLoading: false)
-				openFile = OpenFile(path: path, content: "")
+				openFile = OpenFile(path: path, content: "", line: line, column: column)
 			}
 			return
 		}
@@ -413,7 +423,7 @@ struct PreviewArea: View {
 				DispatchQueue.main.async {
 					loadingPath = nil
 					postFileLoadingState(path: path, isLoading: false)
-					openFile = OpenFile(path: path, content: content)
+					openFile = OpenFile(path: path, content: content, line: line, column: column)
 				}
 			} else {
 				NSLog("[Belve] Failed to read file: \(path)")
@@ -446,10 +456,48 @@ struct PreviewArea: View {
 			let success = ctx.writeFile(file.path, content: editedContent)
 			DispatchQueue.main.async {
 				if success {
-					openFile = OpenFile(path: file.path, content: editedContent)
+					openFile = OpenFile(
+						path: file.path,
+						content: editedContent,
+						line: file.line,
+						column: file.column
+					)
 					isDirty = false
 				}
 			}
+		}
+	}
+
+	private func handleDefinitionRequest(_ request: EditorDefinitionRequest) {
+		let ctx = project.executionContext
+		DispatchQueue.global(qos: .userInitiated).async {
+			guard let match = ctx.resolveDefinition(
+				rootPath: rootPath,
+				filePath: request.filename,
+				symbol: request.symbol,
+				language: request.language,
+				line: request.line,
+				column: request.column
+			) else { return }
+
+			DispatchQueue.main.async {
+				loadFile(at: match.path, line: match.lineNumber, column: match.column)
+			}
+		}
+	}
+
+	private func handleDefinitionHoverRequest(_ request: EditorDefinitionRequest, completion: @escaping (Bool) -> Void) {
+		let ctx = project.executionContext
+		DispatchQueue.global(qos: .userInitiated).async {
+			let canJump = ctx.resolveDefinition(
+				rootPath: rootPath,
+				filePath: request.filename,
+				symbol: request.symbol,
+				language: request.language,
+				line: request.line,
+				column: request.column
+			) != nil
+			completion(canJump)
 		}
 	}
 }

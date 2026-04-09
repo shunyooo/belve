@@ -512,7 +512,8 @@ struct MainWindow: View {
 			object: nil,
 			userInfo: [
 				"projectId": project.id,
-				"path": result.path
+				"path": result.path,
+				"line": result.lineNumber as Any
 			]
 		)
 	}

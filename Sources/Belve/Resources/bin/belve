@@ -10,12 +10,26 @@ PANE_ID="${BELVE_PANE_ID:-unknown}"
 
 EVENTS_FILE="/tmp/belve-agent-events"
 
+json_escape() {
+    local value="${1:-}"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '%s' "$value"
+}
+
 emit_event() {
     local status="$1"
     local message="$2"
+    local escaped_pane_id escaped_status escaped_message
+    escaped_pane_id="$(json_escape "$PANE_ID")"
+    escaped_status="$(json_escape "$status")"
+    escaped_message="$(json_escape "$message")"
     # Write JSON event to file (monitored by Belve app)
     printf '{"paneId":"%s","status":"%s","message":"%s","timestamp":%d}\n' \
-        "$PANE_ID" "$status" "$message" "$(date +%s)" >> "$EVENTS_FILE"
+        "$escaped_pane_id" "$escaped_status" "$escaped_message" "$(date +%s)" >> "$EVENTS_FILE"
     # Also try OSC to /dev/tty (works when tty is available)
     printf '\033]9;BELVE:%s:%s:%s\007' "$PANE_ID" "$status" "$message" > /dev/tty 2>/dev/null || true
 }
@@ -40,7 +54,15 @@ case "${1:-}" in
                         let d="";
                         process.stdin.on("data",c=>d+=c);
                         process.stdin.on("end",()=>{
-                            try{const j=JSON.parse(d);process.stdout.write(j.notification_type||"input needed")}
+                            try{
+                                const j=JSON.parse(d);
+                                process.stdout.write(
+                                    j.message ||
+                                    j.notification_type ||
+                                    j.title ||
+                                    "input needed"
+                                )
+                            }
                             catch{process.stdout.write("input needed")}
                         })
                     ' 2>/dev/null) || local_msg="input needed"

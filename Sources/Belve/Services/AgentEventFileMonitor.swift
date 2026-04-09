@@ -6,8 +6,10 @@ class AgentEventFileMonitor {
 	private let filePath = "/tmp/belve-agent-events"
 	private var fileHandle: FileHandle?
 	private var source: DispatchSourceFileSystemObject?
+	private var pollTimer: DispatchSourceTimer?
 	private var fileOffset: UInt64 = 0
 	private var partialLineBuffer = ""
+	private let queue = DispatchQueue(label: "com.belve.agent-event-monitor", qos: .utility)
 
 	var onEvent: ((String, String, String) -> Void)? // (paneId, status, message)
 
@@ -33,7 +35,7 @@ class AgentEventFileMonitor {
 		let src = DispatchSource.makeFileSystemObjectSource(
 			fileDescriptor: fd,
 			eventMask: [.write, .extend],
-			queue: .global(qos: .utility)
+			queue: queue
 		)
 		src.setEventHandler { [weak self] in
 			self?.readNewEvents()
@@ -43,6 +45,15 @@ class AgentEventFileMonitor {
 		}
 		src.resume()
 		self.source = src
+
+		// VNODE notifications can occasionally be dropped; keep a light poller as fallback.
+		let timer = DispatchSource.makeTimerSource(queue: queue)
+		timer.schedule(deadline: .now() + .seconds(1), repeating: .seconds(1))
+		timer.setEventHandler { [weak self] in
+			self?.readNewEvents()
+		}
+		timer.resume()
+		self.pollTimer = timer
 		NSLog("[Belve] AgentEventFileMonitor: watching \(filePath)")
 	}
 
@@ -98,6 +109,8 @@ class AgentEventFileMonitor {
 	}
 
 	func stop() {
+		pollTimer?.cancel()
+		pollTimer = nil
 		source?.cancel()
 		source = nil
 		fileHandle = nil

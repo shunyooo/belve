@@ -14,6 +14,12 @@ enum ExecutionContext: Codable, Hashable {
 		let matchedFilename: Bool
 	}
 
+	struct DefinitionMatch {
+		let path: String
+		let lineNumber: Int?
+		let column: Int?
+	}
+
 	private struct CommandResult {
 		let output: String
 		let status: Int32
@@ -222,6 +228,33 @@ enum ExecutionContext: Codable, Hashable {
 		return []
 	}
 
+	func resolveDefinition(
+		rootPath: String,
+		filePath: String,
+		symbol: String,
+		language: String,
+		line: Int,
+		column: Int
+	) -> DefinitionMatch? {
+		let trimmedSymbol = symbol.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !trimmedSymbol.isEmpty else { return nil }
+
+		if let sameFileMatch = resolveDefinitionInCurrentFile(
+			filePath: filePath,
+			symbol: trimmedSymbol,
+			language: language,
+			line: line
+		) {
+			return sameFileMatch
+		}
+
+		return resolveDefinitionWithRipgrep(
+			rootPath: rootPath,
+			symbol: trimmedSymbol,
+			language: language
+		)
+	}
+
 	/// The home/default directory for this context.
 	var homeDirectory: String {
 		switch self {
@@ -354,5 +387,134 @@ enum ExecutionContext: Codable, Hashable {
 		if path == "~" { return "~" }
 		if path == "." { return "." }
 		return "'\(path.replacingOccurrences(of: "'", with: "'\\''"))'"
+	}
+
+	private func resolveDefinitionInCurrentFile(
+		filePath: String,
+		symbol: String,
+		language: String,
+		line: Int
+	) -> DefinitionMatch? {
+		guard let content = readFile(filePath) else { return nil }
+		let lines = content.components(separatedBy: .newlines)
+		guard !lines.isEmpty else { return nil }
+
+		let searchEnd = min(max(line - 1, 0), lines.count - 1)
+		let patterns = localDefinitionPatterns(for: symbol, language: language)
+
+		for lineIndex in stride(from: searchEnd, through: 0, by: -1) {
+			let text = lines[lineIndex]
+			for regex in patterns {
+				if let match = text.range(of: regex, options: .regularExpression) {
+					let prefix = text[..<match.upperBound]
+					let column = max(prefix.count - symbol.count + 1, 1)
+					return DefinitionMatch(
+						path: filePath,
+						lineNumber: lineIndex + 1,
+						column: column
+					)
+				}
+			}
+		}
+
+		return nil
+	}
+
+	private func resolveDefinitionWithRipgrep(
+		rootPath: String,
+		symbol: String,
+		language: String
+	) -> DefinitionMatch? {
+		let patterns = projectDefinitionPatterns(for: symbol, language: language)
+		guard !patterns.isEmpty else { return nil }
+
+		let exclusions = [
+			"!node_modules",
+			"!.git",
+			"!.build",
+			"!dist",
+			"!build"
+		]
+			.map { "-g \($0)" }
+			.joined(separator: " ")
+
+		let patternArgs = patterns
+			.map { "-e \(shellQuote($0))" }
+			.joined(separator: " ")
+
+		let command = """
+		cd \(shellQuote(rootPath)) 2>/dev/null && command -v rg >/dev/null 2>&1 && rg -n --color never \(exclusions) \(patternArgs) .
+		"""
+
+		guard let output = run(command) else { return nil }
+
+		for line in output.components(separatedBy: "\n").filter({ !$0.isEmpty }) {
+			let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+			guard parts.count >= 3 else { continue }
+			let rawPath = String(parts[0]).replacingOccurrences(of: "./", with: "")
+			guard let lineNumber = Int(parts[1]) else { continue }
+			let snippet = String(parts[2])
+			let fullPath = resolveSearchPath(rawPath, rootPath: rootPath)
+			return DefinitionMatch(
+				path: fullPath,
+				lineNumber: lineNumber,
+				column: definitionColumn(in: snippet, symbol: symbol)
+			)
+		}
+
+		return nil
+	}
+
+	private func localDefinitionPatterns(for symbol: String, language: String) -> [String] {
+		let escaped = regexQuote(symbol)
+		switch language {
+		case "python":
+			return [
+				#"^\s*(async\s+def|def)\s+\#(escaped)\b"#,
+				#"^\s*class\s+\#(escaped)\b"#,
+				#"^\s*\#(escaped)\s*="#
+			]
+		case "javascript", "jsx", "typescript", "tsx":
+			return [
+				#"^\s*(export\s+)?(async\s+)?function\s+\#(escaped)\b"#,
+				#"^\s*(export\s+)?class\s+\#(escaped)\b"#,
+				#"^\s*(export\s+)?interface\s+\#(escaped)\b"#,
+				#"^\s*(export\s+)?type\s+\#(escaped)\b"#,
+				#"^\s*(export\s+)?(const|let|var)\s+\#(escaped)\b"#,
+				#"^\s*\#(escaped)\s*="#
+			]
+		default:
+			return [#"^\s*\#(escaped)\s*="#]
+		}
+	}
+
+	private func projectDefinitionPatterns(for symbol: String, language: String) -> [String] {
+		let escaped = regexQuote(symbol)
+		switch language {
+		case "python":
+			return [
+				#"^\s*(async\s+def|def)\s+\#(escaped)\b"#,
+				#"^\s*class\s+\#(escaped)\b"#
+			]
+		case "javascript", "jsx", "typescript", "tsx":
+			return [
+				#"^\s*(export\s+)?(async\s+)?function\s+\#(escaped)\b"#,
+				#"^\s*(export\s+)?class\s+\#(escaped)\b"#,
+				#"^\s*(export\s+)?interface\s+\#(escaped)\b"#,
+				#"^\s*(export\s+)?type\s+\#(escaped)\b"#,
+				#"^\s*(export\s+)?(const|let|var)\s+\#(escaped)\b"#
+			]
+		default:
+			return []
+		}
+	}
+
+	private func definitionColumn(in line: String, symbol: String) -> Int? {
+		guard let range = line.range(of: symbol) else { return nil }
+		return line.distance(from: line.startIndex, to: range.lowerBound) + 1
+	}
+
+	private func regexQuote(_ text: String) -> String {
+		NSRegularExpression.escapedPattern(for: text)
 	}
 }

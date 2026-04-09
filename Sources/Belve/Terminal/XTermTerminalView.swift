@@ -385,14 +385,17 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		private func openPathFromTerminal(_ rawPath: String) {
 			guard let project else { return }
-			let resolved = resolveTerminalPath(rawPath, in: project)
+			let parts = splitPathAndLocation(rawPath)
+			let resolved = resolveTerminalPath(parts.path, in: project)
 			guard let resolved else { return }
 			NotificationCenter.default.post(
 				name: .belveOpenFileFromTerminal,
 				object: nil,
 				userInfo: [
 					"projectId": project.id,
-					"path": resolved
+					"path": resolved,
+					"line": parts.line as Any,
+					"column": parts.column as Any
 				]
 			)
 		}
@@ -476,6 +479,8 @@ struct XTermTerminalView: NSViewRepresentable {
 		private func handlePTYExit(status: Int32) {
 			postConnectionState(isLoading: false)
 			guard let project else { return }
+			// Skip if our webView is no longer in the view hierarchy (stale coordinator from reload)
+			guard webView?.window != nil else { return }
 			if project.isRemote {
 				postDisconnectedState(isDisconnected: true)
 			}
