@@ -313,6 +313,25 @@ enum LauncherScriptGenerator {
 		    BELVE_SHELL="\#(shell) -l -i" ;;
 		esac
 
+		# Use belve-persist for local session persistence
+		PERSIST_BIN="\#(belveBin)/belve-persist-darwin-arm64"
+		if [ "${BELVE_PANE_INDEX:-0}" = "0" ]; then
+		    LOCAL_SESSION="belve-${PROJ_SHORT}"
+		else
+		    LOCAL_SESSION="belve-${PROJ_SHORT}-${BELVE_PANE_INDEX}"
+		fi
+		PERSIST_SOCK="\#(tmpDir)/sessions/${LOCAL_SESSION}.sock"
+		mkdir -p "\#(tmpDir)/sessions"
+
+		if [ -x "$PERSIST_BIN" ]; then
+		    # Attach if session exists, otherwise create
+		    if [ -S "$PERSIST_SOCK" ]; then
+		        exec "$PERSIST_BIN" -socket "$PERSIST_SOCK"
+		    fi
+		    rm -f "$PERSIST_SOCK"
+		    exec "$PERSIST_BIN" -socket "$PERSIST_SOCK" -command "$BELVE_SHELL"
+		fi
+		# Fallback: no belve-persist
 		exec sh -c "$BELVE_SHELL"
 		"""#.write(toFile: launcher, atomically: true, encoding: .utf8)
 		try? FileManager.default.setAttributes(

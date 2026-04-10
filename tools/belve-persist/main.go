@@ -44,7 +44,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	runMaster(*socketPath, *command, flag.Args())
+	// If extra args after flags, they become argv for the command.
+	// If -command contains spaces and no extra args, run via sh -c.
+	args := flag.Args()
+	if len(args) == 0 {
+		// Run command via shell so "sh -c ..." style works
+		runMaster(*socketPath, "/bin/sh", []string{"-c", *command})
+	} else {
+		runMaster(*socketPath, *command, args)
+	}
 }
 
 func runMaster(socketPath, command string, args []string) {
