@@ -34,7 +34,14 @@ class PTYService {
 		var slave: Int32 = 0
 
 		var size = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
-		guard openpty(&master, &slave, nil, nil, &size) == 0 else {
+
+		// Configure PTY in raw mode: terminal emulator (xterm.js) handles
+		// all rendering, so the PTY should not process output (OPOST) or echo.
+		// This prevents double CR/LF when belve-persist stacks a second PTY.
+		var rawTermios = termios()
+		cfmakeraw(&rawTermios)
+
+		guard openpty(&master, &slave, nil, &rawTermios, &size) == 0 else {
 			throw PTYError.openptyFailed
 		}
 

@@ -108,10 +108,6 @@ func runMaster(socketPath, command string, args []string) {
 	ttyFile.Close()
 	ptyFile := os.NewFile(ptyFd, "pty")
 
-	// Disable OPOST on inner PTY to prevent double CR/LF conversion
-	// when another PTY (docker exec -it, SSH) is below us.
-	disableOutputProcessing(int(ptyFd))
-
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "listen: %v\n", err)
