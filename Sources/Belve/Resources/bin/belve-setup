@@ -1,0 +1,58 @@
+#!/bin/bash
+# belve-setup: idempotent remote host setup
+# Usage: belve-setup [--devcontainer] [--workspace PATH] [--project-short ID]
+#
+# Called by Belve app via: ssh host ~/.belve/bin/belve-setup [args]
+# All scripts (belve, claude, belve-connect, session-bootstrap.sh)
+# are already in ~/.belve/ via SCP before this runs.
+
+set -euo pipefail
+
+DEVCONTAINER=0
+WORKSPACE=""
+PROJ_SHORT=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --devcontainer) DEVCONTAINER=1; shift ;;
+        --workspace) WORKSPACE="$2"; shift 2 ;;
+        --project-short) PROJ_SHORT="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+
+# Ensure directories
+mkdir -p "$HOME/.belve/bin" "$HOME/.belve/sessions" "$HOME/.belve/zdotdir"
+
+# Copy belve-persist from staging location (SCP'd separately due to arch detection)
+if [ -f /tmp/belve-persist-binary ]; then
+    cp /tmp/belve-persist-binary "$HOME/.belve/bin/belve-persist"
+    chmod +x "$HOME/.belve/bin/belve-persist"
+fi
+
+# Ensure all bin scripts are executable
+chmod +x "$HOME/.belve/bin/"* 2>/dev/null || true
+chmod +x "$HOME/.belve/session-bootstrap.sh" 2>/dev/null || true
+
+if [ "$DEVCONTAINER" = "1" ] && [ -n "$WORKSPACE" ]; then
+    # Resolve ~ in workspace path
+    [[ "${WORKSPACE:0:2}" == "~/" ]] && WORKSPACE="$HOME/${WORKSPACE:2}"
+
+    mkdir -p "$HOME/.belve/projects"
+    cd "$WORKSPACE" || exit 1
+
+    INFO=$(devcontainer up --workspace-folder . --log-format json 2>/dev/null | tail -1)
+    CID=$(printf '%s' "$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("containerId",""))')
+    RWS=$(printf '%s' "$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("remoteWorkspaceFolder",""))')
+    [ -n "$CID" ] || exit 1
+
+    printf 'CID=%s\nRWS=%s\n' "$CID" "$RWS" > "$HOME/.belve/projects/${PROJ_SHORT}.env"
+
+    # Deploy scripts into container via docker cp
+    docker exec "$CID" mkdir -p /root/.belve/bin /root/.belve/sessions /root/.belve/zdotdir 2>/dev/null
+    docker cp "$HOME/.belve/bin/belve" "$CID:/root/.belve/bin/belve" 2>/dev/null
+    docker cp "$HOME/.belve/bin/claude" "$CID:/root/.belve/bin/claude" 2>/dev/null
+    docker cp "$HOME/.belve/bin/belve-persist" "$CID:/root/.belve/bin/belve-persist" 2>/dev/null
+    docker cp "$HOME/.belve/session-bootstrap.sh" "$CID:/root/.belve/session-bootstrap.sh" 2>/dev/null
+    docker exec "$CID" chmod +x /root/.belve/bin/* /root/.belve/session-bootstrap.sh 2>/dev/null || true
+fi

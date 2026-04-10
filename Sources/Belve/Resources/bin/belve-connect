@@ -1,0 +1,78 @@
+#!/bin/bash
+# belve-connect: attach or create a belve-persist session
+# Usage: belve-connect --session NAME --cols N --rows N [--devcontainer --project-short ID]
+#        [--workdir PATH] [--project-id UUID] [--pane-index N] [--pane-id ID]
+
+set -euo pipefail
+
+SESSION_NAME=""
+COLS=80
+ROWS=24
+DEVCONTAINER=0
+PROJ_SHORT=""
+WORKDIR=""
+PROJECT_ID=""
+PANE_INDEX=0
+PANE_ID=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --session) SESSION_NAME="$2"; shift 2 ;;
+        --cols) COLS="$2"; shift 2 ;;
+        --rows) ROWS="$2"; shift 2 ;;
+        --devcontainer) DEVCONTAINER=1; shift ;;
+        --project-short) PROJ_SHORT="$2"; shift 2 ;;
+        --workdir) WORKDIR="$2"; shift 2 ;;
+        --project-id) PROJECT_ID="$2"; shift 2 ;;
+        --pane-index) PANE_INDEX="$2"; shift 2 ;;
+        --pane-id) PANE_ID="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+
+[ -n "$SESSION_NAME" ] || { echo "belve-connect: --session required" >&2; exit 1; }
+
+PERSIST="$HOME/.belve/bin/belve-persist"
+SOCK="$HOME/.belve/sessions/${SESSION_NAME}.sock"
+mkdir -p "$HOME/.belve/sessions"
+
+# Export env vars for session-bootstrap.sh to inherit
+export BELVE_SESSION=1
+export BELVE_PROJECT_ID="$PROJECT_ID"
+export BELVE_PANE_INDEX="$PANE_INDEX"
+export BELVE_PANE_ID="$PANE_ID"
+export TERM=xterm-256color
+
+if [ "$DEVCONTAINER" = "1" ] && [ -n "$PROJ_SHORT" ]; then
+    # Source cached container info
+    . "$HOME/.belve/projects/${PROJ_SHORT}.env"
+
+    # Try attach if session socket exists (non-exec so we can fallback)
+    if [ -S "$SOCK" ]; then
+        "$PERSIST" -socket "$SOCK" && exit 0
+        rm -f "$SOCK"  # Stale socket
+    fi
+
+    # Create new session: persist on HOST, docker exec as child
+    exec "$PERSIST" -socket "$SOCK" -cols "$COLS" -rows "$ROWS" \
+        -command docker exec -it -w "$RWS" \
+        -e BELVE_SESSION=1 \
+        -e "BELVE_PROJECT_ID=$PROJECT_ID" \
+        -e "BELVE_PANE_INDEX=$PANE_INDEX" \
+        -e "BELVE_PANE_ID=$PANE_ID" \
+        -e TERM=xterm-256color \
+        "$CID" /root/.belve/session-bootstrap.sh
+else
+    # Plain SSH: persist on HOST, bootstrap as child
+    [ -n "$WORKDIR" ] && cd "$WORKDIR" 2>/dev/null || true
+
+    # Try attach if session socket exists (non-exec so we can fallback)
+    if [ -S "$SOCK" ]; then
+        "$PERSIST" -socket "$SOCK" && exit 0
+        rm -f "$SOCK"  # Stale socket
+    fi
+
+    # Create new session
+    exec "$PERSIST" -socket "$SOCK" -cols "$COLS" -rows "$ROWS" \
+        -command "$HOME/.belve/session-bootstrap.sh"
+fi

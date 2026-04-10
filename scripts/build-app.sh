@@ -47,6 +47,9 @@ fi
 mkdir -p Belve.app/Contents/Resources/bin
 cp Sources/Belve/Resources/bin/belve Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp Sources/Belve/Resources/bin/claude Belve.app/Contents/Resources/bin/ 2>/dev/null || true
+cp Sources/Belve/Resources/bin/belve-setup Belve.app/Contents/Resources/bin/ 2>/dev/null || true
+cp Sources/Belve/Resources/bin/belve-connect Belve.app/Contents/Resources/bin/ 2>/dev/null || true
+cp Sources/Belve/Resources/bin/session-bootstrap.sh Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp "$PERSIST_DIR/belve-persist-linux-amd64" Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp "$PERSIST_DIR/belve-persist-linux-arm64" Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp "$PERSIST_DIR/belve-persist-darwin-arm64" Belve.app/Contents/Resources/bin/ 2>/dev/null || true
