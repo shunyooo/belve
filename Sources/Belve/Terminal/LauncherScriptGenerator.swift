@@ -180,7 +180,7 @@ enum LauncherScriptGenerator {
 		        # DevContainer: belve-persist runs on HOST, spawns docker exec as child.
 		        # This avoids Docker's process lifecycle issues (docker exec kills processes on disconnect).
 		        # Upload setup + persist script to host
-		        SSH_SCRIPT="/tmp/belve-ssh-${BELVE_PANE_INDEX:-0}.sh"
+		        SSH_SCRIPT="/tmp/belve-ssh-${PROJ_SHORT}-${BELVE_PANE_INDEX:-0}.sh"
 		        /usr/bin/ssh -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$BELVE_SSH_HOST" "cat > $SSH_SCRIPT && chmod +x $SSH_SCRIPT" <<BELVE_DC
 		#!/bin/bash
 		export TERM=xterm-256color
@@ -241,7 +241,7 @@ enum LauncherScriptGenerator {
 		        /usr/bin/ssh $DC_SSH_OPTS -tt "$BELVE_SSH_HOST" "exec $SSH_SCRIPT"
 		    else
 		        # SSH: upload script with belve-persist integration, then execute
-		        SSH_SCRIPT="/tmp/belve-ssh-${BELVE_PANE_INDEX:-0}.sh"
+		        SSH_SCRIPT="/tmp/belve-ssh-${PROJ_SHORT}-${BELVE_PANE_INDEX:-0}.sh"
 		        /usr/bin/ssh -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$BELVE_SSH_HOST" "cat > $SSH_SCRIPT && chmod +x $SSH_SCRIPT" <<BELVE_REMOTE
 		#!/bin/bash
 		export TERM=xterm-256color
