@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 )
 
 const (
@@ -27,11 +28,23 @@ const (
 func main() {
 	socketPath := flag.String("socket", "", "Unix socket path")
 	command := flag.String("command", "", "command to run (creates session)")
+	daemon := flag.Bool("daemon", false, "run as daemon master (internal)")
 	flag.Parse()
 
 	if *socketPath == "" {
 		fmt.Fprintln(os.Stderr, "usage: belve-persist -socket <path> [-command <cmd> [args...]]")
 		os.Exit(1)
+	}
+
+	// Internal: run as daemon master
+	if *daemon && *command != "" {
+		args := flag.Args()
+		if len(args) == 0 {
+			runMaster(*socketPath, "/bin/sh", []string{"-c", *command})
+		} else {
+			runMaster(*socketPath, *command, args)
+		}
+		return
 	}
 
 	// Try attach to existing session
@@ -44,15 +57,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	// If extra args after flags, they become argv for the command.
-	// If -command contains spaces and no extra args, run via sh -c.
+	// Spawn master as background daemon, then attach as client
 	args := flag.Args()
+	var cmdArgs []string
 	if len(args) == 0 {
-		// Run command via shell so "sh -c ..." style works
-		runMaster(*socketPath, "/bin/sh", []string{"-c", *command})
+		cmdArgs = []string{"/bin/sh", "-c", *command}
 	} else {
-		runMaster(*socketPath, *command, args)
+		cmdArgs = append([]string{*command}, args...)
 	}
+	spawnDaemon(*socketPath, cmdArgs)
+
+	// Wait for socket, then attach
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if tryAttach(*socketPath) {
+			return
+		}
+	}
+	fmt.Fprintln(os.Stderr, "timeout waiting for session")
+	os.Exit(1)
 }
 
 func runMaster(socketPath, command string, args []string) {
@@ -84,6 +107,10 @@ func runMaster(socketPath, command string, args []string) {
 	}
 	ttyFile.Close()
 	ptyFile := os.NewFile(ptyFd, "pty")
+
+	// Disable OPOST on inner PTY to prevent double CR/LF conversion
+	// when another PTY (docker exec -it, SSH) is below us.
+	disableOutputProcessing(int(ptyFd))
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -176,39 +203,34 @@ func runMaster(socketPath, command string, args []string) {
 		}
 	}()
 
-	// Auto-attach: stdin → PTY directly
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if n > 0 {
-				ptyFile.Write(buf[:n])
-			}
-			if err != nil {
-				break // stdin closed = SSH/docker disconnected
-			}
-		}
-	}()
+	// Wait for child — daemon stays alive until child exits
+	cmd.Wait()
+	listener.Close()
+	os.Remove(socketPath)
+}
 
-	// Set initial window size
-	if cols, rows, err := getTerminalSize(int(os.Stdin.Fd())); err == nil {
-		setPtySize(ptyFd, cols, rows)
+// spawnDaemon starts the master as a background process.
+func spawnDaemon(socketPath string, cmdArgs []string) {
+	selfPath := os.Args[0]
+	// Use -daemon flag to run master directly
+	daemonArgs := []string{selfPath, "-daemon", "-socket", socketPath, "-command", cmdArgs[0]}
+	if len(cmdArgs) > 1 {
+		daemonArgs = append(daemonArgs, "--")
+		daemonArgs = append(daemonArgs, cmdArgs[1:]...)
 	}
 
-	// Handle SIGWINCH for auto-attach
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGWINCH)
-	go func() {
-		for range sigCh {
-			if cols, rows, err := getTerminalSize(int(os.Stdin.Fd())); err == nil {
-				setPtySize(ptyFd, cols, rows)
-			}
-		}
-	}()
+	cmd := exec.Command(daemonArgs[0], daemonArgs[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Env = os.Environ()
 
-	// Wait for child — keeps master alive as daemon after disconnect
-	cmd.Wait()
-	os.Remove(socketPath)
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
+		os.Exit(1)
+	}
+	cmd.Process.Release()
 }
 
 func tryAttach(socketPath string) bool {

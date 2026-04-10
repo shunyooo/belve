@@ -36,6 +36,17 @@ func restoreTerminal(fd int, state *termState) {
 	syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSETA, uintptr(unsafe.Pointer(&state.termios)), 0, 0, 0)
 }
 
+// disableOutputProcessing disables OPOST on a terminal fd to prevent
+// double CR/LF conversion when PTYs are stacked.
+func disableOutputProcessing(fd int) {
+	var t syscall.Termios
+	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGETA, uintptr(unsafe.Pointer(&t)), 0, 0, 0); errno != 0 {
+		return
+	}
+	t.Oflag &^= syscall.OPOST
+	syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSETA, uintptr(unsafe.Pointer(&t)), 0, 0, 0)
+}
+
 func getTerminalSize(fd int) (cols, rows uint16, err error) {
 	ws := struct{ rows, cols, xpixel, ypixel uint16 }{}
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws)))

@@ -36,6 +36,15 @@ func restoreTerminal(fd int, state *termState) {
 	syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), 0x5402 /* TCSETS */, uintptr(unsafe.Pointer(&state.termios)), 0, 0, 0)
 }
 
+func disableOutputProcessing(fd int) {
+	var t syscall.Termios
+	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), 0x5401 /* TCGETS */, uintptr(unsafe.Pointer(&t)), 0, 0, 0); errno != 0 {
+		return
+	}
+	t.Oflag &^= syscall.OPOST
+	syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), 0x5402 /* TCSETS */, uintptr(unsafe.Pointer(&t)), 0, 0, 0)
+}
+
 func getTerminalSize(fd int) (cols, rows uint16, err error) {
 	ws := struct{ rows, cols, xpixel, ypixel uint16 }{}
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws)))

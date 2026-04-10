@@ -456,6 +456,9 @@ struct MainWindow: View {
 		selectedFileSearchIndex = 0
 		isSearchingFiles = false
 		removeFileSearchKeyMonitor()
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+			projectStore.refocusTerminal()
+		}
 	}
 
 	private func scheduleFileSearch() {
