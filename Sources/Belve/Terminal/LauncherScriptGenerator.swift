@@ -63,25 +63,37 @@ enum LauncherScriptGenerator {
 		        SESSION_NAME="belve-${PROJ_SHORT}-${BELVE_PANE_INDEX}"
 		    fi
 
-		    # --- Phase 1: Deploy files via SCP ---
-		    $SETUP_SSH "$BELVE_SSH_HOST" "mkdir -p ~/.belve/bin ~/.belve/sessions ~/.belve/zdotdir ~/.belve/projects"
-		    deploy_persist_binary "$BELVE_SSH_HOST"
-		    deploy_file "$BELVE_BIN_DIR/belve" "$BELVE_SSH_HOST" "~/.belve/bin/belve"
-		    deploy_file "$BELVE_BIN_DIR/claude" "$BELVE_SSH_HOST" "~/.belve/bin/claude"
-		    deploy_file "$BELVE_BIN_DIR/belve-setup" "$BELVE_SSH_HOST" "~/.belve/bin/belve-setup"
-		    deploy_file "$BELVE_BIN_DIR/belve-connect" "$BELVE_SSH_HOST" "~/.belve/bin/belve-connect"
-		    deploy_file "$BELVE_BIN_DIR/session-bootstrap.sh" "$BELVE_SSH_HOST" "~/.belve/session-bootstrap.sh"
-		    $SETUP_SSH "$BELVE_SSH_HOST" "chmod +x ~/.belve/bin/* ~/.belve/session-bootstrap.sh 2>/dev/null"
-
-		    # --- Phase 2: Setup (non-interactive SSH, single command) ---
-		    SETUP_ARGS=""
-		    if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_REMOTE_PATH" ]; then
-		        SETUP_ARGS="--devcontainer --workspace $BELVE_REMOTE_PATH --project-short $PROJ_SHORT"
+		    # Check if we can skip deploy+setup (session already exists)
+		    NEED_SETUP=1
+		    if $SETUP_SSH "$BELVE_SSH_HOST" "test -x ~/.belve/bin/belve-connect" 2>/dev/null; then
+		        if [ -n "$BELVE_DEVCONTAINER" ]; then
+		            $SETUP_SSH "$BELVE_SSH_HOST" "test -f ~/.belve/projects/${PROJ_SHORT}.env" 2>/dev/null && NEED_SETUP=0
+		        else
+		            NEED_SETUP=0
+		        fi
 		    fi
-		    $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup $SETUP_ARGS"
-		    [ $? -eq 0 ] || { echo "Setup failed"; exit 1; }
 
-		    # --- Phase 3: Connect (interactive SSH, single command) ---
+		    if [ "$NEED_SETUP" = "1" ]; then
+		        # --- Phase 1: Deploy files via SCP ---
+		        $SETUP_SSH "$BELVE_SSH_HOST" "mkdir -p ~/.belve/bin ~/.belve/sessions ~/.belve/zdotdir ~/.belve/projects"
+		        deploy_persist_binary "$BELVE_SSH_HOST"
+		        deploy_file "$BELVE_BIN_DIR/belve" "$BELVE_SSH_HOST" "~/.belve/bin/belve"
+		        deploy_file "$BELVE_BIN_DIR/claude" "$BELVE_SSH_HOST" "~/.belve/bin/claude"
+		        deploy_file "$BELVE_BIN_DIR/belve-setup" "$BELVE_SSH_HOST" "~/.belve/bin/belve-setup"
+		        deploy_file "$BELVE_BIN_DIR/belve-connect" "$BELVE_SSH_HOST" "~/.belve/bin/belve-connect"
+		        deploy_file "$BELVE_BIN_DIR/session-bootstrap.sh" "$BELVE_SSH_HOST" "~/.belve/session-bootstrap.sh"
+		        $SETUP_SSH "$BELVE_SSH_HOST" "chmod +x ~/.belve/bin/* ~/.belve/session-bootstrap.sh 2>/dev/null"
+
+		        # --- Phase 2: Setup (non-interactive SSH, single command) ---
+		        SETUP_ARGS=""
+		        if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_REMOTE_PATH" ]; then
+		            SETUP_ARGS="--devcontainer --workspace $BELVE_REMOTE_PATH --project-short $PROJ_SHORT"
+		        fi
+		        $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup $SETUP_ARGS"
+		        [ $? -eq 0 ] || { echo "Setup failed"; exit 1; }
+		    fi
+
+		    # --- Connect (interactive SSH, single command) ---
 		    CONNECT_ARGS="--session $SESSION_NAME --cols ${BELVE_COLS:-80} --rows ${BELVE_ROWS:-24}"
 		    CONNECT_ARGS="$CONNECT_ARGS --project-id ${BELVE_PROJECT_ID:-} --pane-index ${BELVE_PANE_INDEX:-0} --pane-id ${BELVE_PANE_ID:-}"
 		    if [ -n "$BELVE_DEVCONTAINER" ]; then
