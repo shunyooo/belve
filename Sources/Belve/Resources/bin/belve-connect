@@ -49,7 +49,7 @@ if [ "$DEVCONTAINER" = "1" ] && [ -n "$PROJ_SHORT" ]; then
 
     # Try attach if session socket exists (non-exec so we can fallback)
     if [ -S "$SOCK" ]; then
-        "$PERSIST" -socket "$SOCK" && exit 0
+        "$PERSIST" -socket "$SOCK" 2>/dev/null && exit 0
         rm -f "$SOCK"  # Stale socket
     fi
 
@@ -68,7 +68,7 @@ else
 
     # Try attach if session socket exists (non-exec so we can fallback)
     if [ -S "$SOCK" ]; then
-        "$PERSIST" -socket "$SOCK" && exit 0
+        "$PERSIST" -socket "$SOCK" 2>/dev/null && exit 0
         rm -f "$SOCK"  # Stale socket
     fi
 

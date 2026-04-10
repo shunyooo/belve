@@ -35,7 +35,7 @@ enum LauncherScriptGenerator {
 		    local local_md5=$(md5 -q "$src" 2>/dev/null || md5sum "$src" 2>/dev/null | cut -d' ' -f1)
 		    local remote_md5=$($SETUP_SSH "$host" "md5sum '$dst' 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
 		    if [ "$local_md5" != "$remote_md5" ]; then
-		        scp $SCP_OPTS "$src" "$host:$dst" 2>/dev/null || return 1
+		        scp -q $SCP_OPTS "$src" "$host:$dst" 2>/dev/null || return 1
 		    fi
 		}
 
