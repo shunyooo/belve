@@ -81,6 +81,8 @@ final class TerminalWebView: WKWebView {
 		super.otherMouseDown(with: event)
 	}
 
+
+
 }
 
 /// SwiftUI wrapper for xterm.js running in WKWebView.
@@ -89,6 +91,8 @@ struct XTermTerminalView: NSViewRepresentable {
 	let project: Project
 	var paneId: String?
 	var paneIndex: Int = 0
+	var viewWidth: CGFloat = 0
+	var viewHeight: CGFloat = 0
 	@EnvironmentObject var notificationStore: NotificationStore
 	@EnvironmentObject var commandAreaState: CommandAreaState
 
@@ -135,6 +139,14 @@ struct XTermTerminalView: NSViewRepresentable {
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
+		let w = Int(viewWidth)
+		let h = Int(viewHeight)
+		if w > 0, h > 0 {
+			nsView.evaluateJavaScript(
+				"if(document.getElementById('terminal')){document.getElementById('terminal').style.width='\(w)px';document.getElementById('terminal').style.height='\(h)px';if(window.fitAddon)window.fitAddon.fit()}",
+				completionHandler: nil
+			)
+		}
 	}
 
 	func makeCoordinator() -> Coordinator {
@@ -201,6 +213,7 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "resize":
 				let cols = body["cols"] as? Int ?? 80
 				let rows = body["rows"] as? Int ?? 24
+				NSLog("[Belve] resize pane=%@ cols=%d rows=%d", paneId ?? "nil", cols, rows)
 				ptyService?.setSize(cols: cols, rows: rows)
 
 			case "bell":
@@ -255,6 +268,8 @@ struct XTermTerminalView: NSViewRepresentable {
 				"BELVE_SESSION": "1",
 				"BELVE_PROJECT_ID": project.id.uuidString,
 				"BELVE_PANE_INDEX": "\(paneIndex)",
+				"BELVE_COLS": "\(cols)",
+				"BELVE_ROWS": "\(rows)",
 			]
 			if let paneId {
 				env["BELVE_PANE_ID"] = paneId

@@ -50,6 +50,7 @@ term.attachCustomKeyEventHandler(function(e) {
 
 term.open(terminalContainer);
 window.term = term;
+window.fitAddon = fitAddon;
 fitAddon.fit();
 
 const terminalPathRegex = /(?:^|[\s("'`\[])(\.{1,2}\/[^\s"'`)\]]+|\/[^\s"'`)\]]+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)(?::\d+)?(?::\d+)?/g;

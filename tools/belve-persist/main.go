@@ -29,6 +29,8 @@ func main() {
 	socketPath := flag.String("socket", "", "Unix socket path")
 	command := flag.String("command", "", "command to run (creates session)")
 	daemon := flag.Bool("daemon", false, "run as daemon master (internal)")
+	initCols := flag.Int("cols", 0, "initial PTY columns")
+	initRows := flag.Int("rows", 0, "initial PTY rows")
 	flag.Parse()
 
 	if *socketPath == "" {
@@ -40,9 +42,9 @@ func main() {
 	if *daemon && *command != "" {
 		args := flag.Args()
 		if len(args) == 0 {
-			runMaster(*socketPath, "/bin/sh", []string{"-c", *command})
+			runMaster(*socketPath, "/bin/sh", []string{"-c", *command}, uint16(*initCols), uint16(*initRows))
 		} else {
-			runMaster(*socketPath, *command, args)
+			runMaster(*socketPath, *command, args, uint16(*initCols), uint16(*initRows))
 		}
 		return
 	}
@@ -65,7 +67,7 @@ func main() {
 	} else {
 		cmdArgs = append([]string{*command}, args...)
 	}
-	spawnDaemon(*socketPath, cmdArgs)
+	spawnDaemon(*socketPath, cmdArgs, *initCols, *initRows)
 
 	// Wait for socket, then attach
 	for i := 0; i < 50; i++ {
@@ -78,7 +80,7 @@ func main() {
 	os.Exit(1)
 }
 
-func runMaster(socketPath, command string, args []string) {
+func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	os.Remove(socketPath)
 
 	// Ignore SIGHUP to survive SSH/docker disconnects
@@ -88,6 +90,10 @@ func runMaster(socketPath, command string, args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "openpty: %v\n", err)
 		os.Exit(1)
+	}
+	// Set initial PTY size before starting child
+	if cols > 0 && rows > 0 {
+		setPtySize(ptyFd, cols, rows)
 	}
 	ttyFile, err := os.OpenFile(ttyPath, os.O_RDWR, 0)
 	if err != nil {
@@ -206,10 +212,14 @@ func runMaster(socketPath, command string, args []string) {
 }
 
 // spawnDaemon starts the master as a background process.
-func spawnDaemon(socketPath string, cmdArgs []string) {
+func spawnDaemon(socketPath string, cmdArgs []string, cols, rows int) {
 	selfPath := os.Args[0]
 	// Use -daemon flag to run master directly
-	daemonArgs := []string{selfPath, "-daemon", "-socket", socketPath, "-command", cmdArgs[0]}
+	daemonArgs := []string{selfPath, "-daemon", "-socket", socketPath}
+	if cols > 0 && rows > 0 {
+		daemonArgs = append(daemonArgs, "-cols", fmt.Sprintf("%d", cols), "-rows", fmt.Sprintf("%d", rows))
+	}
+	daemonArgs = append(daemonArgs, "-command", cmdArgs[0])
 	if len(cmdArgs) > 1 {
 		daemonArgs = append(daemonArgs, "--")
 		daemonArgs = append(daemonArgs, cmdArgs[1:]...)

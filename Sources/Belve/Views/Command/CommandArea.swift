@@ -532,7 +532,13 @@ struct CommandArea: View {
 						)
 						.frame(height: min(paneHeaderHeight, max(0, pane.rect.height)))
 
-						XTermTerminalView(project: project, paneId: pane.paneId.uuidString, paneIndex: pane.paneIndex)
+						XTermTerminalView(
+								project: project,
+								paneId: pane.paneId.uuidString,
+								paneIndex: pane.paneIndex,
+								viewWidth: max(1, pane.rect.width),
+								viewHeight: max(1, pane.rect.height - paneHeaderHeight)
+							)
 							.frame(
 								width: max(1, pane.rect.width),
 								height: max(1, pane.rect.height - paneHeaderHeight)

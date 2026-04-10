@@ -77,10 +77,10 @@ enum LauncherScriptGenerator {
 		        src_bin="$PERSIST_BIN_DIR/belve-persist-linux-amd64"
 		    fi
 		    [ -f "$src_bin" ] || return 1
-		    # Only upload if binary differs (check size)
-		    local local_size=$(wc -c < "$src_bin" 2>/dev/null | tr -d ' ')
-		    local remote_size=$(ssh -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=5 "$target_host" "wc -c < '$target_path' 2>/dev/null | tr -d ' '" 2>/dev/null)
-		    if [ "$local_size" != "$remote_size" ]; then
+		    # Only upload if binary differs (check md5)
+		    local local_md5=$(md5 -q "$src_bin" 2>/dev/null || md5sum "$src_bin" 2>/dev/null | cut -d' ' -f1)
+		    local remote_md5=$(ssh -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=5 "$target_host" "md5sum '$target_path' 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
+		    if [ "$local_md5" != "$remote_md5" ]; then
 		        scp -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 "$src_bin" "$target_host:$target_path" 2>/dev/null || return 1
 		        ssh -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=5 "$target_host" "chmod +x '$target_path'" 2>/dev/null
 		    fi
@@ -149,8 +149,8 @@ enum LauncherScriptGenerator {
 		        rm -f "$sock"
 		    fi
 
-		    # Create new session
-		    exec "$HOME/.belve/bin/belve-persist" -socket "$sock" -command "$HOME/.belve/session-bootstrap.sh"
+		    # Create new session with correct initial size
+		    exec "$HOME/.belve/bin/belve-persist" -socket "$sock" -cols "${BELVE_COLS:-80}" -rows "${BELVE_ROWS:-24}" -command "$HOME/.belve/session-bootstrap.sh"
 		}
 
 		begin_remote_log() {
@@ -187,6 +187,8 @@ enum LauncherScriptGenerator {
 		export BELVE_PROJECT_ID='${BELVE_PROJECT_ID:-}'
 		export BELVE_PANE_INDEX='${BELVE_PANE_INDEX:-0}'
 		export BELVE_PANE_ID='${BELVE_PANE_ID:-}'
+		export BELVE_COLS='${BELVE_COLS:-80}'
+		export BELVE_ROWS='${BELVE_ROWS:-24}'
 		BELVE_SCRIPT_B64="$BELVE_SCRIPT_B64"
 		CLAUDE_SCRIPT_B64="$CLAUDE_SCRIPT_B64"
 		$(typeset -f decode_to_file)
@@ -232,7 +234,7 @@ enum LauncherScriptGenerator {
 		    fi
 		    rm -f "\$PERSIST_SOCK"
 		fi
-		exec "\$HOME/.belve/bin/belve-persist" -socket "\$PERSIST_SOCK" -command docker exec -it -w "\$RWS" -e BELVE_SESSION=1 -e BELVE_PROJECT_ID='${BELVE_PROJECT_ID:-}' -e BELVE_PANE_INDEX='${BELVE_PANE_INDEX:-0}' -e BELVE_PANE_ID='${BELVE_PANE_ID:-}' -e TERM=xterm-256color "\$CID" /root/.belve/session-bootstrap.sh
+		exec "\$HOME/.belve/bin/belve-persist" -socket "\$PERSIST_SOCK" -cols "${BELVE_COLS:-80}" -rows "${BELVE_ROWS:-24}" -command docker exec -it -w "\$RWS" -e BELVE_SESSION=1 -e BELVE_PROJECT_ID='${BELVE_PROJECT_ID:-}' -e BELVE_PANE_INDEX='${BELVE_PANE_INDEX:-0}' -e BELVE_PANE_ID='${BELVE_PANE_ID:-}' -e TERM=xterm-256color "\$CID" /root/.belve/session-bootstrap.sh
 		BELVE_DC
 		        [ $? -eq 0 ] || { echo "DevContainer setup failed"; exit 1; }
 		        DC_SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
@@ -246,6 +248,8 @@ enum LauncherScriptGenerator {
 		export BELVE_PROJECT_ID='${BELVE_PROJECT_ID:-}'
 		export BELVE_PANE_INDEX='${BELVE_PANE_INDEX:-0}'
 		export BELVE_PANE_ID='${BELVE_PANE_ID:-}'
+		export BELVE_COLS='${BELVE_COLS:-80}'
+		export BELVE_ROWS='${BELVE_ROWS:-24}'
 		BELVE_SCRIPT_B64="$BELVE_SCRIPT_B64"
 		CLAUDE_SCRIPT_B64="$CLAUDE_SCRIPT_B64"
 		$(typeset -f decode_to_file)
