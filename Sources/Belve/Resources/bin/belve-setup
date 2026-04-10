@@ -25,9 +25,11 @@ done
 mkdir -p "$HOME/.belve/bin" "$HOME/.belve/sessions" "$HOME/.belve/zdotdir"
 
 # Copy belve-persist from staging location (SCP'd separately due to arch detection)
+# Use cp to temp + mv to avoid "Text file busy" when binary is running
 if [ -f /tmp/belve-persist-binary ]; then
-    cp /tmp/belve-persist-binary "$HOME/.belve/bin/belve-persist"
-    chmod +x "$HOME/.belve/bin/belve-persist"
+    cp /tmp/belve-persist-binary "$HOME/.belve/bin/belve-persist.new" 2>/dev/null
+    mv -f "$HOME/.belve/bin/belve-persist.new" "$HOME/.belve/bin/belve-persist" 2>/dev/null
+    chmod +x "$HOME/.belve/bin/belve-persist" 2>/dev/null
 fi
 
 # Ensure all bin scripts are executable
