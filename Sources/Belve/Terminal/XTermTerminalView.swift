@@ -139,13 +139,16 @@ struct XTermTerminalView: NSViewRepresentable {
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
-		let w = Int(viewWidth)
-		let h = Int(viewHeight)
+		let w = viewWidth
+		let h = viewHeight
 		if w > 0, h > 0 {
-			nsView.evaluateJavaScript(
-				"if(document.getElementById('terminal')){document.getElementById('terminal').style.width='\(w)px';document.getElementById('terminal').style.height='\(h)px';if(window.fitAddon)window.fitAddon.fit()}",
-				completionHandler: nil
-			)
+			// Calculate cols/rows from pixel dimensions and font metrics
+			// Font: Menlo 13px → charWidth ≈ 7.8px, lineHeight ≈ 17px
+			let charWidth: CGFloat = 7.8
+			let lineHeight: CGFloat = 17.0
+			let cols = max(1, Int(w / charWidth))
+			let rows = max(1, Int(h / lineHeight))
+			context.coordinator.updateTerminalSize(cols: cols, rows: rows)
 		}
 	}
 
@@ -199,8 +202,8 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			switch type {
 			case "ready":
-				let cols = body["cols"] as? Int ?? 80
-				let rows = body["rows"] as? Int ?? 24
+				let cols = lastCols > 0 ? lastCols : (body["cols"] as? Int ?? 80)
+				let rows = lastRows > 0 ? lastRows : (body["rows"] as? Int ?? 24)
 				startPTY(cols: cols, rows: rows)
 				focusTerminal()
 
@@ -211,10 +214,8 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 
 			case "resize":
-				let cols = body["cols"] as? Int ?? 80
-				let rows = body["rows"] as? Int ?? 24
-				NSLog("[Belve] resize pane=%@ cols=%d rows=%d", paneId ?? "nil", cols, rows)
-				ptyService?.setSize(cols: cols, rows: rows)
+				// Ignore JS-originated resize — size is managed by updateNSView
+				break
 
 			case "bell":
 				NSSound.beep()
@@ -375,6 +376,17 @@ struct XTermTerminalView: NSViewRepresentable {
 		func activatePane() {
 			guard let paneId, let paneUUID = UUID(uuidString: paneId) else { return }
 			commandAreaState?.activePaneId = paneUUID
+		}
+
+		private var lastCols = 0
+		private var lastRows = 0
+
+		func updateTerminalSize(cols: Int, rows: Int) {
+			guard cols != lastCols || rows != lastRows else { return }
+			lastCols = cols
+			lastRows = rows
+			ptyService?.setSize(cols: cols, rows: rows)
+			webView?.evaluateJavaScript("if(window.term){window.term.resize(\(cols),\(rows))}", completionHandler: nil)
 		}
 
 		func copySelectionToPasteboard() {
