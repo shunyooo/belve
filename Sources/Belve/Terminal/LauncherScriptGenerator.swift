@@ -29,13 +29,15 @@ enum LauncherScriptGenerator {
 		CONNECT_SSH="ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
 
 		# Deploy a file via SCP with md5 checksum skip
+		# Uses .new + mv to avoid "Text file busy" on running binaries
 		deploy_file() {
 		    local src="$1" host="$2" dst="$3"
 		    [ -f "$src" ] || return 1
 		    local local_md5=$(md5 -q "$src" 2>/dev/null || md5sum "$src" 2>/dev/null | cut -d' ' -f1)
 		    local remote_md5=$($SETUP_SSH "$host" "md5sum '$dst' 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
 		    if [ "$local_md5" != "$remote_md5" ]; then
-		        scp -q $SCP_OPTS "$src" "$host:$dst" 2>/dev/null || return 1
+		        scp -q $SCP_OPTS "$src" "$host:${dst}.new" 2>/dev/null || return 1
+		        $SETUP_SSH "$host" "mv -f '${dst}.new' '$dst'; chmod +x '$dst' 2>/dev/null" 2>/dev/null
 		    fi
 		}
 
@@ -49,7 +51,7 @@ enum LauncherScriptGenerator {
 		    else
 		        src_bin="$BELVE_BIN_DIR/belve-persist-linux-amd64"
 		    fi
-		    deploy_file "$src_bin" "$host" "/tmp/belve-persist-binary"
+		    deploy_file "$src_bin" "$host" "~/.belve/bin/belve-persist"
 		}
 
 		# SSH/DevContainer: SCP deploy + setup + connect
