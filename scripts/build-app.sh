@@ -32,11 +32,21 @@ cat > Belve.app/Contents/Info.plist << 'PLIST'
 </plist>
 PLIST
 
-# Copy Resources (belve CLI + claude wrapper)
+# Build belve-persist (process persistence tool) for Linux
+PERSIST_DIR="tools/belve-persist"
+if [ -d "$PERSIST_DIR" ]; then
+    echo "Building belve-persist..."
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$PERSIST_DIR/belve-persist-linux-amd64" "./$PERSIST_DIR" 2>/dev/null || true
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o "$PERSIST_DIR/belve-persist-linux-arm64" "./$PERSIST_DIR" 2>/dev/null || true
+fi
+
+# Copy Resources (belve CLI + claude wrapper + belve-persist binaries)
 mkdir -p Belve.app/Contents/Resources/bin
 cp Sources/Belve/Resources/bin/belve Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp Sources/Belve/Resources/bin/claude Belve.app/Contents/Resources/bin/ 2>/dev/null || true
-chmod +x Belve.app/Contents/Resources/bin/belve Belve.app/Contents/Resources/bin/claude 2>/dev/null || true
+cp "$PERSIST_DIR/belve-persist-linux-amd64" Belve.app/Contents/Resources/bin/ 2>/dev/null || true
+cp "$PERSIST_DIR/belve-persist-linux-arm64" Belve.app/Contents/Resources/bin/ 2>/dev/null || true
+chmod +x Belve.app/Contents/Resources/bin/* 2>/dev/null || true
 
 # Move resource bundle out of MacOS to avoid codesign sub-bundle issues
 mkdir -p Belve.app/Contents/Resources

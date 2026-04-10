@@ -1,7 +1,8 @@
 import Foundation
 
 /// Generates the launcher shell script used by PTYService to start shells
-/// with Belve's PATH injection, SSH/DevContainer/tmux configuration.
+/// with Belve's PATH injection, SSH/DevContainer configuration, and
+/// belve-persist for session persistence (replaces tmux).
 /// The script is written to /tmp/belve-shell/belve-launcher.sh and reused.
 enum LauncherScriptGenerator {
 
@@ -18,6 +19,7 @@ enum LauncherScriptGenerator {
 		let claudeScriptData = (try? Data(contentsOf: embeddedBinDir.appendingPathComponent("claude"))) ?? Data()
 		let belveScriptBase64 = belveScriptData.base64EncodedString()
 		let claudeScriptBase64 = claudeScriptData.base64EncodedString()
+		let persistBinDir = embeddedBinDir.path
 		let shell = resolveUserShell()
 		let shellName = (shell as NSString).lastPathComponent
 		let tmpDir = "/tmp/belve-shell"
@@ -30,6 +32,7 @@ enum LauncherScriptGenerator {
 		SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ControlMaster=auto -o ControlPath=/tmp/belve-ssh-%r@%h:%p -o ControlPersist=600"
 		BELVE_SCRIPT_B64="\#(belveScriptBase64)"
 		CLAUDE_SCRIPT_B64="\#(claudeScriptBase64)"
+		PERSIST_BIN_DIR="\#(persistBinDir)"
 		REMOTE_LOG_FILE="/tmp/belve-remote-launch.log"
 
 		decode_to_file() {
@@ -59,7 +62,28 @@ enum LauncherScriptGenerator {
 		    mkdir -p "$HOME/.belve/bin" "$HOME/.belve/zdotdir"
 		    decode_to_file "$BELVE_SCRIPT_B64" "$HOME/.belve/bin/belve" || exit 1
 		    decode_to_file "$CLAUDE_SCRIPT_B64" "$HOME/.belve/bin/claude" || exit 1
-		    chmod +x "$HOME/.belve/bin/belve" "$HOME/.belve/bin/claude"
+		    chmod +x "$HOME/.belve/bin/belve" "$HOME/.belve/bin/claude" 2>/dev/null
+		}
+
+		# Upload belve-persist binary via SCP (too large for base64 in shell vars)
+		deploy_persist_binary() {
+		    local target_host="$1"
+		    local target_path="$2"
+		    local arch=$(ssh -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=5 "$target_host" "uname -m" 2>/dev/null)
+		    local src_bin
+		    if [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then
+		        src_bin="$PERSIST_BIN_DIR/belve-persist-linux-arm64"
+		    else
+		        src_bin="$PERSIST_BIN_DIR/belve-persist-linux-amd64"
+		    fi
+		    [ -f "$src_bin" ] || return 1
+		    # Only upload if binary differs (check size)
+		    local local_size=$(wc -c < "$src_bin" 2>/dev/null | tr -d ' ')
+		    local remote_size=$(ssh -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=5 "$target_host" "wc -c < '$target_path' 2>/dev/null | tr -d ' '" 2>/dev/null)
+		    if [ "$local_size" != "$remote_size" ]; then
+		        scp -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 "$src_bin" "$target_host:$target_path" 2>/dev/null || return 1
+		        ssh -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=5 "$target_host" "chmod +x '$target_path'" 2>/dev/null
+		    fi
 		}
 
 		write_remote_bootstrap() {
@@ -102,62 +126,31 @@ enum LauncherScriptGenerator {
 		    chmod +x "$HOME/.belve/session-bootstrap.sh"
 		}
 
-		belve_tmux() {
-		    command tmux -f /dev/null -L belve "$@"
-		}
+		# Start or attach to a belve-persist session.
+		# belve-persist replaces tmux: pure PTY passthrough, no mouse/OSC interference.
+		belve_persist_session() {
+		    local session_name="$1"
+		    local work_dir="$2"
+		    local sock="$HOME/.belve/sessions/${session_name}.sock"
+		    mkdir -p "$HOME/.belve/sessions"
 
-		prepare_belve_tmux_session() {
-		    session_name="$1"
-		    belve_tmux has-session -t "$session_name" 2>/dev/null || return 0
-		    # Kill stale clients whose PTY is dead, then detach any remaining
-		    belve_tmux list-clients -t "$session_name" -F '#{client_tty}' 2>/dev/null | while IFS= read -r client_tty; do
-		        [ -n "$client_tty" ] || continue
-		        if [ ! -e "$client_tty" ]; then
-		            # PTY is dead — force kill via tmux server
-		            belve_tmux kill-session -t "$session_name" 2>/dev/null || true
-		            return 0
+		    if [ -n "$work_dir" ]; then
+		        cd "$work_dir" 2>/dev/null || true
+		    fi
+
+		    # Check if existing session is alive by testing socket connectivity
+		    if [ -S "$sock" ]; then
+		        # Quick test: can we connect? If daemon is dead, connect fails instantly
+		        if python3 -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[1]);s.close()" "$sock" 2>/dev/null || \
+		           perl -e 'use IO::Socket::UNIX;IO::Socket::UNIX->new(Peer=>$ARGV[0]) or exit 1' "$sock" 2>/dev/null; then
+		            exec "$HOME/.belve/bin/belve-persist" -socket "$sock"
 		        fi
-		        belve_tmux detach-client -t "$client_tty" 2>/dev/null || true
-		    done
-		}
+		        # Stale socket — remove
+		        rm -f "$sock"
+		    fi
 
-		write_devcontainer_entrypoint() {
-		    entrypoint_path="$1"
-		    cat > "$entrypoint_path" <<BELVE_ENTRY
-		#!/bin/bash
-		export TERM=xterm-256color
-		export BELVE_SESSION=1
-		export BELVE_PROJECT_ID='${BELVE_PROJECT_ID:-}'
-		export BELVE_PANE_INDEX='${BELVE_PANE_INDEX:-0}'
-		export BELVE_PANE_ID='${BELVE_PANE_ID:-}'
-		TMUX_SESSION="$TMUX_SESSION"
-		BELVE_SCRIPT_B64="$BELVE_SCRIPT_B64"
-		CLAUDE_SCRIPT_B64="$CLAUDE_SCRIPT_B64"
-		$(typeset -f decode_to_file)
-		$(typeset -f write_remote_belve_files)
-		$(typeset -f write_remote_bootstrap)
-		$(typeset -f belve_tmux)
-		$(typeset -f prepare_belve_tmux_session)
-		write_remote_belve_files
-		write_remote_bootstrap
-		if command -v tmux >/dev/null 2>&1; then
-		    belve_tmux start-server 2>/dev/null || true
-		    belve_tmux set -s default-terminal xterm-256color 2>/dev/null
-		    # Clean stale clients first, then create/attach
-		    prepare_belve_tmux_session "$TMUX_SESSION"
-		    belve_tmux has-session -t "$TMUX_SESSION" 2>/dev/null || belve_tmux new-session -d -s "$TMUX_SESSION" "\$HOME/.belve/session-bootstrap.sh"
-		    belve_tmux set -t "$TMUX_SESSION" status off 2>/dev/null
-		    belve_tmux set -t "$TMUX_SESSION" prefix None 2>/dev/null
-		    belve_tmux set -t "$TMUX_SESSION" mouse on 2>/dev/null
-		    belve_tmux set -t "$TMUX_SESSION" escape-time 0 2>/dev/null
-		    belve_tmux setw -t "$TMUX_SESSION" pane-border-status off 2>/dev/null
-		    belve_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null
-		    belve_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null
-		    exec tmux -f /dev/null -L belve attach-session -d -t "$TMUX_SESSION"
-		fi
-		exec "\$HOME/.belve/session-bootstrap.sh"
-		BELVE_ENTRY
-		    chmod +x "$entrypoint_path"
+		    # Create new session
+		    exec "$HOME/.belve/bin/belve-persist" -socket "$sock" -command "$HOME/.belve/session-bootstrap.sh"
 		}
 
 		begin_remote_log() {
@@ -169,26 +162,83 @@ enum LauncherScriptGenerator {
 		    set -x
 		}
 
-		# SSH/DevContainer: connect with tmux for session persistence
-		# tmux is transparent: no status bar, no prefix key, no keybinds — pure session persistence
+		# SSH/DevContainer: connect with belve-persist for session persistence
+		# belve-persist is a transparent PTY proxy: no mouse interference, full OSC passthrough
 		# Session naming: belve-{PROJECT_ID_short} for primary, belve-{PROJECT_ID_short}-{N} for splits
 		if [ -n "$BELVE_SSH_HOST" ]; then
 		    PROJ_SHORT=$(echo "$BELVE_PROJECT_ID" | cut -c1-8)
 		    if [ "${BELVE_PANE_INDEX:-0}" = "0" ]; then
-		        TMUX_SESSION="belve-${PROJ_SHORT}"
+		        SESSION_NAME="belve-${PROJ_SHORT}"
 		    else
-		        TMUX_SESSION="belve-${PROJ_SHORT}-${BELVE_PANE_INDEX}"
+		        SESSION_NAME="belve-${PROJ_SHORT}-${BELVE_PANE_INDEX}"
 		    fi
-		    # tmux transparent mode: session-local settings (no UI, no prefix)
-		    # Use tmux mouse + copy-mode for selection/scroll, and forward clipboard via OSC52.
-		    TMUX_APPLY="tmux set -t $TMUX_SESSION status off; tmux set -t $TMUX_SESSION prefix None; tmux set -t $TMUX_SESSION mouse on; tmux set -t $TMUX_SESSION escape-time 0; tmux setw -t $TMUX_SESSION pane-border-status off; tmux set -g default-terminal xterm-256color"
+
+		    # Deploy belve-persist binary to SSH host first
+		    deploy_persist_binary "$BELVE_SSH_HOST" "/tmp/belve-persist-binary"
 
 		    if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_REMOTE_PATH" ]; then
-		        # Single SSH command — no ControlMaster (avoids being killed when old PTY's master dies)
+		        # DevContainer: belve-persist runs on HOST, spawns docker exec as child.
+		        # This avoids Docker's process lifecycle issues (docker exec kills processes on disconnect).
+		        # Upload setup + persist script to host
+		        SSH_SCRIPT="/tmp/belve-ssh-${BELVE_PANE_INDEX:-0}.sh"
+		        /usr/bin/ssh -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$BELVE_SSH_HOST" "cat > $SSH_SCRIPT && chmod +x $SSH_SCRIPT" <<BELVE_DC
+		#!/bin/bash
+		export TERM=xterm-256color
+		export BELVE_PROJECT_ID='${BELVE_PROJECT_ID:-}'
+		export BELVE_PANE_INDEX='${BELVE_PANE_INDEX:-0}'
+		export BELVE_PANE_ID='${BELVE_PANE_ID:-}'
+		BELVE_SCRIPT_B64="$BELVE_SCRIPT_B64"
+		CLAUDE_SCRIPT_B64="$CLAUDE_SCRIPT_B64"
+		$(typeset -f decode_to_file)
+		$(typeset -f write_remote_belve_files)
+		$(typeset -f write_remote_bootstrap)
+		$(typeset -f belve_persist_session)
+
+		# Setup: deploy scripts into container
+		REMOTE_PATH="$BELVE_REMOTE_PATH"
+		if [ "\${REMOTE_PATH:0:2}" = "~/" ]; then
+		    REMOTE_PATH="\$HOME/\${REMOTE_PATH:2}"
+		fi
+		cd "\$REMOTE_PATH" 2>/dev/null || cd "\$HOME" || true
+		INFO=\$(devcontainer up --workspace-folder . --log-format json 2>/dev/null | tail -1)
+		CID=\$(printf '%s' "\$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("containerId",""))')
+		RWS=\$(printf '%s' "\$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("remoteWorkspaceFolder",""))')
+		[ -n "\$CID" ] || { echo "devcontainer up failed"; exit 1; }
+
+		# Deploy belve/claude scripts into container
+		docker exec "\$CID" mkdir -p /root/.belve/bin /root/.belve/sessions 2>/dev/null
+		docker exec -i "\$CID" bash <<'SETUP_INNER'
+		export BELVE_SCRIPT_B64='$BELVE_SCRIPT_B64'
+		export CLAUDE_SCRIPT_B64='$CLAUDE_SCRIPT_B64'
+		$(typeset -f decode_to_file)
+		$(typeset -f write_remote_belve_files)
+		$(typeset -f write_remote_bootstrap)
+		write_remote_belve_files
+		write_remote_bootstrap
+		SETUP_INNER
+
+		# belve-persist on HOST manages docker exec as child
+		cp /tmp/belve-persist-binary "\$HOME/.belve/bin/belve-persist" 2>/dev/null
+		chmod +x "\$HOME/.belve/bin/belve-persist" 2>/dev/null
+		mkdir -p "\$HOME/.belve/sessions"
+
+		PERSIST_SOCK="\$HOME/.belve/sessions/$SESSION_NAME.sock"
+
+		# Attach if session is alive, otherwise create new
+		if [ -S "\$PERSIST_SOCK" ]; then
+		    # Test if daemon is still running
+		    if "\$HOME/.belve/bin/belve-persist" -socket "\$PERSIST_SOCK" 2>/dev/null; then
+		        exit 0
+		    fi
+		    rm -f "\$PERSIST_SOCK"
+		fi
+		exec "\$HOME/.belve/bin/belve-persist" -socket "\$PERSIST_SOCK" -command docker exec -it -w "\$RWS" -e BELVE_SESSION=1 -e BELVE_PROJECT_ID='${BELVE_PROJECT_ID:-}' -e BELVE_PANE_INDEX='${BELVE_PANE_INDEX:-0}' -e BELVE_PANE_ID='${BELVE_PANE_ID:-}' -e TERM=xterm-256color "\$CID" /root/.belve/session-bootstrap.sh
+		BELVE_DC
+		        [ $? -eq 0 ] || { echo "DevContainer setup failed"; exit 1; }
 		        DC_SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
-		        /usr/bin/ssh $DC_SSH_OPTS -tt "$BELVE_SSH_HOST" "export TERM=xterm-256color; cd $BELVE_REMOTE_PATH && INFO=\$(devcontainer up --workspace-folder . --log-format json 2>/dev/null | tail -1) && CID=\$(printf '%s' \"\$INFO\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"containerId\",\"\"))') && RWS=\$(printf '%s' \"\$INFO\" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"remoteWorkspaceFolder\",\"\"))') && exec docker exec -it -w \"\$RWS\" \"\$CID\" /bin/bash -c 'command -v tmux >/dev/null && { tmux -f /dev/null -L belve bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null; tmux -f /dev/null -L belve bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null; }; exec /bin/bash ./.belve-devcontainer-entry-${BELVE_PANE_INDEX:-0}.sh'"
+		        /usr/bin/ssh $DC_SSH_OPTS -tt "$BELVE_SSH_HOST" "exec $SSH_SCRIPT"
 		    else
-		        # SSH (with or without remote path): upload script, then execute with TTY
+		        # SSH: upload script with belve-persist integration, then execute
 		        SSH_SCRIPT="/tmp/belve-ssh-${BELVE_PANE_INDEX:-0}.sh"
 		        /usr/bin/ssh -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$BELVE_SSH_HOST" "cat > $SSH_SCRIPT && chmod +x $SSH_SCRIPT" <<BELVE_REMOTE
 		#!/bin/bash
@@ -201,27 +251,16 @@ enum LauncherScriptGenerator {
 		$(typeset -f decode_to_file)
 		$(typeset -f write_remote_belve_files)
 		$(typeset -f write_remote_bootstrap)
-		$(typeset -f belve_tmux)
-		$(typeset -f prepare_belve_tmux_session)
+		$(typeset -f belve_persist_session)
 		write_remote_belve_files
 		write_remote_bootstrap
-		TMUX_CD="${BELVE_REMOTE_PATH:+"-c $BELVE_REMOTE_PATH"}"
-		[ -n "$BELVE_REMOTE_PATH" ] && cd "$BELVE_REMOTE_PATH"
-		if command -v tmux >/dev/null 2>&1; then
-		    belve_tmux start-server 2>/dev/null || true
-		    belve_tmux set -s default-terminal xterm-256color 2>/dev/null
-		    belve_tmux has-session -t "$TMUX_SESSION" 2>/dev/null || belve_tmux new-session -d -s "$TMUX_SESSION" \$TMUX_CD "\$HOME/.belve/session-bootstrap.sh"
-		    prepare_belve_tmux_session "$TMUX_SESSION"
-		    belve_tmux set -t "$TMUX_SESSION" status off 2>/dev/null
-		    belve_tmux set -t "$TMUX_SESSION" prefix None 2>/dev/null
-		    belve_tmux set -t "$TMUX_SESSION" mouse on 2>/dev/null
-		    belve_tmux set -t "$TMUX_SESSION" escape-time 0 2>/dev/null
-		    belve_tmux setw -t "$TMUX_SESSION" pane-border-status off 2>/dev/null
-		    belve_tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null
-		    belve_tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel 2>/dev/null
-		    exec tmux -f /dev/null -L belve attach-session -d -t "$TMUX_SESSION"
-		fi
-		exec "\$HOME/.belve/session-bootstrap.sh"
+		# belve-persist binary is deployed via SCP to ~/.belve/bin/
+		cp /tmp/belve-persist-binary "\$HOME/.belve/bin/belve-persist" 2>/dev/null
+		chmod +x "\$HOME/.belve/bin/belve-persist" 2>/dev/null
+		SESSION_NAME="$SESSION_NAME"
+		WORK_DIR="$BELVE_REMOTE_PATH"
+		[ -n "\$WORK_DIR" ] && cd "\$WORK_DIR" 2>/dev/null
+		belve_persist_session "\$SESSION_NAME" "\$WORK_DIR"
 		BELVE_REMOTE
 		        [ $? -eq 0 ] || { echo "SSH setup failed"; exit 1; }
 		        DC_SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
