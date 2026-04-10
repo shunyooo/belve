@@ -29,6 +29,12 @@ kill $(pgrep -f Belve) 2>/dev/null
 # xterm.js バンドル再生成（scripts/terminal-entry.js 変更時に必要）
 npx esbuild scripts/terminal-entry.js --bundle --format=iife --outfile=Sources/Belve/Resources/terminal-bundle.js --minify
 
+# belve-persist 単体ビルド（tools/belve-persist/ 変更時）
+cd tools/belve-persist
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o belve-persist-linux-amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o belve-persist-linux-arm64 .
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o belve-persist-darwin-arm64 .
+
 # npm セットアップ（初回 or パッケージ追加時）
 npm install
 
@@ -102,12 +108,13 @@ osascript -e 'tell app "System Events" to tell process "Belve" to set size of wi
 ### 技術スタック
 
 - SwiftUI (macOS 14+) — アプリシェル
-- SwiftTerm (TerminalView) — ターミナル描画（NSViewRepresentable）
-- PTYService — プロセス管理（posix_spawn + POSIX_SPAWN_SETSID）
-- WKWebView + CodeMirror 6 — コードエディタ（未実装）
-- WKWebView + Milkdown — Markdown WYSIWYG（未実装）
-- system `ssh` + PTY — SSH 接続（未実装）
-- `devcontainer` CLI — DevContainer（未実装）
+- xterm.js (WKWebView) — ターミナル描画
+- PTYService — プロセス管理（posix_spawn + POSIX_SPAWN_SETSID、raw mode PTY）
+- belve-persist (Go) — セッション永続化（dtach ライク、tmux 不要）
+- WKWebView + CodeMirror 6 — コードエディタ
+- WKWebView + Milkdown — Markdown WYSIWYG
+- system `ssh` + PTY — SSH 接続
+- `devcontainer` CLI — DevContainer
 
 ### プロジェクト構造
 
@@ -123,18 +130,31 @@ Sources/Belve/
 │   ├── Sidebar/
 │   │   └── ProjectListView.swift
 │   ├── Command/
-│   │   ├── CommandArea.swift
-│   │   └── TerminalPaneView.swift  # SwiftTerm + PTYService
+│   │   └── CommandArea.swift  # ペインレイアウト + XTermTerminalView
 │   └── Preview/
 │       └── PreviewArea.swift
+├── Terminal/
+│   ├── XTermTerminalView.swift       # xterm.js WKWebView ラッパー
+│   └── LauncherScriptGenerator.swift # シェル起動スクリプト生成
 ├── Services/
-│   └── PTYService.swift    # PTY 生成・管理（posix_spawn）
-└── Resources/              # WebView 用リソース（xterm.js 等）
+│   ├── PTYService.swift              # PTY 生成・管理（raw mode）
+│   └── AgentNotificationTransport.swift  # OSC エージェント通知
+└── Resources/
+    ├── bin/                 # belve CLI, claude wrapper, belve-persist バイナリ
+    ├── terminal.html        # xterm.js ホスト HTML
+    ├── terminal-bundle.js   # esbuild バンドル
+    └── xterm.css
+
+tools/belve-persist/         # Go 製セッション永続化ツール
+├── main.go                  # マスター + クライアント (auto-attach)
+├── pty_linux.go / pty_darwin.go    # PTY 操作（OS別）
+└── term_linux.go / term_darwin.go  # ターミナル設定（OS別）
 ```
 
 ### 既知の問題
 
-- `hiddenTitleBar` と SwiftTerm の組み合わせで Auto Layout クラッシュするため `unifiedCompact` を使用中
+- エディタ表示時にサイドバーとターミナル間に空白エリアが出る（レイアウト計算の問題）
+- **PTYService は raw mode** — belve-persist との PTY 2段重ねで CR/LF 二重変換を防ぐため `cfmakeraw` で初期化。これが前提なので変更注意
 
 ## 設計原則
 

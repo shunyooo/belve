@@ -1,42 +1,34 @@
 # Belve TODO
 
-## 緊急: 起動時にターミナルが空になる
+## 既知のバグ
 
-`keybind = clear` を Ghostty config に入れたことが原因の可能性。Ghostty のデフォルトキーバインドを全無効化したことで、ターミナル起動に必要な内部処理も無効になった可能性がある。
-
-**調査方針:**
-- `keybind = clear` を外して起動するか確認
-- 必要なキーバインドだけ個別に無効化する方式に変更
-- もしくは Ghostty config の `keybind = unbind` で特定のバインドだけ無効化
+### エディタ表示時にサイドバーとターミナル間に空白エリアが出る
+エディタ（Cmd+E）を表示すると、サイドバーとターミナル（CommandArea）の間に意図しない暗い空白エリアが表示される。`commandAreaFraction` やスプリット計算の問題の可能性。
 
 ## 直近の優先タスク
 
-### ターミナル (GhosttyKit)
-- [x] クリップボード対応（コピー & ペースト）— GhosttyKit 内蔵で動作確認済み
-- [x] テキスト選択（マウスドラッグ、ダブルクリック単語選択、トリプルクリック行選択）— GhosttyKit 内蔵で動作確認済み
-- [x] **ペイン split 時のクラッシュ修正** — フラットレイアウト方式で解決。ForEach で全ペインを描画し、split 時に既存ビューを破棄しない。GeometryReader は GhosttyTerminalView の親にできない制約あり（バックグラウンドサイズリーダーで回避）
-- [x] **Ghostty surface のクラッシュ対策** — deinit で surface_free を呼ばない。surface は Ghostty app ランタイムに委ねる
+### ターミナル (xterm.js + WKWebView)
+- [x] クリップボード対応（コピー & ペースト）
+- [x] テキスト選択 — xterm.js ネイティブ（ローカル）/ OSC 52 経由（SSH/DevContainer）
+- [x] スクロール — Swift NSEvent monitor → SGR マウスシーケンス → PTY
+- [x] ペイン split 時のクラッシュ修正 — フラットレイアウト方式
+- [x] スクロールが正しいペインにのみ反映 — hitTest でホバーペイン判定
 - [ ] URL リンク検出 & Cmd+クリックでブラウザオープン
 - [ ] スクロールバー表示（フェード付き）
-- [ ] Ghostty config のユーザーカスタマイズ対応（フォント、テーマ等）
-- [x] GhosttyKit.xcframework のダウンロードスクリプト（`scripts/setup.sh`）
-- [x] IME 入力の位置制御 — GhosttyKit 内蔵
 
-### Cmd ショートカットと Ghostty の衝突
-Ghostty のデフォルトキーバインド（Cmd+D=split, Cmd+W=close, Cmd+1-9=tab switch 等）が
-Belve の SwiftUI ショートカットと衝突してクラッシュする。
-
-**解決済み:**
-- `performKeyEquivalent` で Cmd キーを Ghostty に渡さない (`return false`)
-- `keyUp` で Cmd キーを Ghostty に渡さない
-- SwiftUI `CommandGroup` → `.onKeyPress` に移行（CommandGroup 内の NotificationCenter.post が performKeyEquivalent コールスタック内で @Published 変更を引き起こしクラッシュ）
-- `keybind = clear` で Ghostty のデフォルトバインド全無効化 → **副作用: ターミナルが空になる**
-
-**未解決:**
-- `keybind = clear` の副作用を回避しつつ、Ghostty のデフォルトバインドを無効化する方法
+### セッション永続化 (belve-persist)
+- [x] tmux 依存を排除、Go 製 belve-persist で置き換え
+- [x] ローカル + SSH + DevContainer 全対応
+- [x] PTY パススルー（マウス/OSC/エスケープシーケンス干渉なし）
+- [x] クロスコンパイル（linux/amd64, linux/arm64, darwin/arm64）
+- [x] SCP でリモートデプロイ（base64 では大きすぎるため）
+- [x] SIGHUP 無視で SSH 切断後も生存
+- [x] 256KB リプレイバッファ（再接続時に画面内容を復元）
+- [x] PTYService を raw mode に設定（PTY 2段重ねの CR/LF 問題を解消）
+- [ ] セッション再接続の安定化（daemon+client 分離は未完、auto-attach 方式で動作中）
 
 ### エージェント連携
-- [ ] SSH/DevContainer でのエージェントイベントリレー（`ssh tail -f` 方式の Swift 実装）
+- [x] OSC エスケープシーケンスでエージェントステータスを転送
 - [x] デスクトップ通知（`UserNotifications` framework）— waiting 遷移時にバナー+サウンド
 - [x] 通知クリック → プロジェクト切替 + ペインフォーカス
 - [x] セッションラベル自動生成（Claude Code の初回プロンプトから TopBar に表示）
@@ -46,28 +38,31 @@ Belve の SwiftUI ショートカットと衝突してクラッシュする。
 - [x] ペイン分割 (Cmd+D / Cmd+Shift+D)
 - [x] ペインサイズのドラッグリサイズ（比率ベース、PaneDivider コンポーネント）
 - [x] ペイン閉じる (Cmd+W)
-- [ ] ペイン状態の永続化（分割構成を再起動後も保持）
+- [x] ペイン状態の永続化（分割構成を再起動後も保持）
 - [x] サイドバーの折りたたみ / 展開（アニメーション付き）
 - [x] TopBar に接続状態バッジ（SSH/DevContainer/Local）
 - [x] DevContainer 検出バナー（右下）
 - [x] プロジェクト右クリックコンテキストメニュー（Rename/Delete）
-- [ ] `Cmd+'` でアプリ表示/非表示トグル（グローバルホットキー）— 実装済みだが動作未確認
 
 ### キーボードショートカット
-- [x] プロジェクト切替 (Cmd+1-9) — `.onKeyPress` で実装
-- [x] ペイン分割 (Cmd+D / Cmd+Shift+D) — `.onKeyPress` で実装
-- [x] ペイン閉じる (Cmd+W) — `.onKeyPress` で実装
+- [x] プロジェクト切替 (Cmd+1-9)
+- [x] プロジェクト前後移動 (Cmd+[ / Cmd+])
+- [x] ペインフォーカス移動 (Cmd+; / Cmd+')
+- [x] エディタフォーカス (Cmd+L)
+- [x] エディタトグル (Cmd+E)
+- [x] サイドバートグル (Cmd+\)
+- [x] ファイルツリートグル (Cmd+Shift+E)
+- [x] ペイン分割 (Cmd+D / Cmd+Shift+D)
+- [x] ペイン閉じる (Cmd+W)
 - [x] コマンドパレット (Cmd+Shift+P)
+- [x] ファイル検索 (Cmd+P)
 - [x] フォルダブラウザ (Cmd+O)
-- [ ] tmux 互換 prefix (Ctrl+A) — ペイン移動/分割/閉じる/ズーム
-- [ ] エリア循環移動 (Option+;/')
 
 ## 中期タスク
 
 ### SSH / DevContainer
 - [x] SSH ControlMaster で接続多重化（2本目以降は瞬時接続）
-- [x] tmux 統合（SSH/DevContainer/ローカル全対応、mouse on + extended-keys）
-- [x] SSH 切断後にローカルシェルにフォールバック（exec → 非 exec）
+- [x] belve-persist でセッション永続化（tmux 不要）
 - [x] DevContainer バナー自動検出
 - [x] Belve CLI (`belve` + `claude` wrapper) のリモート自動デプロイ
 - [ ] SSH 自動再接続（切断時のリトライ）
@@ -82,21 +77,29 @@ Belve の SwiftUI ショートカットと衝突してクラッシュする。
 - [x] コードエディタ（CodeMirror 6 + WKWebView）
 - [x] Markdown WYSIWYG エディタ
 - [x] ファイルツリー（ローカル + SSH + DevContainer 対応）
+- [x] ファイル検索 (Cmd+P)
 - [ ] メディアプレビュー改善
 
 ## 実装済み
 
 ### ターミナル
-- [x] GhosttyKit ベースのターミナル描画（Metal GPU レンダリング）
+- [x] xterm.js (WKWebView) ベースのターミナル描画
 - [x] キーボード入力、マウス、スクロール
 - [x] リサイズ + rewrap
 - [x] シェル汎用 PATH 注入（ZDOTDIR for zsh, --rcfile for bash, --init-command for fish）
-- [x] ANSI カラーパレット（One Dark 風）
-- [x] `sendText` メソッド（キーイベント変換付き、`\n` → Enter キー）
+- [x] ANSI カラーパレット（Catppuccin Mocha）
+- [x] OSC 52 クリップボード連携（tmux/SSH 越しのコピー）
 - [x] ペイン分割時の NSView キャッシュ（元ペインの再初期化回避）
 
+### セッション永続化 (belve-persist)
+- [x] Go 製の dtach ライクなプロセス永続化ツール
+- [x] Unix ソケットベースのクライアント接続
+- [x] PTY 完全パススルー（マウス/OSC 干渉なし）
+- [x] 静的バイナリ（CGO_ENABLED=0）で任意の Linux ディストリに対応
+- [x] DevContainer: ホスト側で belve-persist が docker exec を管理
+
 ### エージェント連携
-- [x] ファイルベースのエージェントイベント監視（`/tmp/belve-agent-events`）
+- [x] OSC ベースのエージェントイベント監視
 - [x] Claude Code hooks 自動注入（`claude` wrapper + `belve claude-hook`）
 - [x] ProjectListView のステータスドット表示（running=青, waiting=黄, completed=緑）
 - [x] paneId → projectId マッピング
@@ -106,20 +109,18 @@ Belve の SwiftUI ショートカットと衝突してクラッシュする。
 ### アプリ基盤
 - [x] macOS ネイティブ SwiftUI アプリ
 - [x] マルチプロジェクト管理（サイドバー）
-- [x] プロジェクト切替で接続維持（opacity ベース表示切替、surface 破棄なし）
+- [x] プロジェクト切替で接続維持（opacity ベース表示切替）
 - [x] ペイン分割（縦横グリッド、ドラッグリサイズ）
 - [x] コマンドパレット
 - [x] フォルダブラウザ (Cmd+O、Tab でフォルダ移動、Enter で確定)
 - [x] SSH / DevContainer 接続
 - [x] SSH ControlMaster 多重化
-- [x] tmux 統合
 - [x] TopBar 接続状態バッジ
 - [x] クラッシュシグナルハンドラ
 - [x] バイナリ日時ログ（ビルドキャッシュ検証用）
 
 ### 設計上の注意
-- **Ghostty surface は安全に破棄できない** — deinit/free でクラッシュ。プロジェクト切替は opacity で対応。
-- **GhosttyTerminalView は GeometryReader の子にできない** — GeometryReader が NSViewRepresentable の再作成を引き起こし、surface がクラッシュする。バックグラウンドサイズリーダーで回避。
-- **ペイン分割はフラットレイアウト方式** — 再帰 PaneTreeView だと SwiftUI がビューを破棄/再作成してクラッシュ。ZStack + ForEach でフラットに描画し、split 時にビュー破棄を回避。
+- **ペイン分割はフラットレイアウト方式** — 再帰 PaneTreeView だと SwiftUI がビューを破棄/再作成してクラッシュ。ZStack + ForEach でフラットに描画。
 - **SwiftUI CommandGroup + @Published = クラッシュ** — performKeyEquivalent のコールスタック内で @Published 変更すると EXC_BAD_ACCESS。`.onKeyPress` を使う。
-- **SPM ビルドキャッシュ** — インクリメンタルビルドが変更を反映しないことがある。`swift package clean` + `rm -rf .build` でフルリビルドが必要。
+- **SPM ビルドキャッシュ** — インクリメンタルビルドが変更を反映しないことがある。`swift package clean` でフルリビルド。
+- **PTYService は raw mode** — belve-persist との PTY 2段重ねで CR/LF 二重変換を防ぐため、cfmakeraw で初期化。
