@@ -102,7 +102,6 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		let initialFrame = NSRect(x: 0, y: 0, width: max(1, viewWidth), height: max(1, viewHeight))
 		let webView = TerminalWebView(frame: initialFrame, configuration: config)
-		webView.autoresizingMask = [.width, .height]
 		let terminalIdentifier = paneId.map { "BelveTerminalWebView:\($0)" } ?? "BelveTerminalWebView"
 		webView.identifier = NSUserInterfaceItemIdentifier(terminalIdentifier)
 		webView.setValue(false, forKey: "drawsBackground")
@@ -142,7 +141,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		if viewWidth > 0, viewHeight > 0 {
-			context.coordinator.triggerFitAddon()
+			context.coordinator.resizeTerminal(width: viewWidth, height: viewHeight)
 		}
 	}
 
@@ -383,24 +382,46 @@ struct XTermTerminalView: NSViewRepresentable {
 		private var lastResizeCols = 0
 		private var lastResizeRows = 0
 
-		/// Debounced resize: fitAddon reads viewport (updated by autoresizingMask) + PTY resize
-		func triggerFitAddon() {
+		private var cellWidth: CGFloat = 0
+		private var cellHeight: CGFloat = 0
+
+		/// Resize terminal: calculate cols/rows from pixel dimensions, no fitAddon
+		func resizeTerminal(width: CGFloat, height: CGFloat) {
 			resizeDebounceTimer?.invalidate()
-			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
+			let w = width
+			let h = height
+			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
 				guard let self else { return }
-				self.webView?.evaluateJavaScript("""
-					if(window.fitAddon && window.term) {
-						window.fitAddon.fit();
-						var c = window.term.cols, r = window.term.rows;
-						window.webkit.messageHandlers.terminalHandler.postMessage({type:'resize', cols:c, rows:r});
-						[c, r];
+				if self.cellWidth > 0 {
+					self.applyResize(width: w, height: h)
+				} else {
+					// First time: query cell dimensions from xterm.js
+					self.webView?.evaluateJavaScript("""
+						(function() {
+							if(!window.term || !window.term._core || !window.term._core._renderService) return null;
+							var d = window.term._core._renderService.dimensions;
+							return [d.css.cell.width, d.css.cell.height];
+						})()
+						""") { [weak self] result, _ in
+						guard let self, let arr = result as? [Double], arr.count == 2, arr[0] > 0 else { return }
+						self.cellWidth = CGFloat(arr[0])
+						self.cellHeight = CGFloat(arr[1])
+						self.applyResize(width: w, height: h)
 					}
-					""") { [weak self] result, _ in
-					guard let self, let arr = result as? [Int], arr.count == 2 else { return }
-					self.lastResizeCols = arr[0]
-					self.lastResizeRows = arr[1]
 				}
 			}
+		}
+
+		private func applyResize(width: CGFloat, height: CGFloat) {
+			let cols = max(2, Int(width / cellWidth))
+			let rows = max(1, Int(height / cellHeight))
+			guard cols != lastResizeCols || rows != lastResizeRows else { return }
+			lastResizeCols = cols
+			lastResizeRows = rows
+			// Resize xterm.js buffer + PTY atomically
+			webView?.evaluateJavaScript("if(window.term)window.term.resize(\(cols),\(rows))", completionHandler: nil)
+			ptyService?.setSize(cols: cols, rows: rows)
+		}
 		}
 
 		func copySelectionToPasteboard() {
