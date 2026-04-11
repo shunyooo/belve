@@ -380,7 +380,7 @@ struct XTermTerminalView: NSViewRepresentable {
 			commandAreaState?.activePaneId = paneUUID
 		}
 
-		private var resizeDebounceTimer: Timer?
+		private var resizeDebounceWorkItem: DispatchWorkItem?
 		private var lastResizeCols = 0
 		private var lastResizeRows = 0
 
@@ -389,16 +389,15 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		/// Resize terminal: calculate cols/rows from pixel dimensions, no fitAddon
 		func resizeTerminal(width: CGFloat, height: CGFloat) {
-			resizeDebounceTimer?.invalidate()
+			resizeDebounceWorkItem?.cancel()
 			let w = width
 			let h = height
-			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
+			let workItem = DispatchWorkItem { [weak self] in
 				guard let self else { return }
-				NSLog("[Belve] resizeTerminal timer w=%.0f cellW=%.1f lastCols=%d", w, self.cellWidth, self.lastResizeCols)
+				NSLog("[Belve] resizeTerminal fire w=%.0f cellW=%.1f lastCols=%d", w, self.cellWidth, self.lastResizeCols)
 				if self.cellWidth > 0 {
 					self.applyResize(width: w, height: h)
 				} else {
-					// First time: query cell dimensions from xterm.js
 					self.webView?.evaluateJavaScript("""
 						(function() {
 							if(!window.term || !window.term._core || !window.term._core._renderService) return null;
@@ -413,6 +412,8 @@ struct XTermTerminalView: NSViewRepresentable {
 					}
 				}
 			}
+			resizeDebounceWorkItem = workItem
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
 		}
 
 		private func applyResize(width: CGFloat, height: CGFloat) {

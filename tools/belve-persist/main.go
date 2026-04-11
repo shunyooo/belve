@@ -107,14 +107,13 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	cmd.Stdin = ttyFile
 	cmd.Stdout = ttyFile
 	cmd.Stderr = ttyFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
+	cmd.SysProcAttr = setSysProcAttr(ttyFile)
 	cmd.Env = os.Environ()
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "exec: %v\n", err)
 		os.Exit(1)
 	}
+	childPid = cmd.Process.Pid
 	ttyFile.Close()
 	ptyFile := os.NewFile(ptyFd, "pty")
 

@@ -40,10 +40,26 @@ func setPtySize(fd uintptr, cols, rows uint16) {
 	sendSigwinchToPty(fd)
 }
 
+var childPid int // set by runMaster after cmd.Start()
+
+func setSysProcAttr(ttyFile *os.File) *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    int(ttyFile.Fd()),
+	}
+}
+
 func sendSigwinchToPty(fd uintptr) {
+	// Try TIOCGPGRP first (foreground process group of PTY)
 	var pgid int32
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&pgid)))
 	if errno == 0 && pgid > 0 {
 		syscall.Kill(-int(pgid), syscall.SIGWINCH)
+		return
+	}
+	// Fallback: send to child process directly
+	if childPid > 0 {
+		syscall.Kill(childPid, syscall.SIGWINCH)
 	}
 }

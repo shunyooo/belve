@@ -50,10 +50,22 @@ func setPtySize(fd uintptr, cols, rows uint16) {
 	sendSigwinchToPty(fd)
 }
 
+var childPid int
+
+func setSysProcAttr(ttyFile *os.File) *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{
+		Setsid: true,
+	}
+}
+
 func sendSigwinchToPty(fd uintptr) {
 	var pgid int32
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&pgid)))
 	if errno == 0 && pgid > 0 {
 		syscall.Kill(-int(pgid), syscall.SIGWINCH)
+		return
+	}
+	if childPid > 0 {
+		syscall.Kill(childPid, syscall.SIGWINCH)
 	}
 }
