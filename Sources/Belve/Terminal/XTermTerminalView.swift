@@ -91,6 +91,8 @@ struct XTermTerminalView: NSViewRepresentable {
 	let project: Project
 	var paneId: String?
 	var paneIndex: Int = 0
+	var viewWidth: CGFloat = 0
+	var viewHeight: CGFloat = 0
 	@EnvironmentObject var notificationStore: NotificationStore
 	@EnvironmentObject var commandAreaState: CommandAreaState
 
@@ -138,8 +140,9 @@ struct XTermTerminalView: NSViewRepresentable {
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
-		// WKWebView auto-resizes via autoresizingMask to match SwiftUI .frame()
-		// fitAddon reads viewport dimensions which should match the actual view size
+		// viewWidth/viewHeight change triggers this call.
+		// autoresizingMask ensures WKWebView frame matches SwiftUI .frame().
+		// fitAddon reads the correct viewport dimensions.
 		context.coordinator.triggerFitAddon()
 	}
 
