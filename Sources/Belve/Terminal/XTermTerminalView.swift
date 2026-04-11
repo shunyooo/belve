@@ -190,6 +190,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		private var outputBuffer = Data()
 		private var flushTimer: Timer?
 		private var isWaitingForInitialOutput = false
+		private var pendingReady = false
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let body = message.body as? [String: Any],
@@ -197,9 +198,9 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			switch type {
 			case "ready":
-				let cols = body["cols"] as? Int ?? 80
-				let rows = body["rows"] as? Int ?? 24
-				startPTY(cols: cols, rows: rows)
+				// Don't start PTY yet — wait for CSS resize to set correct dimensions.
+				// The first "resize" event after CSS update will trigger startPTY.
+				pendingReady = true
 				focusTerminal()
 
 			case "input":
@@ -211,7 +212,12 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "resize":
 				let cols = body["cols"] as? Int ?? 80
 				let rows = body["rows"] as? Int ?? 24
-				ptyService?.setSize(cols: cols, rows: rows)
+				if pendingReady {
+					pendingReady = false
+					startPTY(cols: cols, rows: rows)
+				} else {
+					ptyService?.setSize(cols: cols, rows: rows)
+				}
 
 			case "bell":
 				NSSound.beep()
