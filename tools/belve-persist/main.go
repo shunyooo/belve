@@ -42,7 +42,7 @@ func main() {
 	if *daemon && *command != "" {
 		args := flag.Args()
 		if len(args) == 0 {
-			runMaster(*socketPath, "/bin/sh", []string{"-c", *command}, uint16(*initCols), uint16(*initRows))
+			runMaster(*socketPath, *command, nil, uint16(*initCols), uint16(*initRows))
 		} else {
 			runMaster(*socketPath, *command, args, uint16(*initCols), uint16(*initRows))
 		}
@@ -63,7 +63,7 @@ func main() {
 	args := flag.Args()
 	var cmdArgs []string
 	if len(args) == 0 {
-		cmdArgs = []string{"/bin/sh", "-c", *command}
+		cmdArgs = []string{*command}
 	} else {
 		cmdArgs = append([]string{*command}, args...)
 	}
@@ -105,7 +105,11 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	cmd.Stdin = ttyFile
 	cmd.Stdout = ttyFile
 	cmd.Stderr = ttyFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    int(ttyFile.Fd()),
+	}
 	cmd.Env = os.Environ()
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "exec: %v\n", err)
