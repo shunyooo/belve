@@ -391,11 +391,19 @@ struct XTermTerminalView: NSViewRepresentable {
 			// Debounce: SwiftUI calls updateNSView multiple times during layout.
 			resizeDebounceTimer?.invalidate()
 			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
-				// Set CSS dimensions, wait for DOM layout, then fitAddon.fit()
-				self?.webView?.evaluateJavaScript(
-					"var t=document.getElementById('terminal');if(t){t.style.width='\(width)px';t.style.height='\(height)px';requestAnimationFrame(function(){if(window.fitAddon)window.fitAddon.fit()})}",
-					completionHandler: nil
-				)
+				// Calculate cols/rows from xterm.js actual cell dimensions (not fitAddon, which uses wrong viewport)
+				self?.webView?.evaluateJavaScript("""
+					if(window.term && window.term._core && window.term._core._renderService) {
+						var d = window.term._core._renderService.dimensions;
+						var cw = d.css.cell.width;
+						var ch = d.css.cell.height;
+						if(cw > 0 && ch > 0) {
+							var cols = Math.max(2, Math.floor(\(width) / cw));
+							var rows = Math.max(1, Math.floor(\(height) / ch));
+							window.term.resize(cols, rows);
+						}
+					}
+					""", completionHandler: nil)
 			}
 		}
 
