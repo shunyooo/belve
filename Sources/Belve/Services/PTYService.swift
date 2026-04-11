@@ -130,8 +130,14 @@ class PTYService {
 		var size = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
 		let _ = ioctl(masterFd, TIOCSWINSZ, &size)
 		// PTY has no controlling terminal (POSIX_SPAWN_SETSID without Setctty),
-		// so TIOCSWINSZ doesn't trigger SIGWINCH. Send it explicitly to the process group.
-		kill(-pid, SIGWINCH)
+		// so TIOCSWINSZ doesn't trigger SIGWINCH.
+		// Send SIGWINCH to the foreground process group of the PTY slave.
+		var fpgid: pid_t = 0
+		if ioctl(masterFd, TIOCGPGRP, &fpgid) == 0, fpgid > 0 {
+			kill(-fpgid, SIGWINCH)
+		} else {
+			kill(-pid, SIGWINCH)
+		}
 	}
 
 	private func startReading() {
