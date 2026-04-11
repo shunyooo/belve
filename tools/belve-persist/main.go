@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"os/exec"
 	"os/signal"
 	"sync"
@@ -82,8 +83,13 @@ func main() {
 	os.Exit(1)
 }
 
+var containerID string
+
 func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	os.Remove(socketPath)
+
+	// Detect container ID from docker exec command args
+	containerID = detectContainerID(command, args)
 
 	// Ignore SIGHUP to survive SSH/docker disconnects
 	signal.Ignore(syscall.SIGHUP)
@@ -201,6 +207,10 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 							cols := binary.BigEndian.Uint16(payload[0:2])
 							rows := binary.BigEndian.Uint16(payload[2:4])
 							setPtySize(ptyFd, cols, rows)
+							// For docker exec: resize the container PTY via docker exec stty
+							if containerID != "" {
+								go resizeContainerPty(containerID, cols, rows)
+							}
 						}
 					}
 				}
@@ -337,4 +347,44 @@ func readMsg(r io.Reader) (byte, []byte, error) {
 		}
 	}
 	return header[0], payload, nil
+}
+
+// detectContainerID extracts the container ID from docker exec command args.
+// Looks for "docker" command followed by "exec" and a long hex string.
+func detectContainerID(command string, args []string) string {
+	allArgs := append([]string{command}, args...)
+	foundExec := false
+	for _, arg := range allArgs {
+		if arg == "exec" {
+			foundExec = true
+			continue
+		}
+		if foundExec && len(arg) >= 12 && !strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "/") {
+			// Skip -it, -w, -e flags and their values
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+			// This looks like a container ID (12+ hex chars)
+			isHex := true
+			for _, c := range arg[:12] {
+				if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+					isHex = false
+					break
+				}
+			}
+			if isHex {
+				return arg
+			}
+		}
+	}
+	return ""
+}
+
+// resizeContainerPty resizes the PTY inside a Docker container by
+// running stty via docker exec. This bypasses the docker exec SIGWINCH issue.
+func resizeContainerPty(cid string, cols, rows uint16) {
+	// Find the bash process inside the container and resize its PTY
+	cmd := exec.Command("docker", "exec", cid, "sh", "-c",
+		fmt.Sprintf("PID=$(pgrep -f belve-bashrc | tail -1) && [ -n \"$PID\" ] && TTY=$(readlink /proc/$PID/fd/0) && stty -F $TTY rows %d cols %d", rows, cols))
+	cmd.Run()
 }
