@@ -142,13 +142,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		if viewWidth > 0, viewHeight > 0 {
-			// Force WKWebView frame to match SwiftUI pane size immediately
-			// (autoresizingMask updates in the next layout cycle — too late)
-			let newSize = CGSize(width: viewWidth, height: viewHeight)
-			if nsView.frame.size != newSize {
-				nsView.setFrameSize(newSize)
-			}
-			context.coordinator.updateSize(width: viewWidth, height: viewHeight)
+			context.coordinator.updateSize(width: viewWidth, height: viewHeight, webView: nsView as? TerminalWebView)
 		}
 	}
 
@@ -416,13 +410,18 @@ struct XTermTerminalView: NSViewRepresentable {
 			}
 		}
 
-		func updateSize(width: CGFloat, height: CGFloat) {
+		func updateSize(width: CGFloat, height: CGFloat, webView targetWebView: TerminalWebView?) {
 			resizeDebounceTimer?.invalidate()
+			let w = width
+			let h = height
 			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
 				guard let self else { return }
+				// Set WKWebView frame right before resize (SwiftUI can't override inside timer)
+				let wv = targetWebView ?? self.webView as? TerminalWebView
+				wv?.setFrameSize(CGSize(width: w, height: h))
 				self.queryCellDimensions { cw, ch in
-					let cols = max(2, Int(width / cw))
-					let rows = max(1, Int(height / ch))
+					let cols = max(2, Int(w / cw))
+					let rows = max(1, Int(h / ch))
 					guard cols != self.lastResizeCols || rows != self.lastResizeRows else { return }
 					self.lastResizeCols = cols
 					self.lastResizeRows = rows
