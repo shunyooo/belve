@@ -102,6 +102,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		let initialFrame = NSRect(x: 0, y: 0, width: max(1, viewWidth), height: max(1, viewHeight))
 		let webView = TerminalWebView(frame: initialFrame, configuration: config)
+		webView.autoresizingMask = [.width, .height]
 		let terminalIdentifier = paneId.map { "BelveTerminalWebView:\($0)" } ?? "BelveTerminalWebView"
 		webView.identifier = NSUserInterfaceItemIdentifier(terminalIdentifier)
 		webView.setValue(false, forKey: "drawsBackground")
