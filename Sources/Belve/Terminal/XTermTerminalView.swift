@@ -214,8 +214,9 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 
 			case "resize":
-				// Ignore JS-originated resize — size is managed by updateNSView
-				break
+				let cols = body["cols"] as? Int ?? 80
+				let rows = body["rows"] as? Int ?? 24
+				ptyService?.setSize(cols: cols, rows: rows)
 
 			case "bell":
 				NSSound.beep()
