@@ -428,6 +428,12 @@ struct XTermTerminalView: NSViewRepresentable {
 			guard cols != lastResizeCols || rows != lastResizeRows else { return }
 			lastResizeCols = cols
 			lastResizeRows = rows
+			// Log terminal-side width for comparison
+			webView?.evaluateJavaScript("window.innerWidth") { [weak self] result, _ in
+				let jsW = result as? Double ?? -1
+				NSLog("[Belve] applyResize pane=%@ cols=%d viewW=%.0f jsInnerW=%.0f cellW=%.1f",
+					  self?.paneId ?? "?", cols, width, jsW, self?.cellWidth ?? 0)
+			}
 			// Resize xterm.js buffer + PTY atomically
 			webView?.evaluateJavaScript("if(window.term)window.term.resize(\(cols),\(rows))", completionHandler: nil)
 			ptyService?.setSize(cols: cols, rows: rows)
