@@ -42,7 +42,7 @@ func main() {
 	if *daemon && *command != "" {
 		args := flag.Args()
 		if len(args) == 0 {
-			runMaster(*socketPath, *command, nil, uint16(*initCols), uint16(*initRows))
+			runMaster(*socketPath, "/bin/sh", []string{"-c", *command}, uint16(*initCols), uint16(*initRows))
 		} else {
 			runMaster(*socketPath, *command, args, uint16(*initCols), uint16(*initRows))
 		}
@@ -63,8 +63,10 @@ func main() {
 	args := flag.Args()
 	var cmdArgs []string
 	if len(args) == 0 {
-		cmdArgs = []string{*command}
+		// Single command string: wrap in /bin/sh -c for compound commands (env vars, pipes, etc.)
+		cmdArgs = []string{"/bin/sh", "-c", *command}
 	} else {
+		// Multi-arg command (e.g. docker exec -it ...): exec directly
 		cmdArgs = append([]string{*command}, args...)
 	}
 	spawnDaemon(*socketPath, cmdArgs, *initCols, *initRows)
