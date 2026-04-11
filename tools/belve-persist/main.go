@@ -89,11 +89,6 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 
 	// Detect container ID from docker exec command args
 	containerID = detectContainerID(command, args)
-	// Write debug to a file since stderr is /dev/null in daemon mode
-	if f, err := os.OpenFile("/tmp/belve-persist-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-		fmt.Fprintf(f, "containerID=%s command=%s args=%v\n", containerID, command, args)
-		f.Close()
-	}
 
 	// Ignore SIGHUP to survive SSH/docker disconnects
 	signal.Ignore(syscall.SIGHUP)
@@ -212,10 +207,6 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 							rows := binary.BigEndian.Uint16(payload[2:4])
 							setPtySize(ptyFd, cols, rows)
 							if containerID != "" {
-								if f, err := os.OpenFile("/tmp/belve-persist-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-									fmt.Fprintf(f, "resize cols=%d rows=%d container=%s\n", cols, rows, containerID[:12])
-									f.Close()
-								}
 								go resizeContainerPty(containerID, cols, rows)
 							}
 						}
@@ -381,7 +372,8 @@ func detectContainerID(command string, args []string) string {
 // resizeContainerPty resizes the PTY inside a Docker container by
 // running stty via docker exec. This bypasses the docker exec SIGWINCH issue.
 func resizeContainerPty(cid string, cols, rows uint16) {
+	// Resize only the 4 newest belve-bashrc processes (avoid old zombie sessions)
 	cmd := exec.Command("docker", "exec", cid, "sh", "-c",
-		fmt.Sprintf("for p in $(pgrep -f belve-bashrc); do TTY=$(readlink /proc/$p/fd/0 2>/dev/null) && [ -n \"$TTY\" ] && stty -F $TTY rows %d cols %d 2>/dev/null; done", rows, cols))
+		fmt.Sprintf("for p in $(ps aux --sort=-start_time | grep belve-bashrc | grep -v grep | head -4 | awk '{print $2}'); do TTY=$(readlink /proc/$p/fd/0 2>/dev/null) && [ -n \"$TTY\" ] && stty -F $TTY rows %d cols %d 2>/dev/null; done", rows, cols))
 	cmd.Run()
 }

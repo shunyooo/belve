@@ -142,7 +142,6 @@ struct XTermTerminalView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		if viewWidth > 0, viewHeight > 0 {
-			NSLog("[Belve] updateNSView vw=%.0f", viewWidth)
 			context.coordinator.resizeTerminal(width: viewWidth, height: viewHeight)
 		}
 	}
@@ -394,7 +393,6 @@ struct XTermTerminalView: NSViewRepresentable {
 			let h = height
 			let workItem = DispatchWorkItem { [weak self] in
 				guard let self else { return }
-				NSLog("[Belve] resizeTerminal fire w=%.0f cellW=%.1f lastCols=%d", w, self.cellWidth, self.lastResizeCols)
 				if self.cellWidth > 0 {
 					self.applyResize(width: w, height: h)
 				} else {
@@ -413,7 +411,7 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 			}
 			resizeDebounceWorkItem = workItem
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
 		}
 
 		private func applyResize(width: CGFloat, height: CGFloat) {
