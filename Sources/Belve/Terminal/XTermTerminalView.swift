@@ -386,13 +386,19 @@ struct XTermTerminalView: NSViewRepresentable {
 		private var cellWidth: CGFloat = 0
 		private var cellHeight: CGFloat = 0
 
+		private var pendingWidth: CGFloat = 0
+		private var pendingHeight: CGFloat = 0
+
 		/// Resize terminal: calculate cols/rows from pixel dimensions, no fitAddon
+		/// Uses the LAST width received during debounce period (SwiftUI settles to final value last)
 		func resizeTerminal(width: CGFloat, height: CGFloat) {
+			pendingWidth = width
+			pendingHeight = height
 			resizeDebounceWorkItem?.cancel()
-			let w = width
-			let h = height
 			let workItem = DispatchWorkItem { [weak self] in
 				guard let self else { return }
+				let w = self.pendingWidth
+				let h = self.pendingHeight
 				if self.cellWidth > 0 {
 					self.applyResize(width: w, height: h)
 				} else {
@@ -406,7 +412,7 @@ struct XTermTerminalView: NSViewRepresentable {
 						guard let self, let arr = result as? [Double], arr.count == 2, arr[0] > 0 else { return }
 						self.cellWidth = CGFloat(arr[0])
 						self.cellHeight = CGFloat(arr[1])
-						self.applyResize(width: w, height: h)
+						self.applyResize(width: self.pendingWidth, height: self.pendingHeight)
 					}
 				}
 			}
