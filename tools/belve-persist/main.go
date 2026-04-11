@@ -106,9 +106,7 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	cmd.Stdout = ttyFile
 	cmd.Stderr = ttyFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:  true,
-		Setctty: true,
-		Ctty:    int(ttyFile.Fd()),
+		Setsid: true,
 	}
 	cmd.Env = os.Environ()
 	if err := cmd.Start(); err != nil {
