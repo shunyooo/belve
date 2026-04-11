@@ -198,10 +198,13 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			switch type {
 			case "ready":
-				// Don't start PTY yet — wait for CSS resize to set correct dimensions.
-				// The first "resize" event after CSS update will trigger startPTY.
+				// Don't start PTY yet — CSS resize timer will start it with correct dimensions.
 				pendingReady = true
 				focusTerminal()
+				// Trigger CSS resize immediately (updateNSView may have already set dimensions)
+				if lastCSSWidth > 0 && lastCSSHeight > 0 {
+					triggerCSSResize(width: lastCSSWidth, height: lastCSSHeight)
+				}
 
 			case "input":
 				if let b64 = body["data"] as? String,
@@ -210,6 +213,13 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 
 			case "resize":
+				let cols = body["cols"] as? Int ?? 80
+				let rows = body["rows"] as? Int ?? 24
+				if !pendingReady {
+					ptyService?.setSize(cols: cols, rows: rows)
+				}
+
+			case "cssResize":
 				let cols = body["cols"] as? Int ?? 80
 				let rows = body["rows"] as? Int ?? 24
 				if pendingReady {
@@ -388,22 +398,23 @@ struct XTermTerminalView: NSViewRepresentable {
 			guard width != lastCSSWidth || height != lastCSSHeight else { return }
 			lastCSSWidth = width
 			lastCSSHeight = height
-			// Debounce: SwiftUI calls updateNSView multiple times during layout.
+			triggerCSSResize(width: width, height: height)
+		}
+
+		private func triggerCSSResize(width: Int, height: Int) {
 			resizeDebounceTimer?.invalidate()
-			let w = width
-			let h = height
 			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
-				// Calculate cols/rows from xterm.js actual cell dimensions, resize, and update PTY
-				self?.webView?.evaluateJavaScript("""
+				guard let self else { return }
+				self.webView?.evaluateJavaScript("""
 					if(window.term && window.term._core && window.term._core._renderService) {
 						var d = window.term._core._renderService.dimensions;
 						var cw = d.css.cell.width;
 						var ch = d.css.cell.height;
 						if(cw > 0 && ch > 0) {
-							var cols = Math.max(2, Math.floor(\(w) / cw));
-							var rows = Math.max(1, Math.floor(\(h) / ch));
+							var cols = Math.max(2, Math.floor(\(width) / cw));
+							var rows = Math.max(1, Math.floor(\(height) / ch));
 							window.term.resize(cols, rows);
-							window.webkit.messageHandlers.terminalHandler.postMessage({type:'resize', cols:cols, rows:rows});
+							window.webkit.messageHandlers.terminalHandler.postMessage({type:'cssResize', cols:cols, rows:rows});
 						}
 					}
 					""", completionHandler: nil)
