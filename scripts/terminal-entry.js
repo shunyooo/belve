@@ -217,14 +217,14 @@ term.onBinary(function(data) {
 	postMessage({ type: 'input', data: btoa(data) });
 });
 
-// Resize with debounce
+// Resize with debounce — 300ms to skip SwiftUI intermediate layout passes
 let resizeTimeout = null;
 const resizeObserver = new ResizeObserver(function() {
 	if (resizeTimeout) clearTimeout(resizeTimeout);
 	resizeTimeout = setTimeout(function() {
 		fitAddon.fit();
 		postMessage({ type: 'resize', cols: term.cols, rows: term.rows });
-	}, 16);
+	}, 300);
 });
 resizeObserver.observe(terminalContainer);
 
