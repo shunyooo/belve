@@ -306,14 +306,8 @@ window.addEventListener('blur', function() {
 	setMetaPressed(false);
 });
 
-// Notify Swift that terminal is ready (after layout settles)
-// Double-fit: first to get initial size, then after a short delay for WKWebView layout
+// Notify Swift that terminal is ready
+// Swift manages terminal size via updateNSView, so no fitAddon.fit() here.
 requestAnimationFrame(function() {
-	fitAddon.fit();
 	postMessage({ type: 'ready', cols: term.cols, rows: term.rows });
-	// Second fit after WKWebView finishes layout
-	setTimeout(function() {
-		fitAddon.fit();
-		postMessage({ type: 'resize', cols: term.cols, rows: term.rows });
-	}, 100);
 });

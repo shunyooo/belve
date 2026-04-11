@@ -139,16 +139,11 @@ struct XTermTerminalView: NSViewRepresentable {
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
-		let w = viewWidth
-		let h = viewHeight
+		let w = Int(viewWidth)
+		let h = Int(viewHeight)
 		if w > 0, h > 0 {
-			// Calculate cols/rows from pixel dimensions and font metrics
-			// Font: Menlo 13px → charWidth ≈ 7.8px, lineHeight ≈ 17px
-			let charWidth: CGFloat = 7.8
-			let lineHeight: CGFloat = 17.0
-			let cols = max(1, Int(w / charWidth))
-			let rows = max(1, Int(h / lineHeight))
-			context.coordinator.updateTerminalSize(cols: cols, rows: rows)
+			// Set CSS dimensions to match pane size, then let fitAddon calculate cols/rows
+			context.coordinator.updateTerminalCSS(width: w, height: h)
 		}
 	}
 
@@ -202,8 +197,8 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			switch type {
 			case "ready":
-				let cols = lastCols > 0 ? lastCols : (body["cols"] as? Int ?? 80)
-				let rows = lastRows > 0 ? lastRows : (body["rows"] as? Int ?? 24)
+				let cols = body["cols"] as? Int ?? 80
+				let rows = body["rows"] as? Int ?? 24
 				startPTY(cols: cols, rows: rows)
 				focusTerminal()
 
@@ -379,15 +374,23 @@ struct XTermTerminalView: NSViewRepresentable {
 			commandAreaState?.activePaneId = paneUUID
 		}
 
-		private var lastCols = 0
-		private var lastRows = 0
+		private var lastCSSWidth = 0
+		private var lastCSSHeight = 0
+		private var resizeDebounceTimer: Timer?
 
-		func updateTerminalSize(cols: Int, rows: Int) {
-			guard cols != lastCols || rows != lastRows else { return }
-			lastCols = cols
-			lastRows = rows
-			ptyService?.setSize(cols: cols, rows: rows)
-			webView?.evaluateJavaScript("if(window.term){window.term.resize(\(cols),\(rows))}", completionHandler: nil)
+		func updateTerminalCSS(width: Int, height: Int) {
+			guard width != lastCSSWidth || height != lastCSSHeight else { return }
+			lastCSSWidth = width
+			lastCSSHeight = height
+			// Debounce: SwiftUI calls updateNSView multiple times during layout.
+			resizeDebounceTimer?.invalidate()
+			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+				// Set CSS dimensions → fitAddon.fit() calculates correct cols/rows → ResizeObserver sends resize
+				self?.webView?.evaluateJavaScript(
+					"var t=document.getElementById('terminal');if(t){t.style.width='\(width)px';t.style.height='\(height)px';if(window.fitAddon)window.fitAddon.fit()}",
+					completionHandler: nil
+				)
+			}
 		}
 
 		func copySelectionToPasteboard() {

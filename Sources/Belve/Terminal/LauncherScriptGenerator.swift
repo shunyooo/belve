@@ -25,10 +25,11 @@ enum LauncherScriptGenerator {
 		export TERM=xterm-256color
 		BELVE_BIN_DIR="\#(embeddedBinDir.path)"
 		BELVE_SSH_CONTROL="/tmp/belve-ssh-ctrl-%r@%h:%p"
-		SSH_COMMON="-o ControlMaster=auto -o ControlPath=$BELVE_SSH_CONTROL -o ControlPersist=30 -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-		SCP_OPTS="$SSH_COMMON"
-		SETUP_SSH="ssh $SSH_COMMON"
-		CONNECT_SSH="ssh $SSH_COMMON -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color"
+		SETUP_COMMON="-o ControlMaster=auto -o ControlPath=$BELVE_SSH_CONTROL -o ControlPersist=30 -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+		SCP_OPTS="$SETUP_COMMON"
+		SETUP_SSH="ssh $SETUP_COMMON"
+		# Connect uses independent connection (no ControlMaster) so SIGWINCH propagates correctly
+		CONNECT_SSH="ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
 
 		# Deploy a file via SCP with md5 checksum skip
 		# Uses .new + mv to avoid "Text file busy" on running binaries
