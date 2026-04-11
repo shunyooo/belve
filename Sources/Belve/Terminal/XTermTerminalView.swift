@@ -216,7 +216,7 @@ struct XTermTerminalView: NSViewRepresentable {
 				ptyService?.setSize(cols: cols, rows: rows)
 
 			case "viewportChanged":
-				triggerFitAddon()
+				break // Handled by updateNSView → triggerFitAddon
 
 			case "bell":
 				NSSound.beep()
