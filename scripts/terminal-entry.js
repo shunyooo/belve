@@ -51,6 +51,16 @@ term.attachCustomKeyEventHandler(function(e) {
 term.open(terminalContainer);
 window.term = term;
 window.fitAddon = fitAddon;
+
+// Debug: resize terminal and PTY to specific cols/rows
+window.debugResize = function(cols, rows) {
+	var before = { cols: term.cols, rows: term.rows };
+	term.resize(cols, rows);
+	var after = { cols: term.cols, rows: term.rows };
+	postMessage({ type: 'resize', cols: cols, rows: rows });
+	postMessage({ type: 'log', msg: 'debugResize before=' + JSON.stringify(before) + ' after=' + JSON.stringify(after) });
+	return after;
+};
 fitAddon.fit();
 
 const terminalPathRegex = /(?:^|[\s("'`\[])(\.{1,2}\/[^\s"'`)\]]+|\/[^\s"'`)\]]+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)(?::\d+)?(?::\d+)?/g;

@@ -605,6 +605,12 @@ struct XTermTerminalView: NSViewRepresentable {
 				if !shift {
 					NotificationCenter.default.post(name: .belveUndo, object: nil)
 				}
+			case "t":
+				if shift {
+					// Debug: resize terminal to 40x20 to test resize chain
+					NSLog("[Belve] DEBUG: triggering debugResize(40, 20) on pane=%@", paneId ?? "nil")
+					webView?.evaluateJavaScript("window.debugResize(40, 20)", completionHandler: nil)
+				}
 			default:
 				// Forward Cmd+1-9 for project switching
 				if let digit = Int(key), digit >= 1 && digit <= 9 {
