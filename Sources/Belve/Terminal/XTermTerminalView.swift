@@ -142,6 +142,12 @@ struct XTermTerminalView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		if viewWidth > 0, viewHeight > 0 {
+			// Force WKWebView frame to match SwiftUI pane size immediately
+			// (autoresizingMask updates in the next layout cycle — too late)
+			let newSize = CGSize(width: viewWidth, height: viewHeight)
+			if nsView.frame.size != newSize {
+				nsView.setFrameSize(newSize)
+			}
 			context.coordinator.updateSize(width: viewWidth, height: viewHeight)
 		}
 	}
