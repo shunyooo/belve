@@ -216,6 +216,9 @@ struct XTermTerminalView: NSViewRepresentable {
 				let rows = body["rows"] as? Int ?? 24
 				ptyService?.setSize(cols: cols, rows: rows)
 
+			case "viewportChanged":
+				triggerFitAddon()
+
 			case "bell":
 				NSSound.beep()
 
@@ -383,21 +386,20 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		func triggerFitAddon() {
 			resizeDebounceTimer?.invalidate()
-			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
+			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
 				guard let self else { return }
+				// fitAddon.fit() reads viewport and resizes term + sends resize to PTY atomically
 				self.webView?.evaluateJavaScript("""
 					if(window.fitAddon && window.term) {
 						window.fitAddon.fit();
-						[window.term.cols, window.term.rows];
+						var c = window.term.cols, r = window.term.rows;
+						window.webkit.messageHandlers.terminalHandler.postMessage({type:'resize', cols:c, rows:r});
+						[c, r];
 					}
 					""") { [weak self] result, _ in
 					guard let self, let arr = result as? [Int], arr.count == 2 else { return }
-					let cols = arr[0]
-					let rows = arr[1]
-					guard cols != self.lastResizeCols || rows != self.lastResizeRows else { return }
-					self.lastResizeCols = cols
-					self.lastResizeRows = rows
-					self.ptyService?.setSize(cols: cols, rows: rows)
+					self.lastResizeCols = arr[0]
+					self.lastResizeRows = arr[1]
 				}
 			}
 		}

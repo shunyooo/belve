@@ -241,14 +241,13 @@ term.onBinary(function(data) {
 	postMessage({ type: 'input', data: btoa(data) });
 });
 
-// ResizeObserver — fitAddon recalculates cols from actual viewport
+// ResizeObserver — only notify Swift of size change (Swift manages resize via triggerFitAddon)
 let resizeTimeout = null;
 const resizeObserver = new ResizeObserver(function() {
 	if (resizeTimeout) clearTimeout(resizeTimeout);
 	resizeTimeout = setTimeout(function() {
-		fitAddon.fit();
-		postMessage({ type: 'resize', cols: term.cols, rows: term.rows });
-	}, 200);
+		postMessage({ type: 'viewportChanged' });
+	}, 50);
 });
 resizeObserver.observe(terminalContainer);
 
