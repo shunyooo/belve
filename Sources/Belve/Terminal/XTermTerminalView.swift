@@ -142,6 +142,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		if viewWidth > 0, viewHeight > 0 {
+			NSLog("[Belve] updateNSView pane=%@ viewW=%.0f nsFrameW=%.0f", paneId ?? "nil", viewWidth, nsView.frame.width)
 			context.coordinator.updateSize(width: viewWidth, height: viewHeight, webView: nsView as? TerminalWebView)
 		}
 	}
@@ -412,16 +413,19 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		func updateSize(width: CGFloat, height: CGFloat, webView targetWebView: TerminalWebView?) {
 			resizeDebounceTimer?.invalidate()
-			let w = width
-			let h = height
-			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
 				guard let self else { return }
-				// Set WKWebView frame right before resize (SwiftUI can't override inside timer)
-				let wv = targetWebView ?? self.webView as? TerminalWebView
-				wv?.setFrameSize(CGSize(width: w, height: h))
-				self.queryCellDimensions { cw, ch in
-					let cols = max(2, Int(w / cw))
-					let rows = max(1, Int(h / ch))
+				// Use JS window.innerWidth (actual viewport) instead of Swift viewWidth (may lag)
+				self.webView?.evaluateJavaScript("""
+					(function() {
+						if(!window.term || !window.term._core || !window.term._core._renderService) return null;
+						var d = window.term._core._renderService.dimensions;
+						return [window.innerWidth, window.innerHeight, d.css.cell.width, d.css.cell.height];
+					})()
+					""") { [weak self] result, _ in
+					guard let self, let arr = result as? [Double], arr.count == 4, arr[2] > 0, arr[3] > 0 else { return }
+					let cols = max(2, Int(arr[0] / arr[2]))
+					let rows = max(1, Int(arr[1] / arr[3]))
 					guard cols != self.lastResizeCols || rows != self.lastResizeRows else { return }
 					self.lastResizeCols = cols
 					self.lastResizeRows = rows
@@ -607,7 +611,10 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 			case "t":
 				if shift {
-					// Debug: resize terminal to 40x20 to test resize chain
+					// Debug: report dimensions then resize to 40x20
+					webView?.evaluateJavaScript("JSON.stringify(window.debugDimensions())") { result, _ in
+						NSLog("[Belve] DEBUG dims pane=%@ %@", self.paneId ?? "nil", result as? String ?? "nil")
+					}
 					NSLog("[Belve] DEBUG: triggering debugResize(40, 20) on pane=%@", paneId ?? "nil")
 					webView?.evaluateJavaScript("window.debugResize(40, 20)", completionHandler: nil)
 				}
