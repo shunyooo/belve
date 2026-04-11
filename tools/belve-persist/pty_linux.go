@@ -35,4 +35,15 @@ func openPTY() (masterFd uintptr, ttyPath string, err error) {
 func setPtySize(fd uintptr, cols, rows uint16) {
 	ws := struct{ rows, cols, xpixel, ypixel uint16 }{rows, cols, 0, 0}
 	syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&ws)))
+	// SETSID without controlling terminal means TIOCSWINSZ doesn't trigger SIGWINCH.
+	// Send SIGWINCH to the foreground process group of the PTY.
+	sendSigwinchToPty(fd)
+}
+
+func sendSigwinchToPty(fd uintptr) {
+	var pgid int32
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&pgid)))
+	if errno == 0 && pgid > 0 {
+		syscall.Kill(-int(pgid), syscall.SIGWINCH)
+	}
 }
