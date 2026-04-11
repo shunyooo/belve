@@ -129,6 +129,9 @@ class PTYService {
 	func setSize(cols: Int, rows: Int) {
 		var size = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
 		let _ = ioctl(masterFd, TIOCSWINSZ, &size)
+		// PTY has no controlling terminal (POSIX_SPAWN_SETSID without Setctty),
+		// so TIOCSWINSZ doesn't trigger SIGWINCH. Send it explicitly to the process group.
+		kill(-pid, SIGWINCH)
 	}
 
 	private func startReading() {
