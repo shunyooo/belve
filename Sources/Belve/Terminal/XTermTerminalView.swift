@@ -102,7 +102,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		let initialFrame = NSRect(x: 0, y: 0, width: max(1, viewWidth), height: max(1, viewHeight))
 		let webView = TerminalWebView(frame: initialFrame, configuration: config)
-		webView.autoresizingMask = [.width, .height]
+		// NO autoresizingMask — viewport must only change when we also change term.cols
 		let terminalIdentifier = paneId.map { "BelveTerminalWebView:\($0)" } ?? "BelveTerminalWebView"
 		webView.identifier = NSUserInterfaceItemIdentifier(terminalIdentifier)
 		webView.setValue(false, forKey: "drawsBackground")
@@ -141,10 +141,12 @@ struct XTermTerminalView: NSViewRepresentable {
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
-		// viewWidth/viewHeight change triggers this. autoresizingMask handles the frame.
-		// After SwiftUI layout settles, fitAddon reads the correct viewport.
 		if viewWidth > 0, viewHeight > 0 {
-			context.coordinator.triggerFitAddon()
+			// Pass the target size — triggerFitAddon will setFrameSize + fitAddon atomically
+			context.coordinator.triggerResize(
+				targetSize: CGSize(width: viewWidth, height: viewHeight),
+				webView: nsView
+			)
 		}
 	}
 
@@ -202,8 +204,6 @@ struct XTermTerminalView: NSViewRepresentable {
 				let rows = body["rows"] as? Int ?? 24
 				startPTY(cols: cols, rows: rows)
 				focusTerminal()
-				// Trigger fitAddon after layout settles to correct initial size
-				triggerFitAddon()
 
 			case "input":
 				if let b64 = body["data"] as? String,
@@ -217,7 +217,10 @@ struct XTermTerminalView: NSViewRepresentable {
 				ptyService?.setSize(cols: cols, rows: rows)
 
 			case "viewportChanged":
-				triggerFitAddon()
+				// Viewport changed (from WKWebView frame change) — trigger resize
+				if let wv = webView {
+					triggerResize(targetSize: wv.frame.size, webView: wv)
+				}
 
 			case "bell":
 				NSSound.beep()
@@ -384,22 +387,33 @@ struct XTermTerminalView: NSViewRepresentable {
 		private var lastResizeCols = 0
 		private var lastResizeRows = 0
 
-		func triggerFitAddon() {
+		private var pendingTargetSize: CGSize?
+		private weak var pendingWebView: WKWebView?
+
+		/// Debounced resize: setFrameSize + fitAddon + PTY resize happen atomically
+		func triggerResize(targetSize: CGSize, webView: WKWebView) {
+			pendingTargetSize = targetSize
+			pendingWebView = webView
 			resizeDebounceTimer?.invalidate()
-			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
-				guard let self else { return }
-				// fitAddon.fit() reads viewport and resizes term + sends resize to PTY atomically
-				self.webView?.evaluateJavaScript("""
-					if(window.fitAddon && window.term) {
-						window.fitAddon.fit();
-						var c = window.term.cols, r = window.term.rows;
-						window.webkit.messageHandlers.terminalHandler.postMessage({type:'resize', cols:c, rows:r});
-						[c, r];
+			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
+				guard let self, let size = self.pendingTargetSize, let wv = self.pendingWebView else { return }
+				// 1. Set viewport size (setFrameSize after SwiftUI layout settled)
+				wv.setFrameSize(size)
+				// 2. After viewport update, fitAddon reads correct size
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+					guard let self else { return }
+					self.webView?.evaluateJavaScript("""
+						if(window.fitAddon && window.term) {
+							window.fitAddon.fit();
+							var c = window.term.cols, r = window.term.rows;
+							window.webkit.messageHandlers.terminalHandler.postMessage({type:'resize', cols:c, rows:r});
+							[c, r];
+						}
+						""") { [weak self] result, _ in
+						guard let self, let arr = result as? [Int], arr.count == 2 else { return }
+						self.lastResizeCols = arr[0]
+						self.lastResizeRows = arr[1]
 					}
-					""") { [weak self] result, _ in
-					guard let self, let arr = result as? [Int], arr.count == 2 else { return }
-					self.lastResizeCols = arr[0]
-					self.lastResizeRows = arr[1]
 				}
 			}
 		}
