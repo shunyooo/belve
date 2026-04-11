@@ -160,9 +160,9 @@ enum LauncherScriptGenerator {
 
 		if [ -x "$PERSIST_BIN" ]; then
 		    if [ -S "$PERSIST_SOCK" ]; then
-		        exec "$PERSIST_BIN" -socket "$PERSIST_SOCK"
+		        "$PERSIST_BIN" -socket "$PERSIST_SOCK" 2>/dev/null && exit 0
+		        rm -f "$PERSIST_SOCK"
 		    fi
-		    rm -f "$PERSIST_SOCK"
 		    exec "$PERSIST_BIN" -socket "$PERSIST_SOCK" -command "$BELVE_SHELL"
 		fi
 		# Fallback: no belve-persist
