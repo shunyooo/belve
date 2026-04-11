@@ -405,18 +405,24 @@ struct XTermTerminalView: NSViewRepresentable {
 			resizeDebounceTimer?.invalidate()
 			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
 				guard let self else { return }
+				// Set CSS size first, then measure actual rendered container dimensions
 				self.webView?.evaluateJavaScript("""
-					if(window.term && window.term._core && window.term._core._renderService) {
-						var d = window.term._core._renderService.dimensions;
-						var cw = d.css.cell.width;
-						var ch = d.css.cell.height;
-						if(cw > 0 && ch > 0) {
-							var cols = Math.max(2, Math.floor(\(width) / cw));
-							var rows = Math.max(1, Math.floor(\(height) / ch));
-							window.term.resize(cols, rows);
-							window.webkit.messageHandlers.terminalHandler.postMessage({type:'cssResize', cols:cols, rows:rows});
+					var t = document.getElementById('terminal');
+					if(t) { t.style.width = '\(width)px'; t.style.height = '\(height)px'; }
+					requestAnimationFrame(function() {
+						if(window.term && window.term._core && window.term._core._renderService) {
+							var d = window.term._core._renderService.dimensions;
+							var cw = d.css.cell.width;
+							var ch = d.css.cell.height;
+							var rect = document.getElementById('terminal').getBoundingClientRect();
+							if(cw > 0 && ch > 0 && rect.width > 0) {
+								var cols = Math.max(2, Math.floor(rect.width / cw));
+								var rows = Math.max(1, Math.floor(rect.height / ch));
+								window.term.resize(cols, rows);
+								window.webkit.messageHandlers.terminalHandler.postMessage({type:'cssResize', cols:cols, rows:rows});
+							}
 						}
-					}
+					});
 					""", completionHandler: nil)
 			}
 		}
