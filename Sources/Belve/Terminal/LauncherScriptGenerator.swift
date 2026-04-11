@@ -24,8 +24,9 @@ enum LauncherScriptGenerator {
 		#!/bin/bash
 		export TERM=xterm-256color
 		BELVE_BIN_DIR="\#(embeddedBinDir.path)"
-		SCP_OPTS="-o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10"
-		SETUP_SSH="ssh -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+		BELVE_SSH_CONTROL="/tmp/belve-ssh-ctrl-%r@%h:%p"
+		SCP_OPTS="-o ControlMaster=auto -o ControlPath=$BELVE_SSH_CONTROL -o ControlPersist=30 -o ConnectTimeout=10"
+		SETUP_SSH="ssh -o ControlMaster=auto -o ControlPath=$BELVE_SSH_CONTROL -o ControlPersist=30 -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 		CONNECT_SSH="ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
 
 		# Deploy a file via SCP with md5 checksum skip
