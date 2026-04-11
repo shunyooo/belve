@@ -134,8 +134,10 @@ class PTYService {
 		// Send SIGWINCH to the foreground process group of the PTY slave.
 		var fpgid: pid_t = 0
 		if ioctl(masterFd, TIOCGPGRP, &fpgid) == 0, fpgid > 0 {
+			NSLog("[Belve] setSize cols=%d rows=%d pid=%d fpgid=%d", cols, rows, pid, fpgid)
 			kill(-fpgid, SIGWINCH)
 		} else {
+			NSLog("[Belve] setSize cols=%d rows=%d pid=%d (no fpgid, using -pid)", cols, rows, pid)
 			kill(-pid, SIGWINCH)
 		}
 	}

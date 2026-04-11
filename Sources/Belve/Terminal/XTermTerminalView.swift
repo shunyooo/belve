@@ -142,6 +142,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		if viewWidth > 0, viewHeight > 0 {
+			NSLog("[Belve] updateNSView vw=%.0f", viewWidth)
 			context.coordinator.resizeTerminal(width: viewWidth, height: viewHeight)
 		}
 	}
@@ -393,6 +394,7 @@ struct XTermTerminalView: NSViewRepresentable {
 			let h = height
 			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
 				guard let self else { return }
+				NSLog("[Belve] resizeTerminal timer w=%.0f cellW=%.1f lastCols=%d", w, self.cellWidth, self.lastResizeCols)
 				if self.cellWidth > 0 {
 					self.applyResize(width: w, height: h)
 				} else {
@@ -422,7 +424,6 @@ struct XTermTerminalView: NSViewRepresentable {
 			// Resize xterm.js buffer + PTY atomically
 			webView?.evaluateJavaScript("if(window.term)window.term.resize(\(cols),\(rows))", completionHandler: nil)
 			ptyService?.setSize(cols: cols, rows: rows)
-		}
 		}
 
 		func copySelectionToPasteboard() {
