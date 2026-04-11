@@ -100,7 +100,8 @@ struct XTermTerminalView: NSViewRepresentable {
 		let config = WKWebViewConfiguration()
 		config.userContentController.add(context.coordinator, name: "terminalHandler")
 
-		let webView = TerminalWebView(frame: .zero, configuration: config)
+		let initialFrame = NSRect(x: 0, y: 0, width: max(1, viewWidth), height: max(1, viewHeight))
+		let webView = TerminalWebView(frame: initialFrame, configuration: config)
 		webView.autoresizingMask = [.width, .height]
 		let terminalIdentifier = paneId.map { "BelveTerminalWebView:\($0)" } ?? "BelveTerminalWebView"
 		webView.identifier = NSUserInterfaceItemIdentifier(terminalIdentifier)
@@ -189,7 +190,6 @@ struct XTermTerminalView: NSViewRepresentable {
 		private var outputBuffer = Data()
 		private var flushTimer: Timer?
 		private var isWaitingForInitialOutput = false
-		private var pendingReady = false
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let body = message.body as? [String: Any],
@@ -197,11 +197,14 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			switch type {
 			case "ready":
-				// Don't start PTY yet — fitAddon timer will start it with correct dimensions.
-				pendingReady = true
+				// WKWebView frame is already set (from makeNSView with initial size).
+				// fitAddon.fit() should return correct cols from the actual viewport.
+				if let fitCols = body["cols"] as? Int, let fitRows = body["rows"] as? Int, fitCols > 0, fitRows > 0 {
+					startPTY(cols: fitCols, rows: fitRows)
+				} else {
+					startPTY(cols: 80, rows: 24)
+				}
 				focusTerminal()
-				// Trigger fitAddon (WKWebView frame should already be set by updateNSView)
-				triggerFitAddon()
 
 			case "input":
 				if let b64 = body["data"] as? String,
@@ -212,19 +215,7 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "resize":
 				let cols = body["cols"] as? Int ?? 80
 				let rows = body["rows"] as? Int ?? 24
-				if !pendingReady {
-					ptyService?.setSize(cols: cols, rows: rows)
-				}
-
-			case "cssResize":
-				let cols = body["cols"] as? Int ?? 80
-				let rows = body["rows"] as? Int ?? 24
-				if pendingReady {
-					pendingReady = false
-					startPTY(cols: cols, rows: rows)
-				} else {
-					ptyService?.setSize(cols: cols, rows: rows)
-				}
+				ptyService?.setSize(cols: cols, rows: rows)
 
 			case "bell":
 				NSSound.beep()
@@ -396,7 +387,7 @@ struct XTermTerminalView: NSViewRepresentable {
 				self.webView?.evaluateJavaScript("""
 					if(window.fitAddon) {
 						window.fitAddon.fit();
-						window.webkit.messageHandlers.terminalHandler.postMessage({type:'cssResize', cols:window.term.cols, rows:window.term.rows});
+						window.webkit.messageHandlers.terminalHandler.postMessage({type:'resize', cols:window.term.cols, rows:window.term.rows});
 					}
 					""", completionHandler: nil)
 			}
