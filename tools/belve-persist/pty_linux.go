@@ -44,9 +44,7 @@ var childPid int // set by runMaster after cmd.Start()
 
 func setSysProcAttr(ttyFile *os.File) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{
-		Setsid:  true,
-		Setctty: true,
-		Ctty:    int(ttyFile.Fd()),
+		Setsid: true,
 	}
 }
 
