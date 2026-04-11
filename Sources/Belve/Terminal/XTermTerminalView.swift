@@ -403,26 +403,14 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		private func triggerCSSResize(width: Int, height: Int) {
 			resizeDebounceTimer?.invalidate()
-			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
 				guard let self else { return }
-				// Set CSS size first, then measure actual rendered container dimensions
+				// Let WKWebView viewport settle, then fitAddon calculates from actual viewport
 				self.webView?.evaluateJavaScript("""
-					var t = document.getElementById('terminal');
-					if(t) { t.style.width = '\(width)px'; t.style.height = '\(height)px'; }
-					requestAnimationFrame(function() {
-						if(window.term && window.term._core && window.term._core._renderService) {
-							var d = window.term._core._renderService.dimensions;
-							var cw = d.css.cell.width;
-							var ch = d.css.cell.height;
-							var rect = document.getElementById('terminal').getBoundingClientRect();
-							if(cw > 0 && ch > 0 && rect.width > 0) {
-								var cols = Math.max(2, Math.floor(rect.width / cw));
-								var rows = Math.max(1, Math.floor(rect.height / ch));
-								window.term.resize(cols, rows);
-								window.webkit.messageHandlers.terminalHandler.postMessage({type:'cssResize', cols:cols, rows:rows});
-							}
-						}
-					});
+					if(window.fitAddon) {
+						window.fitAddon.fit();
+						window.webkit.messageHandlers.terminalHandler.postMessage({type:'cssResize', cols:window.term.cols, rows:window.term.rows});
+					}
 					""", completionHandler: nil)
 			}
 		}
