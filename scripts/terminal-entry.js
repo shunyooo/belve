@@ -241,13 +241,13 @@ term.onBinary(function(data) {
 	postMessage({ type: 'input', data: btoa(data) });
 });
 
-// ResizeObserver — only notify Swift of size change (Swift manages resize via triggerFitAddon)
+// ResizeObserver — notify Swift after viewport settles (300ms debounce)
 let resizeTimeout = null;
 const resizeObserver = new ResizeObserver(function() {
 	if (resizeTimeout) clearTimeout(resizeTimeout);
 	resizeTimeout = setTimeout(function() {
 		postMessage({ type: 'viewportChanged' });
-	}, 50);
+	}, 300);
 });
 resizeObserver.observe(terminalContainer);
 

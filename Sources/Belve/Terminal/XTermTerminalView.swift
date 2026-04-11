@@ -210,6 +210,9 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "resize":
 				let cols = body["cols"] as? Int ?? 80
 				let rows = body["rows"] as? Int ?? 24
+				guard cols != lastResizeCols || rows != lastResizeRows else { break }
+				lastResizeCols = cols
+				lastResizeRows = rows
 				ptyService?.setSize(cols: cols, rows: rows)
 
 			case "viewportChanged":
