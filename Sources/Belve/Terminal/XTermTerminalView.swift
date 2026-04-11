@@ -142,6 +142,8 @@ struct XTermTerminalView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		if viewWidth > 0, viewHeight > 0 {
+			NSLog("[Belve] resize pane=%@ viewW=%.0f viewH=%.0f nsW=%.0f cellW=%.1f",
+				  paneId ?? "?", viewWidth, viewHeight, nsView.frame.width, context.coordinator.cellWidth)
 			context.coordinator.resizeTerminal(width: viewWidth, height: viewHeight)
 		}
 	}
