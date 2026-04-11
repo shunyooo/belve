@@ -91,8 +91,6 @@ struct XTermTerminalView: NSViewRepresentable {
 	let project: Project
 	var paneId: String?
 	var paneIndex: Int = 0
-	var viewWidth: CGFloat = 0
-	var viewHeight: CGFloat = 0
 	@EnvironmentObject var notificationStore: NotificationStore
 	@EnvironmentObject var commandAreaState: CommandAreaState
 
@@ -101,6 +99,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		config.userContentController.add(context.coordinator, name: "terminalHandler")
 
 		let webView = TerminalWebView(frame: .zero, configuration: config)
+		webView.autoresizingMask = [.width, .height]
 		let terminalIdentifier = paneId.map { "BelveTerminalWebView:\($0)" } ?? "BelveTerminalWebView"
 		webView.identifier = NSUserInterfaceItemIdentifier(terminalIdentifier)
 		webView.setValue(false, forKey: "drawsBackground")
@@ -139,12 +138,9 @@ struct XTermTerminalView: NSViewRepresentable {
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
-		let w = Int(viewWidth)
-		let h = Int(viewHeight)
-		if w > 0, h > 0 {
-			// Set CSS dimensions to match pane size, then let fitAddon calculate cols/rows
-			context.coordinator.updateTerminalCSS(width: w, height: h)
-		}
+		// WKWebView auto-resizes via autoresizingMask to match SwiftUI .frame()
+		// fitAddon reads viewport dimensions which should match the actual view size
+		context.coordinator.triggerFitAddon()
 	}
 
 	func makeCoordinator() -> Coordinator {
@@ -198,13 +194,11 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			switch type {
 			case "ready":
-				// Don't start PTY yet — CSS resize timer will start it with correct dimensions.
+				// Don't start PTY yet — fitAddon timer will start it with correct dimensions.
 				pendingReady = true
 				focusTerminal()
-				// Trigger CSS resize immediately (updateNSView may have already set dimensions)
-				if lastCSSWidth > 0 && lastCSSHeight > 0 {
-					triggerCSSResize(width: lastCSSWidth, height: lastCSSHeight)
-				}
+				// Trigger fitAddon (WKWebView frame should already be set by updateNSView)
+				triggerFitAddon()
 
 			case "input":
 				if let b64 = body["data"] as? String,
@@ -390,22 +384,12 @@ struct XTermTerminalView: NSViewRepresentable {
 			commandAreaState?.activePaneId = paneUUID
 		}
 
-		private var lastCSSWidth = 0
-		private var lastCSSHeight = 0
 		private var resizeDebounceTimer: Timer?
 
-		func updateTerminalCSS(width: Int, height: Int) {
-			guard width != lastCSSWidth || height != lastCSSHeight else { return }
-			lastCSSWidth = width
-			lastCSSHeight = height
-			triggerCSSResize(width: width, height: height)
-		}
-
-		private func triggerCSSResize(width: Int, height: Int) {
+		func triggerFitAddon() {
 			resizeDebounceTimer?.invalidate()
-			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
 				guard let self else { return }
-				// Let WKWebView viewport settle, then fitAddon calculates from actual viewport
 				self.webView?.evaluateJavaScript("""
 					if(window.fitAddon) {
 						window.fitAddon.fit();
