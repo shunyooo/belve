@@ -391,9 +391,9 @@ struct XTermTerminalView: NSViewRepresentable {
 			// Debounce: SwiftUI calls updateNSView multiple times during layout.
 			resizeDebounceTimer?.invalidate()
 			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
-				// Set CSS dimensions → fitAddon.fit() calculates correct cols/rows → ResizeObserver sends resize
+				// Set CSS dimensions, wait for DOM layout, then fitAddon.fit()
 				self?.webView?.evaluateJavaScript(
-					"var t=document.getElementById('terminal');if(t){t.style.width='\(width)px';t.style.height='\(height)px';if(window.fitAddon)window.fitAddon.fit()}",
+					"var t=document.getElementById('terminal');if(t){t.style.width='\(width)px';t.style.height='\(height)px';requestAnimationFrame(function(){if(window.fitAddon)window.fitAddon.fit()})}",
 					completionHandler: nil
 				)
 			}
