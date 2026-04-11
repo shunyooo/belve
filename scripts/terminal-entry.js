@@ -61,6 +61,20 @@ window.debugResize = function(cols, rows) {
 	postMessage({ type: 'log', msg: 'debugResize before=' + JSON.stringify(before) + ' after=' + JSON.stringify(after) });
 	return after;
 };
+
+// Debug: report current dimensions
+window.debugDimensions = function() {
+	var d = term._core._renderService.dimensions;
+	var t = document.getElementById('terminal');
+	var rect = t.getBoundingClientRect();
+	return {
+		termCols: term.cols, termRows: term.rows,
+		cellW: d.css.cell.width, cellH: d.css.cell.height,
+		innerW: window.innerWidth, innerH: window.innerHeight,
+		rectW: rect.width, rectH: rect.height,
+		cssW: t.style.width, cssH: t.style.height
+	};
+};
 fitAddon.fit();
 
 const terminalPathRegex = /(?:^|[\s("'`\[])(\.{1,2}\/[^\s"'`)\]]+|\/[^\s"'`)\]]+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)(?::\d+)?(?::\d+)?/g;
