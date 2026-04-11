@@ -102,7 +102,6 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		let initialFrame = NSRect(x: 0, y: 0, width: max(1, viewWidth), height: max(1, viewHeight))
 		let webView = TerminalWebView(frame: initialFrame, configuration: config)
-		webView.autoresizingMask = [.width, .height]
 		let terminalIdentifier = paneId.map { "BelveTerminalWebView:\($0)" } ?? "BelveTerminalWebView"
 		webView.identifier = NSUserInterfaceItemIdentifier(terminalIdentifier)
 		webView.setValue(false, forKey: "drawsBackground")
@@ -142,7 +141,9 @@ struct XTermTerminalView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		if viewWidth > 0, viewHeight > 0 {
-			NSLog("[Belve] updateNSView pane=%@ viewW=%.0f nsFrameW=%.0f", paneId ?? "nil", viewWidth, nsView.frame.width)
+			// Set frame synchronously, then resize terminal
+			let newSize = CGSize(width: viewWidth, height: viewHeight)
+			nsView.setFrameSize(newSize)
 			context.coordinator.updateSize(width: viewWidth, height: viewHeight, webView: nsView as? TerminalWebView)
 		}
 	}
@@ -413,7 +414,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		func updateSize(width: CGFloat, height: CGFloat, webView targetWebView: TerminalWebView?) {
 			resizeDebounceTimer?.invalidate()
-			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
+			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: false) { [weak self] _ in
 				guard let self else { return }
 				// Use JS window.innerWidth (actual viewport) instead of Swift viewWidth (may lag)
 				self.webView?.evaluateJavaScript("""
