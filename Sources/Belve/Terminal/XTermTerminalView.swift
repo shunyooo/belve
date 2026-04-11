@@ -390,17 +390,20 @@ struct XTermTerminalView: NSViewRepresentable {
 			lastCSSHeight = height
 			// Debounce: SwiftUI calls updateNSView multiple times during layout.
 			resizeDebounceTimer?.invalidate()
+			let w = width
+			let h = height
 			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
-				// Calculate cols/rows from xterm.js actual cell dimensions (not fitAddon, which uses wrong viewport)
+				// Calculate cols/rows from xterm.js actual cell dimensions, resize, and update PTY
 				self?.webView?.evaluateJavaScript("""
 					if(window.term && window.term._core && window.term._core._renderService) {
 						var d = window.term._core._renderService.dimensions;
 						var cw = d.css.cell.width;
 						var ch = d.css.cell.height;
 						if(cw > 0 && ch > 0) {
-							var cols = Math.max(2, Math.floor(\(width) / cw));
-							var rows = Math.max(1, Math.floor(\(height) / ch));
+							var cols = Math.max(2, Math.floor(\(w) / cw));
+							var rows = Math.max(1, Math.floor(\(h) / ch));
 							window.term.resize(cols, rows);
+							window.webkit.messageHandlers.terminalHandler.postMessage({type:'resize', cols:cols, rows:rows});
 						}
 					}
 					""", completionHandler: nil)
