@@ -141,10 +141,9 @@ struct XTermTerminalView: NSViewRepresentable {
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
-		// viewWidth/viewHeight change triggers this call.
-		// autoresizingMask ensures WKWebView frame matches SwiftUI .frame().
-		// fitAddon reads the correct viewport dimensions.
-		context.coordinator.triggerFitAddon()
+		if viewWidth > 0, viewHeight > 0 {
+			context.coordinator.updateSize(width: viewWidth, height: viewHeight)
+		}
 	}
 
 	func makeCoordinator() -> Coordinator {
@@ -197,12 +196,14 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			switch type {
 			case "ready":
-				// WKWebView frame is already set (from makeNSView with initial size).
-				// fitAddon.fit() should return correct cols from the actual viewport.
-				if let fitCols = body["cols"] as? Int, let fitRows = body["rows"] as? Int, fitCols > 0, fitRows > 0 {
-					startPTY(cols: fitCols, rows: fitRows)
-				} else {
-					startPTY(cols: 80, rows: 24)
+				// Query cell dimensions and calculate cols/rows from known pane size
+				queryCellDimensions { [weak self] cw, ch in
+					guard let self, let wv = self.webView else { return }
+					let cols = max(2, Int(wv.frame.width / cw))
+					let rows = max(1, Int(wv.frame.height / ch))
+					self.lastResizeCols = cols
+					self.lastResizeRows = rows
+					self.startPTY(cols: cols, rows: rows)
 				}
 				focusTerminal()
 
@@ -379,17 +380,49 @@ struct XTermTerminalView: NSViewRepresentable {
 		}
 
 		private var resizeDebounceTimer: Timer?
+		private var cellWidth: CGFloat = 0
+		private var cellHeight: CGFloat = 0
+		private var lastResizeCols = 0
+		private var lastResizeRows = 0
 
-		func triggerFitAddon() {
-			resizeDebounceTimer?.invalidate()
-			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
-				guard let self else { return }
-				self.webView?.evaluateJavaScript("""
-					if(window.fitAddon) {
-						window.fitAddon.fit();
-						window.webkit.messageHandlers.terminalHandler.postMessage({type:'resize', cols:window.term.cols, rows:window.term.rows});
+		/// Query xterm.js cell dimensions once, then use for all subsequent resize calculations
+		private func queryCellDimensions(completion: @escaping (CGFloat, CGFloat) -> Void) {
+			if cellWidth > 0, cellHeight > 0 {
+				completion(cellWidth, cellHeight)
+				return
+			}
+			webView?.evaluateJavaScript("""
+				(function() {
+					if(window.term && window.term._core && window.term._core._renderService) {
+						var d = window.term._core._renderService.dimensions;
+						return [d.css.cell.width, d.css.cell.height];
 					}
-					""", completionHandler: nil)
+					return null;
+				})()
+				""") { [weak self] result, _ in
+				guard let self, let arr = result as? [Double], arr.count == 2, arr[0] > 0, arr[1] > 0 else {
+					completion(7.8, 17.0) // fallback
+					return
+				}
+				self.cellWidth = CGFloat(arr[0])
+				self.cellHeight = CGFloat(arr[1])
+				completion(self.cellWidth, self.cellHeight)
+			}
+		}
+
+		func updateSize(width: CGFloat, height: CGFloat) {
+			resizeDebounceTimer?.invalidate()
+			resizeDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+				guard let self else { return }
+				self.queryCellDimensions { cw, ch in
+					let cols = max(2, Int(width / cw))
+					let rows = max(1, Int(height / ch))
+					guard cols != self.lastResizeCols || rows != self.lastResizeRows else { return }
+					self.lastResizeCols = cols
+					self.lastResizeRows = rows
+					self.ptyService?.setSize(cols: cols, rows: rows)
+					self.webView?.evaluateJavaScript("if(window.term)window.term.resize(\(cols),\(rows))", completionHandler: nil)
+				}
 			}
 		}
 

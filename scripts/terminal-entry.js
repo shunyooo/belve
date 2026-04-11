@@ -217,14 +217,13 @@ term.onBinary(function(data) {
 	postMessage({ type: 'input', data: btoa(data) });
 });
 
-// Resize with debounce — 300ms to skip SwiftUI intermediate layout passes
+// ResizeObserver — only send current size, no fitAddon (Swift manages resize)
 let resizeTimeout = null;
 const resizeObserver = new ResizeObserver(function() {
 	if (resizeTimeout) clearTimeout(resizeTimeout);
 	resizeTimeout = setTimeout(function() {
-		fitAddon.fit();
 		postMessage({ type: 'resize', cols: term.cols, rows: term.rows });
-	}, 300);
+	}, 16);
 });
 resizeObserver.observe(terminalContainer);
 
