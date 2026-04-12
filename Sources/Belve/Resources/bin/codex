@@ -1,39 +1,37 @@
 #!/usr/bin/env bash
-# Belve claude wrapper - injects hooks that call `belve claude-hook`
-#
-# Inside a Belve terminal (BELVE_SESSION=1), intercepts `claude` to inject
-# --settings with hook commands. Outside Belve, passes through unchanged.
+# Belve codex wrapper - injects hooks that call `belve claude-hook`
+# Codex uses the same hooks API as Claude Code.
 
 set -euo pipefail
 
-find_real_claude() {
+find_real_codex() {
     local self_dir
     self_dir="$(cd "$(dirname "$0")" && pwd)"
     local IFS=:
     for d in $PATH; do
         [[ "$d" == "$self_dir" ]] && continue
-        [[ -x "$d/claude" ]] && printf '%s' "$d/claude" && return 0
+        [[ -x "$d/codex" ]] && printf '%s' "$d/codex" && return 0
     done
     return 1
 }
 
 # Pass through if not in Belve
 if [[ -z "${BELVE_SESSION:-}" ]]; then
-    REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
-    exec "$REAL_CLAUDE" "$@"
+    REAL_CODEX="$(find_real_codex)" || { echo "Error: codex not found in PATH" >&2; exit 127; }
+    exec "$REAL_CODEX" "$@"
 fi
 
-REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+REAL_CODEX="$(find_real_codex)" || { echo "Error: codex not found in PATH" >&2; exit 127; }
 
 # Pass through subcommands that don't support hooks
 case "${1:-}" in
-    mcp|config|api-key) exec "$REAL_CLAUDE" "$@" ;;
+    config|api-key) exec "$REAL_CODEX" "$@" ;;
 esac
 
 # Find belve CLI (same directory as this wrapper)
 BELVE_BIN="$(cd "$(dirname "$0")" && pwd)/belve"
 
-# Build hooks JSON - all hooks call `belve claude-hook <subcommand>`
+# Build hooks JSON
 H="\\\"${BELVE_BIN}\\\" claude-hook"
 HOOKS_JSON="{\"hooks\":{\
 \"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} session-start\",\"timeout\":5}]}],\
@@ -47,4 +45,4 @@ HOOKS_JSON="{\"hooks\":{\
 \"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} stop\",\"timeout\":5}]}]\
 }}"
 
-exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"
+exec "$REAL_CODEX" --settings "$HOOKS_JSON" "$@"

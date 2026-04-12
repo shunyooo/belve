@@ -48,6 +48,7 @@ if [ "$DEVCONTAINER" = "1" ] && [ -n "$WORKSPACE" ]; then
     docker exec "$CID" mkdir -p /root/.belve/bin /root/.belve/sessions /root/.belve/zdotdir 2>/dev/null
     docker cp "$HOME/.belve/bin/belve" "$CID:/root/.belve/bin/belve" 2>/dev/null
     docker cp "$HOME/.belve/bin/claude" "$CID:/root/.belve/bin/claude" 2>/dev/null
+    docker cp "$HOME/.belve/bin/codex" "$CID:/root/.belve/bin/codex" 2>/dev/null
     docker cp "$HOME/.belve/bin/belve-persist" "$CID:/root/.belve/bin/belve-persist" 2>/dev/null
     docker cp "$HOME/.belve/session-bootstrap.sh" "$CID:/root/.belve/session-bootstrap.sh" 2>/dev/null
     docker exec "$CID" chmod +x /root/.belve/bin/* /root/.belve/session-bootstrap.sh 2>/dev/null || true

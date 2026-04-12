@@ -103,7 +103,11 @@ class CommandPaletteState: ObservableObject {
 
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
 	let commandPaletteState = CommandPaletteState()
-	let notificationStore = NotificationStore()
+	let notificationStore: NotificationStore = {
+		let store = NotificationStore()
+		store.loadSessions()
+		return store
+	}()
 	let projectStore = ProjectStore()
 	private var localKeyMonitor: Any?
 

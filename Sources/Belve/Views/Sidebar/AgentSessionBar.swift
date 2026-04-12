@@ -60,7 +60,11 @@ private struct SessionRow: View {
 	}
 
 	private var isActive: Bool {
-		session.status == .running || session.status == .waiting || session.status == .sessionStart || session.status == .completed
+		session.status == .running || session.status == .waiting || session.status == .sessionStart
+	}
+
+	private var isVisible: Bool {
+		isActive || session.status == .completed
 	}
 
 	var body: some View {
@@ -69,9 +73,14 @@ private struct SessionRow: View {
 				Spacer().frame(height: 3)
 				if isActive {
 					PulsingDot(color: statusColor)
+				} else if session.status == .completed {
+					Circle()
+						.fill(statusColor)
+						.frame(width: 7, height: 7)
+						.frame(width: 12, height: 12)
 				} else {
 					Circle()
-						.fill(statusColor.opacity(session.status == .sessionEnd ? 0.6 : 0.3))
+						.fill(statusColor.opacity(0.3))
 						.frame(width: 7, height: 7)
 						.frame(width: 12, height: 12)
 				}
@@ -80,31 +89,51 @@ private struct SessionRow: View {
 			VStack(alignment: .leading, spacing: 3) {
 				// Latest user prompt (fallback to session label)
 				Text(session.lastUserPrompt ?? session.label ?? session.message)
-					.font(.system(size: 12, weight: isActive ? .medium : .regular))
-					.foregroundStyle(isActive ? Theme.textPrimary : Theme.textTertiary)
+					.font(.system(size: 12, weight: isVisible ? .medium : .regular))
+					.foregroundStyle(isVisible ? Theme.textPrimary : Theme.textTertiary)
 					.lineLimit(2)
 
 				// Current activity detail
-				if isActive {
-					if let tool = session.currentTool {
-						HStack(spacing: 3) {
-							Image(systemName: "wrench.and.screwdriver")
+				if isVisible {
+					VStack(alignment: .leading, spacing: 1) {
+						if let tool = session.currentTool {
+							HStack(spacing: 3) {
+								Image(systemName: "wrench.and.screwdriver")
+									.font(.system(size: 9))
+								Text(tool)
+									.lineLimit(1)
+							}
+							.font(.system(size: 10))
+							.foregroundStyle(Theme.accent)
+
+							if let detail = session.lastAgentActivity, !detail.isEmpty {
+								Text(detail)
+									.font(.system(size: 9))
+									.foregroundStyle(Theme.textTertiary)
+									.lineLimit(3)
+							}
+						} else if session.status == .waiting {
+							Text(session.message)
+								.font(.system(size: 10))
+								.foregroundStyle(Theme.yellow)
+								.lineLimit(4)
+						} else if session.status == .completed {
+							if let activity = session.lastAgentActivity {
+								Text(activity)
+									.font(.system(size: 10))
+									.foregroundStyle(Theme.textSecondary)
+									.lineLimit(4)
+							}
+							Text("Done")
 								.font(.system(size: 9))
-							Text(tool)
-								.lineLimit(1)
+								.foregroundStyle(Theme.green)
+						} else {
+							Text("Thinking...")
+								.font(.system(size: 10))
+								.foregroundStyle(Theme.textTertiary)
 						}
-						.font(.system(size: 10))
-						.foregroundStyle(Theme.accent)
-					} else if session.status == .waiting {
-						Text(session.message)
-							.font(.system(size: 10))
-							.foregroundStyle(Theme.yellow)
-							.lineLimit(1)
-					} else if session.status == .completed {
-						Text("Done")
-							.font(.system(size: 10))
-							.foregroundStyle(Theme.green)
 					}
+					.animation(nil, value: session.currentTool)
 				}
 
 				// Project + time
@@ -126,7 +155,7 @@ private struct SessionRow: View {
 		.padding(.vertical, 7)
 		.background(
 			RoundedRectangle(cornerRadius: 4)
-				.fill(isFocused ? Theme.surfaceActive : (isActive ? Theme.surfaceActive.opacity(0.3) : (isHovering ? Theme.surfaceHover : Color.clear)))
+				.fill(isFocused ? Theme.surfaceActive : (isVisible ? Theme.surfaceActive.opacity(0.3) : (isHovering ? Theme.surfaceHover : Color.clear)))
 		)
 		.overlay(
 			HStack {

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Belve CLI - receives hook events from Claude Code and emits OSC to /dev/tty
+# Belve CLI - receives hook events from Claude Code and emits OSC notifications
 #
 # Usage: belve claude-hook <subcommand>
-# Subcommands: session-start, notification, prompt-submit, stop, session-end
+# All subcommands read JSON from stdin and emit OSC 9 to the terminal.
 
 set -euo pipefail
 
@@ -13,8 +13,7 @@ emit_event() {
     local message="$2"
     local osc
     osc=$(printf '\033]9;BELVE:%s:%s:%s\007' "$PANE_ID" "$status" "$message")
-    # Write OSC to terminal: BELVE_TTY (explicit path), /dev/tty (controlling terminal), stderr (fallback)
-    if [ -n "$BELVE_TTY" ] && [ -w "$BELVE_TTY" ]; then
+    if [ -n "${BELVE_TTY:-}" ] && [ -w "$BELVE_TTY" ]; then
         echo -n "$osc" > "$BELVE_TTY" 2>/dev/null
     elif echo -n "$osc" > /dev/tty 2>/dev/null; then
         :
@@ -23,96 +22,127 @@ emit_event() {
     fi
 }
 
-# Read and consume stdin (Claude Code sends JSON)
-read_stdin() {
-    cat > /dev/null 2>&1 || true
+# Parse stdin JSON with node (available in most environments)
+parse_json() {
+    local expr="$1"
+    if command -v node > /dev/null 2>&1; then
+        node -e "
+            let d='';
+            process.stdin.on('data',c=>d+=c);
+            process.stdin.on('end',()=>{
+                try{const j=JSON.parse(d);const r=(()=>{${expr}})();process.stdout.write(String(r||''))}
+                catch{process.stdout.write('')}
+            })
+        " 2>/dev/null || echo ""
+    else
+        cat > /dev/null 2>&1
+        echo ""
+    fi
 }
 
 case "${1:-}" in
     claude-hook)
         case "${2:-}" in
             session-start)
-                read_stdin
+                cat > /dev/null
                 emit_event "session_start" "started"
                 ;;
-            notification)
-                # Parse notification type from stdin JSON
-                local_msg="input needed"
-                if command -v node > /dev/null 2>&1; then
-                    local_msg=$(node -e '
-                        let d="";
-                        process.stdin.on("data",c=>d+=c);
-                        process.stdin.on("end",()=>{
-                            try{
-                                const j=JSON.parse(d);
-                                process.stdout.write(
-                                    j.message ||
-                                    j.notification_type ||
-                                    j.title ||
-                                    "input needed"
-                                )
-                            }
-                            catch{process.stdout.write("input needed")}
-                        })
-                    ' 2>/dev/null) || local_msg="input needed"
-                else
-                    read_stdin
-                fi
-                emit_event "waiting" "$local_msg"
-                ;;
-            prompt-submit)
-                # Capture prompt text for session label
-                local_prompt=""
-                if command -v node > /dev/null 2>&1; then
-                    local_prompt=$(node -e '
-                        let d="";
-                        process.stdin.on("data",c=>d+=c);
-                        process.stdin.on("end",()=>{
-                            try{const j=JSON.parse(d);
-                                const p=j.prompt||j.message||"";
-                                process.stdout.write(p.substring(0,100).replace(/[\n\r"\\]/g," ").trim())}
-                            catch{process.stdout.write("")}
-                        })
-                    ' 2>/dev/null) || local_prompt=""
-                else
-                    read_stdin
-                fi
-                if [ -n "$local_prompt" ]; then
-                    emit_event "running" "$local_prompt"
-                else
-                    emit_event "running" "Generating"
-                fi
-                ;;
-            pre-tool-use)
-                # Capture tool name from stdin JSON
-                local_tool=""
-                if command -v node > /dev/null 2>&1; then
-                    local_tool=$(node -e '
-                        let d="";
-                        process.stdin.on("data",c=>d+=c);
-                        process.stdin.on("end",()=>{
-                            try{const j=JSON.parse(d);
-                                process.stdout.write(j.tool_name||j.tool||"")}
-                            catch{process.stdout.write("")}
-                        })
-                    ' 2>/dev/null) || local_tool=""
-                else
-                    read_stdin
-                fi
-                if [ -n "$local_tool" ]; then
-                    emit_event "running" "tool:$local_tool"
-                fi
-                ;;
-            stop)
-                read_stdin
-                emit_event "completed" "Done"
-                ;;
+
             session-end)
-                read_stdin
+                cat > /dev/null
                 emit_event "session_end" "ended"
                 ;;
+
+            prompt-submit)
+                msg=$(parse_json 'return (j.prompt||"").substring(0,100).replace(/[\n\r]/g," ").trim()')
+                emit_event "running" "${msg:-Generating}"
+                ;;
+
+            notification)
+                msg=$(parse_json 'return j.message||j.notification_type||"input needed"')
+                emit_event "waiting" "${msg:-input needed}"
+                ;;
+
+            pre-tool-use)
+                msg=$(parse_json '
+                    const t=j.tool_name||"";
+                    const i=j.tool_input||{};
+                    let detail="";
+                    if(t==="Bash"||t==="bash") detail=String(i.command||"").substring(0,80).split("\n")[0];
+                    else if(t==="Read"||t==="read") detail=String(i.file_path||i.path||"");
+                    else if(t==="Write"||t==="write") detail=String(i.file_path||i.path||"");
+                    else if(t==="Edit"||t==="edit") detail=String(i.file_path||i.path||"");
+                    else if(t==="Grep"||t==="grep") detail=String(i.pattern||"");
+                    else if(t==="Glob"||t==="glob") detail=String(i.pattern||"");
+                    else if(t==="Agent"||t==="agent") detail=String(i.description||i.prompt||"").substring(0,60);
+                    else if(t==="WebSearch") detail=String(i.query||"").substring(0,60);
+                    else if(t==="WebFetch") detail=String(i.url||"").substring(0,60);
+                    else detail=JSON.stringify(i).substring(0,60);
+                    return t+(detail?":"+detail:"")
+                ')
+                [ -n "$msg" ] && emit_event "running" "tool:$msg"
+                ;;
+
+            post-tool-use)
+                msg=$(parse_json '
+                    const t=j.tool_name||"";
+                    const o=j.tool_output||j.output||"";
+                    const s=String(o).substring(0,100).split("\n")[0].trim();
+                    return t+(s?":"+s:"")
+                ')
+                [ -n "$msg" ] && emit_event "running" "result:$msg"
+                ;;
+
+            stop)
+                # Send short completed event first (guaranteed to arrive)
+                emit_event "completed" "Done"
+                # Then try to extract and send the actual assistant response
+                msg=$(parse_json '
+                    const tp = j.transcript_path || "";
+                    if (!tp) return "";
+                    function extract() {
+                        const lines = require("fs").readFileSync(tp, "utf8").trim().split("\n");
+                        let lastUserIdx = -1;
+                        for (let i = lines.length - 1; i >= 0; i--) {
+                            const e = JSON.parse(lines[i]);
+                            if (e.type === "user") {
+                                const c = (e.message||{}).content||[];
+                                if (!Array.isArray(c) || !c.some(b => b.type === "tool_result")) { lastUserIdx = i; break; }
+                            }
+                        }
+                        let lastText = "";
+                        for (let i = Math.max(0, lastUserIdx); i < lines.length; i++) {
+                            const e = JSON.parse(lines[i]);
+                            if (e.type === "assistant") {
+                                for (const b of ((e.message||{}).content||[])) {
+                                    if (b.type === "text" && b.text && b.text.trim()) lastText = b.text;
+                                }
+                            }
+                        }
+                        return lastText;
+                    }
+                    try {
+                        let t = extract();
+                        if (!t) { const{execSync:s}=require("child_process"); s("sleep 0.1"); t = extract(); }
+                        if (t) return t.replace(/[\x00-\x1f\x7f]/g,"").replace(/[\n\r\t]/g," ").substring(0,120).trim();
+                    } catch {}
+                    return ""
+                ')
+                [ -n "$msg" ] && emit_event "completed" "$msg"
+                ;;
+
+            subagent-start)
+                msg=$(parse_json 'return j.description||j.name||"subagent"')
+                emit_event "running" "subagent:$msg"
+                ;;
+
+            subagent-stop)
+                msg=$(parse_json 'return j.description||j.name||"subagent"')
+                emit_event "running" "subagent-done:$msg"
+                ;;
+
             *)
-                read_stdin
+                cat > /dev/null
                 ;;
         esac
         ;;

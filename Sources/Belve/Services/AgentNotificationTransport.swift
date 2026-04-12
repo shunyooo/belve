@@ -8,44 +8,58 @@ protocol AgentNotificationTransport: AnyObject {
 }
 
 /// OSC-based transport: scans PTY output for BELVE: prefixed OSC 9 sequences.
+/// Buffers partial data across chunks since OSC sequences can span chunk boundaries.
 class OSCAgentTransport: AgentNotificationTransport {
 	var onAgentStatus: ((String, String, String) -> Void)?
+	private var partialBuffer = ""
 
 	/// Scan data for BELVE:<pane_id>:<status>:<message> in OSC 9 sequences.
 	func scan(_ data: Data) {
 		guard let str = String(data: data, encoding: .utf8) else { return }
-		if str.contains("BELVE:") {
-			NSLog("[Belve] OSCAgentTransport: found BELVE in data len=%d", data.count)
+
+		// Only buffer if there's a potential BELVE sequence in progress or starting
+		if partialBuffer.isEmpty && !str.contains("BELVE") && !str.contains("\u{1b}") {
+			return
 		}
 
-		// Pattern: \x1b]9;BELVE:<pane_id>:<status>:<message>\x07
-		guard let pattern = try? NSRegularExpression(
-			pattern: "\u{1b}\\]9;BELVE:([^:]+):([^:]+):([^\u{07}\u{1b}]*)\u{07}"
-		) else { return }
+		partialBuffer += str
 
-		let nsStr = str as NSString
-		let range = NSRange(location: 0, length: nsStr.length)
+		// Try to extract complete OSC sequences
+		let escOSC = "\u{1b}]9;BELVE:"
+		let bel = "\u{07}"
 
-		pattern.enumerateMatches(in: str, range: range) { match, _, _ in
-			guard let match,
-				  let paneIdRange = Range(match.range(at: 1), in: str),
-				  let statusRange = Range(match.range(at: 2), in: str),
-				  let messageRange = Range(match.range(at: 3), in: str)
-			else { return }
+		while let startRange = partialBuffer.range(of: escOSC) {
+			guard let endRange = partialBuffer.range(of: bel, range: startRange.upperBound..<partialBuffer.endIndex) else {
+				// Incomplete sequence — keep buffered, but limit buffer size
+				if partialBuffer.count > 2000 {
+					// Discard stale data before the last ESC
+					if let lastEsc = partialBuffer.range(of: "\u{1b}", options: .backwards) {
+						partialBuffer = String(partialBuffer[lastEsc.lowerBound...])
+					} else {
+						partialBuffer = ""
+					}
+				}
+				return
+			}
 
-			let paneId = String(str[paneIdRange])
-			let status = String(str[statusRange])
-			let message = String(str[messageRange])
+			let payload = String(partialBuffer[startRange.upperBound..<endRange.lowerBound])
+			partialBuffer = String(partialBuffer[endRange.upperBound...])
+
+			// Parse: <pane_id>:<status>:<message>
+			let parts = payload.split(separator: ":", maxSplits: 2)
+			guard parts.count >= 2 else { continue }
+			let paneId = String(parts[0])
+			let status = String(parts[1])
+			let message = parts.count > 2 ? String(parts[2]) : ""
 
 			DispatchQueue.main.async { [weak self] in
 				self?.onAgentStatus?(paneId, status, message)
 			}
 		}
-	}
 
-	/// Check if data contains a BELVE: OSC sequence (to skip generic notification).
-	func containsBelveOSC(_ data: Data) -> Bool {
-		guard let str = String(data: data, encoding: .utf8) else { return false }
-		return str.contains("BELVE:")
+		// If no more BELVE prefix pending, clear buffer
+		if !partialBuffer.contains("BELVE") && !partialBuffer.contains("\u{1b}]9;") {
+			partialBuffer = ""
+		}
 	}
 }

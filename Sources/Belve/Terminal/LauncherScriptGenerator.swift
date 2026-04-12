@@ -87,6 +87,7 @@ enum LauncherScriptGenerator {
 		        deploy_persist_binary "$BELVE_SSH_HOST"
 		        deploy_file "$BELVE_BIN_DIR/belve" "$BELVE_SSH_HOST" "~/.belve/bin/belve"
 		        deploy_file "$BELVE_BIN_DIR/claude" "$BELVE_SSH_HOST" "~/.belve/bin/claude"
+		        deploy_file "$BELVE_BIN_DIR/codex" "$BELVE_SSH_HOST" "~/.belve/bin/codex"
 		        deploy_file "$BELVE_BIN_DIR/belve-setup" "$BELVE_SSH_HOST" "~/.belve/bin/belve-setup"
 		        deploy_file "$BELVE_BIN_DIR/belve-connect" "$BELVE_SSH_HOST" "~/.belve/bin/belve-connect"
 		        deploy_file "$BELVE_BIN_DIR/session-bootstrap.sh" "$BELVE_SSH_HOST" "~/.belve/session-bootstrap.sh"
@@ -145,6 +146,8 @@ enum LauncherScriptGenerator {
 		export BELVE_TTY=\$(tty)
 		claude() { "\#(belveBin)/claude" "\$@"; }
 		export -f claude
+		codex() { "\#(belveBin)/codex" "\$@"; }
+		export -f codex
 		BASHRC
 		    BELVE_SHELL="\#(shell) --rcfile \#(tmpDir)/belve-bashrc -i" ;;
 		  zsh)
@@ -160,10 +163,11 @@ enum LauncherScriptGenerator {
 		export PATH="\#(belveBin):\$PATH"
 		export BELVE_TTY=\$(tty)
 		claude() { "\#(belveBin)/claude" "\$@"; }
+		codex() { "\#(belveBin)/codex" "\$@"; }
 		ZSHRC
 		    BELVE_SHELL="ZDOTDIR=\#(tmpDir)/zdotdir \#(shell) -l -i" ;;
 		  fish)
-		    BELVE_SHELL="\#(shell) --init-command 'set -gx PATH \#(belveBin) \$PATH; function claude; \#(belveBin)/claude \$argv; end'" ;;
+		    BELVE_SHELL="\#(shell) --init-command 'set -gx PATH \#(belveBin) \$PATH; function claude; \#(belveBin)/claude \$argv; end; function codex; \#(belveBin)/codex \$argv; end'" ;;
 		  *)
 		    BELVE_SHELL="\#(shell) -l -i" ;;
 		esac

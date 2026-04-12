@@ -333,13 +333,17 @@ struct MainWindow: View {
 		.onChange(of: isSelected) { _, nowSelected in
 			if nowSelected {
 				// Force re-fit terminals after becoming visible
-				// (non-active projects have wrong WKWebView viewport size)
 				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
 					NotificationCenter.default.post(
 						name: .belveTerminalRefit,
 						object: nil,
 						userInfo: ["projectId": project.id]
 					)
+				}
+				// Focus terminal after project switch (delay past refit layout)
+				let targetPaneId = commandAreaState(for: project.id).activePaneId
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+					projectStore.refocusTerminal(paneId: targetPaneId?.uuidString)
 				}
 			}
 		}
