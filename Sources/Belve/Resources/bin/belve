@@ -11,7 +11,16 @@ PANE_ID="${BELVE_PANE_ID:-unknown}"
 emit_event() {
     local status="$1"
     local message="$2"
-    printf '\033]9;BELVE:%s:%s:%s\007' "$PANE_ID" "$status" "$message" > /dev/tty 2>/dev/null || true
+    local osc
+    osc=$(printf '\033]9;BELVE:%s:%s:%s\007' "$PANE_ID" "$status" "$message")
+    # Write OSC to terminal: BELVE_TTY (explicit path), /dev/tty (controlling terminal), stderr (fallback)
+    if [ -n "$BELVE_TTY" ] && [ -w "$BELVE_TTY" ]; then
+        echo -n "$osc" > "$BELVE_TTY" 2>/dev/null
+    elif echo -n "$osc" > /dev/tty 2>/dev/null; then
+        :
+    else
+        echo -n "$osc" >&2 2>/dev/null || true
+    fi
 }
 
 # Read and consume stdin (Claude Code sends JSON)

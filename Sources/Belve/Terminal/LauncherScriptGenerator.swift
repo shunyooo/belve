@@ -142,6 +142,7 @@ enum LauncherScriptGenerator {
 		[ -f "\$HOME/.bash_profile" ] && source "\$HOME/.bash_profile"
 		[ -f "\$HOME/.bashrc" ] && source "\$HOME/.bashrc"
 		export PATH="\#(belveBin):\$PATH"
+		export BELVE_TTY=\$(tty)
 		claude() { "\#(belveBin)/claude" "\$@"; }
 		export -f claude
 		BASHRC
@@ -157,6 +158,7 @@ enum LauncherScriptGenerator {
 		    cat > "\#(tmpDir)/zdotdir/.zshrc" << ZSHRC
 		[ -f "\$HOME/.zshrc" ] && source "\$HOME/.zshrc"
 		export PATH="\#(belveBin):\$PATH"
+		export BELVE_TTY=\$(tty)
 		claude() { "\#(belveBin)/claude" "\$@"; }
 		ZSHRC
 		    BELVE_SHELL="ZDOTDIR=\#(tmpDir)/zdotdir \#(shell) -l -i" ;;

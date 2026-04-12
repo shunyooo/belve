@@ -5,6 +5,7 @@
 
 export BELVE_SESSION="${BELVE_SESSION:-1}"
 export PATH="$HOME/.belve/bin:$PATH"
+export BELVE_TTY=$(tty 2>/dev/null || echo "")
 
 # Write PID file for fast resize lookup (avoids slow /proc/*/environ scan)
 if [ -n "$BELVE_PANE_ID" ]; then

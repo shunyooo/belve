@@ -59,13 +59,11 @@ func setSysProcAttr(ttyFile *os.File) *syscall.SysProcAttr {
 }
 
 func sendSigwinchToPty(fd uintptr) {
-	var pgid int32
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&pgid)))
-	if errno == 0 && pgid > 0 {
-		syscall.Kill(-int(pgid), syscall.SIGWINCH)
+	if childPid <= 0 {
 		return
 	}
-	if childPid > 0 {
-		syscall.Kill(childPid, syscall.SIGWINCH)
-	}
+	// Send SIGWINCH to the child's process group.
+	// This covers the shell and any foreground app (e.g. claude code)
+	// that shares the same PGID.
+	syscall.Kill(-childPid, syscall.SIGWINCH)
 }

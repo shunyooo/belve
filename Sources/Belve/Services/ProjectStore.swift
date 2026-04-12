@@ -124,18 +124,17 @@ class ProjectStore: ObservableObject {
 		let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard let index = indexOfSelected else { return }
 
-		// Kill old persist sessions
+		// Kill old persist sessions and clean sockets
 		let projShort = String(projects[index].id.uuidString.prefix(8))
 		let sessionsDir = "/tmp/belve-shell/sessions"
+		let pkill = Process()
+		pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+		pkill.arguments = ["-f", "belve-persist.*belve-\(projShort)"]
+		try? pkill.run()
+		pkill.waitUntilExit()
 		if let files = try? FileManager.default.contentsOfDirectory(atPath: sessionsDir) {
-			for file in files where file.hasPrefix("belve-\(projShort)") && file.hasSuffix(".sock") {
-				let sockPath = (sessionsDir as NSString).appendingPathComponent(file)
-				let kill = Process()
-				kill.executableURL = URL(fileURLWithPath: "/usr/bin/fuser")
-				kill.arguments = ["-k", sockPath]
-				try? kill.run()
-				kill.waitUntilExit()
-				try? FileManager.default.removeItem(atPath: sockPath)
+			for file in files where file.hasPrefix("belve-\(projShort)") {
+				try? FileManager.default.removeItem(atPath: (sessionsDir as NSString).appendingPathComponent(file))
 			}
 		}
 
