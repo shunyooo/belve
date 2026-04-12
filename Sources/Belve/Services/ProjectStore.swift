@@ -104,6 +104,11 @@ class ProjectStore: ObservableObject {
 		return "\(base) \(i)"
 	}
 
+	func moveProject(from source: IndexSet, to destination: Int) {
+		projects.move(fromOffsets: source, toOffset: destination)
+		saveProjects()
+	}
+
 	func renameProject(_ id: UUID, name: String) {
 		guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
 		projects[index].name = name
@@ -118,12 +123,30 @@ class ProjectStore: ObservableObject {
 	func setProjectFolder(_ path: String) {
 		let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard let index = indexOfSelected else { return }
-		projects[index].remotePath = path
-		projects[index].name = (path as NSString).lastPathComponent
+
+		// Kill old persist sessions
+		let projShort = String(projects[index].id.uuidString.prefix(8))
+		let sessionsDir = "/tmp/belve-shell/sessions"
+		if let files = try? FileManager.default.contentsOfDirectory(atPath: sessionsDir) {
+			for file in files where file.hasPrefix("belve-\(projShort)") && file.hasSuffix(".sock") {
+				let sockPath = (sessionsDir as NSString).appendingPathComponent(file)
+				let kill = Process()
+				kill.executableURL = URL(fileURLWithPath: "/usr/bin/fuser")
+				kill.arguments = ["-k", sockPath]
+				try? kill.run()
+				kill.waitUntilExit()
+				try? FileManager.default.removeItem(atPath: sockPath)
+			}
+		}
+
+		// Replace with a fresh project (new ID = clean slate for layout, sessions, etc.)
+		let newProject = Project(
+			name: (path as NSString).lastPathComponent,
+			remotePath: path
+		)
+		projects[index] = newProject
 		saveProjects()
-		selectedProject = projects[index]
-		// Reload project to reinitialize terminal with new path
-		reloadProject(projects[index].id)
+		select(newProject)
 		NSLog("[Belve] Opened folder: \(path)")
 	}
 

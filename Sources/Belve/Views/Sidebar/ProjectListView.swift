@@ -6,14 +6,17 @@ struct ProjectListView: View {
 	@EnvironmentObject var notificationStore: NotificationStore
 	var onAddProject: (() -> Void)?
 	var onToggleSidebar: (() -> Void)?
-	var onOpenNotifications: (() -> Void)?
 	var onRenameProject: ((UUID, String) -> Void)?
 	var onDeleteProject: ((UUID) -> Void)?
+	var onMoveProject: ((IndexSet, Int) -> Void)?
 
 	@State private var renamingProjectId: UUID?
 	@State private var renameText = ""
 	@State private var contextMenuProjectId: UUID?
-	@State private var contextMenuPosition: CGPoint = .zero
+
+	// Drag & drop state
+	@State private var draggingProjectId: UUID?
+	@State private var dropTargetIndex: Int?
 
 	var body: some View {
 		ZStack {
@@ -21,7 +24,7 @@ struct ProjectListView: View {
 				Spacer().frame(height: Theme.titlebarHeight)
 				ScrollView {
 					VStack(spacing: 2) {
-						ForEach(projects) { project in
+						ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
 							if renamingProjectId == project.id {
 								RenameField(text: $renameText) {
 									if !renameText.isEmpty {
@@ -31,23 +34,70 @@ struct ProjectListView: View {
 								}
 								.padding(.horizontal, 8)
 							} else {
-								Button {
-									selectedProject = project
-								} label: {
-									ProjectRow(
-										project: project,
-										isSelected: selectedProject == project,
-										unreadCount: notificationStore.unreadCount(for: project.id),
+								// Drop indicator above this row
+								if dropTargetIndex == index && draggingProjectId != project.id {
+									dropIndicator()
+								}
+
+								ProjectRow(
+									project: project,
+									isSelected: selectedProject == project,
 										agentState: notificationStore.agentStatus[project.id]
+								)
+								.opacity(draggingProjectId == project.id ? 0.4 : 1.0)
+								.overlay(
+									DragSourceView(
+										projectId: project.id,
+										onDragStarted: { draggingProjectId = project.id },
+										onClick: { selectedProject = project },
+										onRightClick: { _ in
+											contextMenuProjectId = project.id
+										}
 									)
+								)
+								.overlay(alignment: .topTrailing) {
+									if contextMenuProjectId == project.id {
+										ProjectContextMenu(
+											onRename: {
+												renameText = project.name
+												renamingProjectId = project.id
+												contextMenuProjectId = nil
+											},
+											onDelete: {
+												onDeleteProject?(project.id)
+												contextMenuProjectId = nil
+											}
+										)
+										.offset(x: 20, y: 30)
+										.transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .topLeading)))
+									}
 								}
-								.buttonStyle(.plain)
-								.onRightClick { location in
-									contextMenuPosition = location
-									contextMenuProjectId = project.id
-								}
+								.zIndex(contextMenuProjectId == project.id ? 100 : 0)
+								.onDrop(of: [.text], delegate: ProjectDropDelegate(
+									targetIndex: index,
+									projects: projects,
+									draggingProjectId: $draggingProjectId,
+									dropTargetIndex: $dropTargetIndex,
+									onMoveProject: onMoveProject
+								))
 							}
 						}
+
+						// Drop indicator at the end
+						if dropTargetIndex == projects.count {
+							dropIndicator()
+						}
+
+						// Drop target for the empty area below the list
+						Color.clear
+							.frame(height: 20)
+							.onDrop(of: [.text], delegate: ProjectDropDelegate(
+								targetIndex: projects.count,
+								projects: projects,
+								draggingProjectId: $draggingProjectId,
+								dropTargetIndex: $dropTargetIndex,
+								onMoveProject: onMoveProject
+							))
 					}
 					.padding(.horizontal, 8)
 				}
@@ -55,56 +105,86 @@ struct ProjectListView: View {
 			.overlay(alignment: .topTrailing) {
 				HStack(spacing: 4) {
 					SidebarIconButton(icon: "plus", action: { onAddProject?() })
-					ZStack(alignment: .topTrailing) {
-						SidebarIconButton(icon: "bell", action: { onOpenNotifications?() })
-						if notificationStore.totalUnreadCount() > 0 {
-							Circle()
-								.fill(Theme.red)
-								.frame(width: 8, height: 8)
-								.offset(x: 2, y: -2)
-						}
-					}
 					SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 				}
 				.padding(.trailing, 6)
 				.padding(.top, 4)
 			}
 
-			// Custom context menu overlay
+			// Dismiss context menu on tap outside
 			if contextMenuProjectId != nil {
 				Color.clear
 					.contentShape(Rectangle())
 					.onTapGesture { contextMenuProjectId = nil }
 					.onExitCommand { contextMenuProjectId = nil }
-
-				ProjectContextMenu(
-					position: contextMenuPosition,
-					onRename: {
-						if let id = contextMenuProjectId,
-						   let project = projects.first(where: { $0.id == id }) {
-							renameText = project.name
-							renamingProjectId = id
-						}
-						contextMenuProjectId = nil
-					},
-					onDelete: {
-						if let id = contextMenuProjectId {
-							onDeleteProject?(id)
-						}
-						contextMenuProjectId = nil
-					}
-				)
-				.transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .topLeading)))
 			}
 		}
 		.animation(.easeOut(duration: 0.12), value: contextMenuProjectId != nil)
+	}
+
+	private func dropIndicator() -> some View {
+		HStack(spacing: 4) {
+			Circle().fill(Theme.accent).frame(width: 5, height: 5)
+			Theme.accent.frame(height: 2)
+			Circle().fill(Theme.accent).frame(width: 5, height: 5)
+		}
+		.padding(.horizontal, 12)
+		.transition(.opacity)
+	}
+}
+
+// MARK: - Drop Delegate
+
+struct ProjectDropDelegate: DropDelegate {
+	let targetIndex: Int
+	let projects: [Project]
+	@Binding var draggingProjectId: UUID?
+	@Binding var dropTargetIndex: Int?
+	var onMoveProject: ((IndexSet, Int) -> Void)?
+
+	func dropEntered(info: DropInfo) {
+		withAnimation(.easeOut(duration: 0.15)) {
+			dropTargetIndex = targetIndex
+		}
+	}
+
+	func dropUpdated(info: DropInfo) -> DropProposal? {
+		DropProposal(operation: .move)
+	}
+
+	func performDrop(info: DropInfo) -> Bool {
+		guard let dragId = draggingProjectId,
+			  let sourceIndex = projects.firstIndex(where: { $0.id == dragId }) else {
+			reset()
+			return false
+		}
+		let dest = targetIndex > sourceIndex ? targetIndex : targetIndex
+		if sourceIndex != dest && sourceIndex + 1 != dest {
+			onMoveProject?(IndexSet(integer: sourceIndex), dest)
+		}
+		reset()
+		return true
+	}
+
+	func dropExited(info: DropInfo) {
+		// Only clear if we're leaving this specific target
+	}
+
+	func validateDrop(info: DropInfo) -> Bool {
+		draggingProjectId != nil
+	}
+
+	private func reset() {
+		withAnimation(.easeOut(duration: 0.15)) {
+			draggingProjectId = nil
+			dropTargetIndex = nil
+		}
 	}
 }
 
 // MARK: - Custom Context Menu
 
 struct ProjectContextMenu: View {
-	let position: CGPoint
 	let onRename: () -> Void
 	let onDelete: () -> Void
 
@@ -126,7 +206,6 @@ struct ProjectContextMenu: View {
 				.strokeBorder(Theme.border, lineWidth: 1)
 		)
 		.shadow(color: .black.opacity(0.4), radius: 12, y: 4)
-		.position(x: position.x + 80, y: position.y + 30)
 	}
 }
 
@@ -172,45 +251,89 @@ struct ContextMenuDivider: View {
 	}
 }
 
-// MARK: - Right Click Gesture
+// MARK: - Drag Source (NSView-based, doesn't block clicks)
 
-struct RightClickModifier: ViewModifier {
-	let action: (CGPoint) -> Void
+struct DragSourceView: NSViewRepresentable {
+	let projectId: UUID
+	let onDragStarted: () -> Void
+	let onClick: () -> Void
+	var onRightClick: ((CGPoint) -> Void)?
 
-	func body(content: Content) -> some View {
-		content.overlay(
-			RightClickView(action: action)
-		)
-	}
-}
-
-struct RightClickView: NSViewRepresentable {
-	let action: (CGPoint) -> Void
-
-	func makeNSView(context: Context) -> RightClickNSView {
-		let view = RightClickNSView()
-		view.action = action
+	func makeNSView(context: Context) -> DragSourceNSView {
+		let view = DragSourceNSView()
+		view.projectId = projectId
+		view.onDragStarted = onDragStarted
+		view.onClick = onClick
+		view.onRightClick = onRightClick
 		return view
 	}
 
-	func updateNSView(_ nsView: RightClickNSView, context: Context) {
-		nsView.action = action
+	func updateNSView(_ nsView: DragSourceNSView, context: Context) {
+		nsView.projectId = projectId
+		nsView.onDragStarted = onDragStarted
+		nsView.onClick = onClick
+		nsView.onRightClick = onRightClick
 	}
 
-	class RightClickNSView: NSView {
-		var action: ((CGPoint) -> Void)?
+	class DragSourceNSView: NSView {
+		var projectId: UUID?
+		var onDragStarted: (() -> Void)?
+		var onClick: (() -> Void)?
+		var onRightClick: ((CGPoint) -> Void)?
+		private var mouseDownLocation: NSPoint?
+		private var didDrag = false
+		private let dragThreshold: CGFloat = 4
+
+		override func mouseDown(with event: NSEvent) {
+			mouseDownLocation = event.locationInWindow
+			didDrag = false
+		}
+
+		override func mouseDragged(with event: NSEvent) {
+			guard let startLocation = mouseDownLocation, let projectId, !didDrag else { return }
+			let current = event.locationInWindow
+			let dx = current.x - startLocation.x
+			let dy = current.y - startLocation.y
+			guard sqrt(dx * dx + dy * dy) > dragThreshold else { return }
+
+			didDrag = true
+			onDragStarted?()
+
+			let item = NSDraggingItem(pasteboardWriter: projectId.uuidString as NSString)
+			item.setDraggingFrame(bounds, contents: snapshot())
+			beginDraggingSession(with: [item], event: event, source: self)
+		}
+
+		override func mouseUp(with event: NSEvent) {
+			if !didDrag {
+				onClick?()
+			}
+			mouseDownLocation = nil
+			didDrag = false
+		}
 
 		override func rightMouseDown(with event: NSEvent) {
-			let location = convert(event.locationInWindow, from: nil)
-			let swiftUIPoint = CGPoint(x: location.x, y: bounds.height - location.y)
-			action?(swiftUIPoint)
+			guard let contentView = window?.contentView else { return }
+			let windowPoint = contentView.convert(event.locationInWindow, from: nil)
+			let swiftUIPoint = CGPoint(x: windowPoint.x, y: contentView.bounds.height - windowPoint.y)
+			onRightClick?(swiftUIPoint)
+		}
+
+		private func snapshot() -> NSImage {
+			let image = NSImage(size: bounds.size)
+			image.lockFocus()
+			if let ctx = NSGraphicsContext.current?.cgContext {
+				layer?.render(in: ctx)
+			}
+			image.unlockFocus()
+			return image
 		}
 	}
 }
 
-extension View {
-	func onRightClick(perform action: @escaping (CGPoint) -> Void) -> some View {
-		modifier(RightClickModifier(action: action))
+extension DragSourceView.DragSourceNSView: NSDraggingSource {
+	func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+		.move
 	}
 }
 
@@ -265,19 +388,8 @@ struct SidebarIconButton: View {
 struct ProjectRow: View {
 	let project: Project
 	let isSelected: Bool
-	var unreadCount: Int = 0
 	var agentState: AgentState?
 	@State private var isHovering = false
-
-	private var statusColor: Color {
-		switch agentState?.status {
-		case .running: return Theme.accent
-		case .waiting: return Theme.yellow
-		case .completed: return Theme.green
-		case .sessionStart: return Theme.accent
-		default: return project.sshHost != nil ? Theme.accent : Theme.green
-		}
-	}
 
 	private var subtitle: String {
 		if project.isDevContainer {
@@ -293,9 +405,6 @@ struct ProjectRow: View {
 
 	var body: some View {
 		HStack(spacing: 10) {
-			Circle()
-				.fill(statusColor)
-				.frame(width: 7, height: 7)
 
 			VStack(alignment: .leading, spacing: 1) {
 				Text(project.name)
@@ -310,16 +419,6 @@ struct ProjectRow: View {
 			}
 
 			Spacer()
-
-			if unreadCount > 0 {
-				Text("\(unreadCount)")
-					.font(.system(size: 9, weight: .bold))
-					.foregroundStyle(.white)
-					.padding(.horizontal, 5)
-					.padding(.vertical, 1)
-					.background(Theme.accent)
-					.cornerRadius(6)
-			}
 		}
 		.padding(.horizontal, 10)
 		.padding(.vertical, 7)
