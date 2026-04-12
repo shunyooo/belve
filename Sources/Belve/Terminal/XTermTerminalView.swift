@@ -137,13 +137,27 @@ struct XTermTerminalView: NSViewRepresentable {
 			notificationStore.registerPane(paneId: paneId, projectId: project.id)
 		}
 
+		// Listen for project switch refit notifications
+		context.coordinator.refitObserver = NotificationCenter.default.addObserver(
+			forName: .belveTerminalRefit, object: nil, queue: .main
+		) { [weak coordinator = context.coordinator] notif in
+			guard let coordinator,
+				  let projectId = notif.userInfo?["projectId"] as? UUID,
+				  coordinator.project?.id == projectId else { return }
+			coordinator.performRefit()
+		}
+
 		return webView
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		if viewWidth > 0, viewHeight > 0 {
-			NSLog("[Belve] resize pane=%@ viewW=%.0f viewH=%.0f nsW=%.0f cellW=%.1f",
-				  paneId ?? "?", viewWidth, viewHeight, nsView.frame.width, context.coordinator.cellWidth)
+			let newFrame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
+			if nsView.frame.size != newFrame.size {
+				NSLog("[Belve] updateNSView pane=%@ viewW=%.0f viewH=%.0f oldW=%.0f oldH=%.0f",
+					  paneId ?? "?", viewWidth, viewHeight, nsView.frame.width, nsView.frame.height)
+				nsView.frame = newFrame
+			}
 			context.coordinator.resizeTerminal(width: viewWidth, height: viewHeight)
 		}
 	}
@@ -185,12 +199,14 @@ struct XTermTerminalView: NSViewRepresentable {
 		var paneIndex: Int = 0
 		var ptyService: PTYService?
 		weak var notificationStore: NotificationStore?
+		var refitObserver: Any?
 		weak var commandAreaState: CommandAreaState?
 
 		/// Buffer PTY output and flush on a timer to avoid excessive JS calls
 		private var outputBuffer = Data()
 		private var flushTimer: Timer?
 		private var isWaitingForInitialOutput = false
+		private var isTerminalReady = false
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let body = message.body as? [String: Any],
@@ -198,10 +214,26 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			switch type {
 			case "ready":
-				let cols = body["cols"] as? Int ?? 80
-				let rows = body["rows"] as? Int ?? 24
-				startPTY(cols: cols, rows: rows)
+				// Set flag and trigger fit after a short delay to ensure
+				// updateNSView has set the correct WKWebView frame.
+				isTerminalReady = true
 				focusTerminal()
+				// Delayed fit to get correct size after SwiftUI layout settles
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+					guard let self, let webView = self.webView, self.ptyService == nil else { return }
+					webView.evaluateJavaScript("window.terminalFit()") { [weak self] result, _ in
+						guard let self, self.ptyService == nil else { return }
+						if let dict = result as? [String: Any],
+						   let cols = dict["cols"] as? Int,
+						   let rows = dict["rows"] as? Int {
+							self.lastResizeCols = cols
+							self.lastResizeRows = rows
+							NSLog("[Belve] initial fit pane=%@ cols=%d rows=%d",
+								  self.paneId ?? "?", cols, rows)
+							self.startPTY(cols: cols, rows: rows)
+						}
+					}
+				}
 
 			case "input":
 				if let b64 = body["data"] as? String,
@@ -216,9 +248,6 @@ struct XTermTerminalView: NSViewRepresentable {
 				lastResizeCols = cols
 				lastResizeRows = rows
 				ptyService?.setSize(cols: cols, rows: rows)
-
-			case "viewportChanged":
-				break // Handled by updateNSView → triggerFitAddon
 
 			case "bell":
 				NSSound.beep()
@@ -242,6 +271,12 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "openPath":
 				if let rawPath = body["path"] as? String {
 					openPathFromTerminal(rawPath)
+				}
+
+			case "openUrl":
+				if let urlString = body["url"] as? String,
+				   let url = URL(string: urlString) {
+					NSWorkspace.shared.open(url)
 				}
 
 			case "shortcut":
@@ -288,16 +323,16 @@ struct XTermTerminalView: NSViewRepresentable {
 				env["PATH"] = "\(resourceBin.path):\(currentPath)"
 			}
 
-			// SSH/DevContainer env vars (used by launcher script)
+			// Path and connection env vars (used by launcher script)
+			if let remotePath = project.remotePath {
+				env["BELVE_WORKDIR"] = remotePath
+			}
 			if project.isDevContainer, let sshHost = project.sshHost, let workspacePath = project.devContainerPath {
 				env["BELVE_SSH_HOST"] = sshHost
-				env["BELVE_REMOTE_PATH"] = workspacePath
+				env["BELVE_WORKDIR"] = workspacePath
 				env["BELVE_DEVCONTAINER"] = "1"
 			} else if let sshHost = project.sshHost {
 				env["BELVE_SSH_HOST"] = sshHost
-				if let remotePath = project.remotePath {
-					env["BELVE_REMOTE_PATH"] = remotePath
-				}
 			}
 
 			// Resolve launcher script path
@@ -349,9 +384,15 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		/// Buffer PTY output and flush every ~4ms to reduce JS calls
 		private func bufferOutput(_ data: Data) {
+			// Check for belve-status OSC sequence before clearing loading state
 			if isWaitingForInitialOutput, !data.isEmpty {
+				if let statusMessage = extractBelveStatus(from: data) {
+					postConnectionStatus(statusMessage)
+					return  // Don't clear loading state for status messages
+				}
 				isWaitingForInitialOutput = false
 				postConnectionState(isLoading: false)
+				postConnectionStatus(nil)
 			}
 			outputBuffer.append(data)
 			if flushTimer == nil {
@@ -359,6 +400,18 @@ struct XTermTerminalView: NSViewRepresentable {
 					self?.flushOutput()
 				}
 			}
+		}
+
+		/// Extract belve-status message from OSC 9 sequence: \x1b]9;belve-status;MESSAGE\x07
+		private func extractBelveStatus(from data: Data) -> String? {
+			guard let str = String(data: data, encoding: .utf8) else { return nil }
+			let prefix = "\u{1b}]9;belve-status;"
+			let suffix = "\u{07}"
+			guard let prefixRange = str.range(of: prefix),
+				  let suffixRange = str.range(of: suffix, range: prefixRange.upperBound..<str.endIndex) else {
+				return nil
+			}
+			return String(str[prefixRange.upperBound..<suffixRange.lowerBound])
 		}
 
 		private func flushOutput() {
@@ -376,6 +429,21 @@ struct XTermTerminalView: NSViewRepresentable {
 			}
 		}
 
+		func performRefit() {
+			webView?.evaluateJavaScript("window.terminalFit()") { [weak self] result, _ in
+				guard let self else { return }
+				if let dict = result as? [String: Any],
+				   let cols = dict["cols"] as? Int,
+				   let rows = dict["rows"] as? Int,
+				   (cols != self.lastResizeCols || rows != self.lastResizeRows) {
+					self.lastResizeCols = cols
+					self.lastResizeRows = rows
+					NSLog("[Belve] refit pane=%@ cols=%d rows=%d", self.paneId ?? "?", cols, rows)
+					self.ptyService?.setSize(cols: cols, rows: rows)
+				}
+			}
+		}
+
 		func activatePane() {
 			guard let paneId, let paneUUID = UUID(uuidString: paneId) else { return }
 			commandAreaState?.activePaneId = paneUUID
@@ -385,58 +453,39 @@ struct XTermTerminalView: NSViewRepresentable {
 		private var lastResizeCols = 0
 		private var lastResizeRows = 0
 
-		private var cellWidth: CGFloat = 0
-		private var cellHeight: CGFloat = 0
-
-		private var pendingWidth: CGFloat = 0
-		private var pendingHeight: CGFloat = 0
-
-		/// Resize terminal: calculate cols/rows from pixel dimensions, no fitAddon
-		/// Uses the LAST width received during debounce period (SwiftUI settles to final value last)
+		/// Resize terminal using fitAddon.proposeDimensions() for accurate cols/rows.
+		/// Debounces to let SwiftUI layout settle before measuring DOM.
+		/// Also starts the PTY on the first successful fit (after "ready" + correct frame).
 		func resizeTerminal(width: CGFloat, height: CGFloat) {
-			pendingWidth = width
-			pendingHeight = height
 			resizeDebounceWorkItem?.cancel()
 			let workItem = DispatchWorkItem { [weak self] in
-				guard let self else { return }
-				let w = self.pendingWidth
-				let h = self.pendingHeight
-				if self.cellWidth > 0 {
-					self.applyResize(width: w, height: h)
-				} else {
-					self.webView?.evaluateJavaScript("""
-						(function() {
-							if(!window.term || !window.term._core || !window.term._core._renderService) return null;
-							var d = window.term._core._renderService.dimensions;
-							return [d.css.cell.width, d.css.cell.height];
-						})()
-						""") { [weak self] result, _ in
-						guard let self, let arr = result as? [Double], arr.count == 2, arr[0] > 0 else { return }
-						self.cellWidth = CGFloat(arr[0])
-						self.cellHeight = CGFloat(arr[1])
-						self.applyResize(width: self.pendingWidth, height: self.pendingHeight)
+				guard let self, let webView = self.webView else { return }
+				guard self.isTerminalReady else { return }
+				webView.evaluateJavaScript("window.terminalFit()") { [weak self] result, _ in
+					guard let self else { return }
+					if let dict = result as? [String: Any],
+					   let cols = dict["cols"] as? Int,
+					   let rows = dict["rows"] as? Int {
+						// Start PTY on first fit with correct size
+						if self.ptyService == nil {
+							self.lastResizeCols = cols
+							self.lastResizeRows = rows
+							NSLog("[Belve] initial fit pane=%@ cols=%d rows=%d",
+								  self.paneId ?? "?", cols, rows)
+							self.startPTY(cols: cols, rows: rows)
+							return
+						}
+						guard cols != self.lastResizeCols || rows != self.lastResizeRows else { return }
+						self.lastResizeCols = cols
+						self.lastResizeRows = rows
+						NSLog("[Belve] fit pane=%@ cols=%d rows=%d",
+							  self.paneId ?? "?", cols, rows)
+						self.ptyService?.setSize(cols: cols, rows: rows)
 					}
 				}
 			}
 			resizeDebounceWorkItem = workItem
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
-		}
-
-		private func applyResize(width: CGFloat, height: CGFloat) {
-			let cols = max(2, Int(width / cellWidth))
-			let rows = max(1, Int(height / cellHeight))
-			guard cols != lastResizeCols || rows != lastResizeRows else { return }
-			lastResizeCols = cols
-			lastResizeRows = rows
-			// Log terminal-side width for comparison
-			webView?.evaluateJavaScript("window.innerWidth") { [weak self] result, _ in
-				let jsW = result as? Double ?? -1
-				NSLog("[Belve] applyResize pane=%@ cols=%d viewW=%.0f jsInnerW=%.0f cellW=%.1f",
-					  self?.paneId ?? "?", cols, width, jsW, self?.cellWidth ?? 0)
-			}
-			// Resize xterm.js buffer + PTY atomically
-			webView?.evaluateJavaScript("if(window.term)window.term.resize(\(cols),\(rows))", completionHandler: nil)
-			ptyService?.setSize(cols: cols, rows: rows)
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: workItem)
 		}
 
 		func copySelectionToPasteboard() {
@@ -540,6 +589,19 @@ struct XTermTerminalView: NSViewRepresentable {
 			)
 		}
 
+		private func postConnectionStatus(_ message: String?) {
+			guard let project, let paneId else { return }
+			NotificationCenter.default.post(
+				name: .belveTerminalConnectionStatus,
+				object: nil,
+				userInfo: [
+					"projectId": project.id,
+					"paneId": paneId,
+					"message": message as Any
+				]
+			)
+		}
+
 		private func postDisconnectedState(isDisconnected: Bool) {
 			guard let project, let paneId else { return }
 			NotificationCenter.default.post(
@@ -632,6 +694,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		deinit {
 			flushTimer?.invalidate()
+			if let refitObserver { NotificationCenter.default.removeObserver(refitObserver) }
 			postConnectionState(isLoading: false)
 			postDisconnectedState(isDisconnected: false)
 			ptyService = nil  // PTYService deinit closes fd and kills process

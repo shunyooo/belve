@@ -38,7 +38,9 @@ const term = new Terminal({
 });
 
 term.loadAddon(fitAddon);
-term.loadAddon(new WebLinksAddon());
+term.loadAddon(new WebLinksAddon(function(event, uri) {
+	postMessage({ type: 'openUrl', url: uri });
+}));
 
 term.attachCustomKeyEventHandler(function(e) {
 	if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -75,7 +77,8 @@ window.debugDimensions = function() {
 		cssW: t.style.width, cssH: t.style.height
 	};
 };
-fitAddon.fit();
+// Don't call fitAddon.fit() here — WKWebView frame isn't set yet.
+// The correct size will be applied by Swift via updateNSView → terminalFit().
 
 const terminalPathRegex = /(?:^|[\s("'`\[])(\.{1,2}\/[^\s"'`)\]]+|\/[^\s"'`)\]]+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)(?::\d+)?(?::\d+)?/g;
 let isMetaPressed = false;
@@ -186,6 +189,17 @@ function ensurePathLinkProvider() {
 }
 
 
+// Fit terminal to container, returning actual cols/rows.
+// Called from Swift after layout settles — uses fitAddon which accounts for
+// scrollbar width, padding, and actual DOM dimensions.
+window.terminalFit = function() {
+	if (!window.term || !window.fitAddon) return null;
+	var dims = fitAddon.proposeDimensions();
+	if (!dims || dims.cols < 2 || dims.rows < 1) return null;
+	term.resize(dims.cols, dims.rows);
+	return { cols: dims.cols, rows: dims.rows };
+};
+
 // Bridge: Swift -> JS
 window.terminalWrite = function(base64) {
 	const bytes = atob(base64);
@@ -261,25 +275,43 @@ term.onBell(function() {
 	postMessage({ type: 'bell' });
 });
 
-// Clear previous selection on mousedown, but let xterm process the event first.
-// Use capture phase (runs before xterm's handler) to mark, then defer clear.
-var _hadSelectionOnMouseDown = false;
+// Selection UX: show text cursor only while dragging, default cursor otherwise.
+var _isDragging = false;
+var _terminalEl = document.querySelector('.xterm');
+
 document.addEventListener('mousedown', function() {
-	_hadSelectionOnMouseDown = term.hasSelection();
-	if (_hadSelectionOnMouseDown) {
-		// Defer clear to let xterm start a new selection if user drags
+	_isDragging = true;
+	if (_terminalEl) _terminalEl.style.cursor = 'text';
+	// Clear previous selection on new click (unless starting a new drag)
+	if (term.hasSelection()) {
 		requestAnimationFrame(function() {
-			// If xterm already started a new selection, don't clear
-			if (term.getSelection() === '' || !term.hasSelection()) {
+			if (!term.hasSelection() || term.getSelection() === '') {
 				term.clearSelection();
 			}
 		});
 	}
 }, true);
 
+document.addEventListener('mouseup', function() {
+	_isDragging = false;
+	if (_terminalEl) _terminalEl.style.cursor = '';
+}, true);
+
+// Detect stuck drag state: if mouse moves without any button pressed, end drag.
+// WKWebView can miss mouseup events, leaving xterm in selection-extend mode.
+document.addEventListener('mousemove', function(e) {
+	if (_isDragging && e.buttons === 0) {
+		_isDragging = false;
+		if (_terminalEl) _terminalEl.style.cursor = '';
+		// Synthesize mouseup to release xterm's internal selection state
+		var up = new MouseEvent('mouseup', { bubbles: true, clientX: e.clientX, clientY: e.clientY });
+		e.target.dispatchEvent(up);
+	}
+}, true);
+
 // Selection -> clipboard
 term.onSelectionChange(function() {
-	const sel = term.getSelection();
+	var sel = term.getSelection();
 	if (sel) {
 		postMessage({ type: 'selection', text: sel });
 	}

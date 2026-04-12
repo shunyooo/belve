@@ -6,6 +6,12 @@
 export BELVE_SESSION="${BELVE_SESSION:-1}"
 export PATH="$HOME/.belve/bin:$PATH"
 
+# Write PID file for fast resize lookup (avoids slow /proc/*/environ scan)
+if [ -n "$BELVE_PANE_ID" ]; then
+    mkdir -p "$HOME/.belve/panes"
+    echo $$ > "$HOME/.belve/panes/$BELVE_PANE_ID.pid"
+fi
+
 SHELL_PATH="${SHELL:-/bin/bash}"
 SHELL_NAME="$(basename "$SHELL_PATH")"
 

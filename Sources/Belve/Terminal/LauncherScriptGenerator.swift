@@ -66,8 +66,12 @@ enum LauncherScriptGenerator {
 		        SESSION_NAME="belve-${PROJ_SHORT}-${BELVE_PANE_INDEX}"
 		    fi
 
+		    # Status reporting for loading UI
+		    belve_status() { printf '\x1b]9;belve-status;%s\x07' "$1"; }
+
 		    # Check if we can skip deploy+setup (session already exists)
 		    NEED_SETUP=1
+		    belve_status "Connecting to $BELVE_SSH_HOST..."
 		    if $SETUP_SSH "$BELVE_SSH_HOST" "test -x ~/.belve/bin/belve-connect" 2>/dev/null; then
 		        if [ -n "$BELVE_DEVCONTAINER" ]; then
 		            $SETUP_SSH "$BELVE_SSH_HOST" "test -f ~/.belve/projects/${PROJ_SHORT}.env" 2>/dev/null && NEED_SETUP=0
@@ -78,6 +82,7 @@ enum LauncherScriptGenerator {
 
 		    if [ "$NEED_SETUP" = "1" ]; then
 		        # --- Phase 1: Deploy files via SCP ---
+		        belve_status "Deploying files..."
 		        $SETUP_SSH "$BELVE_SSH_HOST" "mkdir -p ~/.belve/bin ~/.belve/sessions ~/.belve/zdotdir ~/.belve/projects"
 		        deploy_persist_binary "$BELVE_SSH_HOST"
 		        deploy_file "$BELVE_BIN_DIR/belve" "$BELVE_SSH_HOST" "~/.belve/bin/belve"
@@ -88,21 +93,27 @@ enum LauncherScriptGenerator {
 		        $SETUP_SSH "$BELVE_SSH_HOST" "chmod +x ~/.belve/bin/* ~/.belve/session-bootstrap.sh 2>/dev/null"
 
 		        # --- Phase 2: Setup (non-interactive SSH, single command) ---
+		        if [ -n "$BELVE_DEVCONTAINER" ]; then
+		            belve_status "Starting DevContainer..."
+		        else
+		            belve_status "Setting up remote environment..."
+		        fi
 		        SETUP_ARGS=""
-		        if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_REMOTE_PATH" ]; then
-		            SETUP_ARGS="--devcontainer --workspace $BELVE_REMOTE_PATH --project-short $PROJ_SHORT"
+		        if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_WORKDIR" ]; then
+		            SETUP_ARGS="--devcontainer --workspace $BELVE_WORKDIR --project-short $PROJ_SHORT"
 		        fi
 		        $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup $SETUP_ARGS"
-		        [ $? -eq 0 ] || { echo "Setup failed"; exit 1; }
+		        [ $? -eq 0 ] || { belve_status "Setup failed"; echo "Setup failed"; exit 1; }
 		    fi
 
 		    # --- Connect (interactive SSH, single command) ---
+		    belve_status "Attaching session..."
 		    CONNECT_ARGS="--session $SESSION_NAME --cols ${BELVE_COLS:-80} --rows ${BELVE_ROWS:-24}"
 		    CONNECT_ARGS="$CONNECT_ARGS --project-id ${BELVE_PROJECT_ID:-} --pane-index ${BELVE_PANE_INDEX:-0} --pane-id ${BELVE_PANE_ID:-}"
 		    if [ -n "$BELVE_DEVCONTAINER" ]; then
 		        CONNECT_ARGS="$CONNECT_ARGS --devcontainer --project-short $PROJ_SHORT"
-		    elif [ -n "$BELVE_REMOTE_PATH" ]; then
-		        CONNECT_ARGS="$CONNECT_ARGS --workdir $BELVE_REMOTE_PATH"
+		    elif [ -n "$BELVE_WORKDIR" ]; then
+		        CONNECT_ARGS="$CONNECT_ARGS --workdir $BELVE_WORKDIR"
 		    fi
 		    $CONNECT_SSH -tt "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-connect $CONNECT_ARGS"
 
@@ -115,6 +126,7 @@ enum LauncherScriptGenerator {
 		# Local shell setup
 		export BELVE_SESSION=1
 		export PATH="\#(belveBin):$PATH"
+		[ -n "$BELVE_WORKDIR" ] && cd "$BELVE_WORKDIR" 2>/dev/null || true
 		PROJ_SHORT=$(echo "${BELVE_PROJECT_ID:-local}" | cut -c1-8)
 		if [ "${BELVE_PANE_INDEX:-0}" = "0" ]; then
 		    LOCAL_SESSION="belve-${PROJ_SHORT}"

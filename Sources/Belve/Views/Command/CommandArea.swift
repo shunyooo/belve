@@ -481,6 +481,7 @@ struct CommandArea: View {
 	@ObservedObject var state: CommandAreaState
 	@State private var dragState: PaneDragState?
 	@State private var connectionLoadingPanes: Set<UUID> = []
+	@State private var connectionStatusMessages: [UUID: String] = [:]
 	@State private var disconnectedPanes: Set<UUID> = []
 	private let paneHeaderHeight: CGFloat = 24
 
@@ -544,9 +545,11 @@ struct CommandArea: View {
 								height: max(1, pane.rect.height - paneHeaderHeight)
 							)
 							.opacity(isDraggingSource ? 0.38 : 1)
-							.overlay(alignment: .topLeading) {
+							.overlay(alignment: .top) {
 								if connectionLoadingPanes.contains(pane.paneId) {
-									TerminalLoadingTopLine()
+									TerminalLoadingOverlay(
+										statusMessage: connectionStatusMessages[pane.paneId]
+									)
 								}
 							}
 							.overlay {
@@ -603,6 +606,17 @@ struct CommandArea: View {
 				connectionLoadingPanes.remove(paneId)
 			}
 		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveTerminalConnectionStatus)) { notif in
+			guard let projectId = notif.userInfo?["projectId"] as? UUID,
+				  projectId == project.id,
+				  let paneIdString = notif.userInfo?["paneId"] as? String,
+				  let paneId = UUID(uuidString: paneIdString) else { return }
+			if let message = notif.userInfo?["message"] as? String {
+				connectionStatusMessages[paneId] = message
+			} else {
+				connectionStatusMessages.removeValue(forKey: paneId)
+			}
+		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveTerminalDisconnected)) { notif in
 			guard let projectId = notif.userInfo?["projectId"] as? UUID,
 				  projectId == project.id,
@@ -657,13 +671,32 @@ struct CommandArea: View {
 	}
 }
 
-private struct TerminalLoadingTopLine: View {
+private struct TerminalLoadingOverlay: View {
+	var statusMessage: String?
+
 	var body: some View {
-		LoadingTrack(trackHeight: 2, widthFactor: 0.28, minimumWidth: 120)
-			.frame(height: 2)
-			.frame(maxWidth: .infinity, alignment: .leading)
-			.background(Theme.surface.opacity(0.88))
-			.allowsHitTesting(false)
+		VStack(spacing: 0) {
+			LoadingTrack(trackHeight: 2, widthFactor: 0.28, minimumWidth: 120)
+				.frame(height: 2)
+				.frame(maxWidth: .infinity, alignment: .leading)
+
+			if let statusMessage {
+				HStack(spacing: 6) {
+					ProgressView()
+						.controlSize(.small)
+						.scaleEffect(0.7)
+					Text(statusMessage)
+						.font(.system(size: 11))
+						.foregroundStyle(Theme.textSecondary)
+				}
+				.padding(.top, 12)
+				.padding(.horizontal, 12)
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.transition(.opacity)
+				.animation(.easeOut(duration: 0.2), value: statusMessage)
+			}
+		}
+		.allowsHitTesting(false)
 	}
 }
 

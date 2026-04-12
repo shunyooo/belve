@@ -83,15 +83,22 @@ func main() {
 }
 
 var containerID string
+var containerPaneID string
 
 func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	os.Remove(socketPath)
 
-	// Detect container ID from docker exec command args
+	// Detect container ID and pane ID from docker exec command args
 	containerID = detectContainerID(command, args)
+	containerPaneID = detectEnvValue(command, args, "BELVE_PANE_ID")
 
 	// Ignore SIGHUP to survive SSH/docker disconnects
 	signal.Ignore(syscall.SIGHUP)
+
+	// Clean up old container processes with the same pane ID before starting new one
+	if containerID != "" && containerPaneID != "" {
+		cleanupOldContainerProcesses(containerID, containerPaneID)
+	}
 
 	ptyFd, ttyPath, err := openPTY()
 	if err != nil {
@@ -207,7 +214,7 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 							rows := binary.BigEndian.Uint16(payload[2:4])
 							setPtySize(ptyFd, cols, rows)
 							if containerID != "" {
-								go resizeContainerPty(containerID, cols, rows)
+								go resizeContainerPty(containerID, containerPaneID, cols, rows)
 							}
 						}
 					}
@@ -347,6 +354,28 @@ func readMsg(r io.Reader) (byte, []byte, error) {
 	return header[0], payload, nil
 }
 
+// cleanupOldContainerProcesses kills old container processes with the same pane ID.
+// Called synchronously before starting a new session to prevent zombie accumulation.
+// Uses SIGKILL and also kills child processes via process group.
+func cleanupOldContainerProcesses(cid, paneID string) {
+	// Fast path: kill via PID file, then fall back to /proc scan for stragglers
+	script := fmt.Sprintf(
+		`pidfile="$HOME/.belve/panes/%s.pid"; `+
+			`if [ -f "$pidfile" ]; then `+
+			`pid=$(cat "$pidfile"); `+
+			`kill -9 -"$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null; `+
+			`rm -f "$pidfile"; `+
+			`fi; `+
+			`for d in /proc/[0-9]*/environ; do `+
+			`pid=${d#/proc/}; pid=${pid%%/environ}; `+
+			`grep -qz 'BELVE_PANE_ID=%s' "$d" 2>/dev/null || continue; `+
+			`kill -9 -"$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null; `+
+			`done`,
+		paneID, paneID)
+	cmd := exec.Command("docker", "exec", cid, "sh", "-c", script)
+	cmd.Run()
+}
+
 // detectContainerID extracts the container ID from docker exec command args.
 // Finds the first argument that is 12+ hex characters (container ID format).
 func detectContainerID(command string, args []string) string {
@@ -369,11 +398,53 @@ func detectContainerID(command string, args []string) string {
 	return ""
 }
 
+// detectEnvValue extracts the value of a -e KEY=VALUE arg from docker exec command args.
+func detectEnvValue(command string, args []string, key string) string {
+	allArgs := append([]string{command}, args...)
+	prefix := key + "="
+	for i, arg := range allArgs {
+		if arg == "-e" && i+1 < len(allArgs) {
+			if len(allArgs[i+1]) > len(prefix) && allArgs[i+1][:len(prefix)] == prefix {
+				return allArgs[i+1][len(prefix):]
+			}
+		}
+	}
+	return ""
+}
+
 // resizeContainerPty resizes the PTY inside a Docker container by
 // running stty via docker exec. This bypasses the docker exec SIGWINCH issue.
-func resizeContainerPty(cid string, cols, rows uint16) {
-	// Resize only the 4 newest belve-bashrc processes (avoid old zombie sessions)
-	cmd := exec.Command("docker", "exec", cid, "sh", "-c",
-		fmt.Sprintf("for p in $(ps aux --sort=-start_time | grep belve-bashrc | grep -v grep | head -4 | awk '{print $2}'); do TTY=$(readlink /proc/$p/fd/0 2>/dev/null) && [ -n \"$TTY\" ] && stty -F $TTY rows %d cols %d 2>/dev/null; done", rows, cols))
+// When paneID is set, only the process with matching BELVE_PANE_ID is resized.
+func resizeContainerPty(cid, paneID string, cols, rows uint16) {
+	var script string
+	if paneID != "" {
+		// Fast path: use PID file written by session-bootstrap.sh
+		// Falls back to /proc scan if PID file doesn't exist
+		script = fmt.Sprintf(
+			`pidfile="$HOME/.belve/panes/%s.pid"; `+
+				`if [ -f "$pidfile" ]; then `+
+				`pid=$(cat "$pidfile"); `+
+				`tty=$(readlink /proc/$pid/fd/0 2>/dev/null); `+
+				`if [ -n "$tty" ]; then stty -F "$tty" rows %d cols %d 2>/dev/null; exit 0; fi; `+
+				`fi; `+
+				`best=""; besttty=""; `+
+				`for d in /proc/[0-9]*/environ; do `+
+				`pid=${d#/proc/}; pid=${pid%%/environ}; `+
+				`grep -qz 'BELVE_PANE_ID=%s' "$d" 2>/dev/null || continue; `+
+				`tty=$(readlink /proc/$pid/fd/0 2>/dev/null); `+
+				`echo "$tty" | grep -q "^/dev/pts/" || continue; `+
+				`if [ -z "$best" ] || [ "$pid" -gt "$best" ]; then best=$pid; besttty=$tty; fi; `+
+				`done; `+
+				`[ -n "$besttty" ] && stty -F "$besttty" rows %d cols %d 2>/dev/null`,
+			paneID, rows, cols, paneID, rows, cols)
+	} else {
+		// Fallback: resize the 4 newest belve-bashrc processes
+		script = fmt.Sprintf(
+			"for p in $(ps aux --sort=-start_time | grep belve-bashrc | grep -v grep | head -4 | awk '{print $2}'); "+
+				"do TTY=$(readlink /proc/$p/fd/0 2>/dev/null) && [ -n \"$TTY\" ] && "+
+				"stty -F $TTY rows %d cols %d 2>/dev/null; done",
+			rows, cols)
+	}
+	cmd := exec.Command("docker", "exec", cid, "sh", "-c", script)
 	cmd.Run()
 }

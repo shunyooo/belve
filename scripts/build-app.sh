@@ -55,6 +55,11 @@ cp "$PERSIST_DIR/belve-persist-linux-arm64" Belve.app/Contents/Resources/bin/ 2>
 cp "$PERSIST_DIR/belve-persist-darwin-arm64" Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 chmod +x Belve.app/Contents/Resources/bin/* 2>/dev/null || true
 
+# Sign Go binaries individually (macOS kills unsigned Mach-O binaries)
+for bin in Belve.app/Contents/Resources/bin/belve-persist-darwin-arm64; do
+    [ -f "$bin" ] && codesign --force --sign - "$bin" 2>/dev/null
+done
+
 # Move resource bundle out of MacOS to avoid codesign sub-bundle issues
 mkdir -p Belve.app/Contents/Resources
 if [ -d "Belve.app/Contents/MacOS/Belve_Belve.bundle" ]; then

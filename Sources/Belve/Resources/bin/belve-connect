@@ -34,7 +34,19 @@ done
 
 PERSIST="$HOME/.belve/bin/belve-persist"
 SOCK="$HOME/.belve/sessions/${SESSION_NAME}.sock"
+VERFILE="$HOME/.belve/sessions/${SESSION_NAME}.ver"
 mkdir -p "$HOME/.belve/sessions"
+
+# Version check: kill stale master if binary was updated
+CURRENT_VER=$(md5sum "$PERSIST" 2>/dev/null | cut -d' ' -f1)
+if [ -S "$SOCK" ] && [ -f "$VERFILE" ]; then
+    OLD_VER=$(cat "$VERFILE" 2>/dev/null)
+    if [ "$CURRENT_VER" != "$OLD_VER" ]; then
+        # Binary updated — kill old master so a new one is created
+        fuser -k "$SOCK" 2>/dev/null || true
+        rm -f "$SOCK" "$VERFILE"
+    fi
+fi
 
 # Export env vars for session-bootstrap.sh to inherit
 export BELVE_SESSION=1
@@ -54,6 +66,7 @@ if [ "$DEVCONTAINER" = "1" ] && [ -n "$PROJ_SHORT" ]; then
     fi
 
     # Create new session: persist on HOST, docker exec as child
+    echo "$CURRENT_VER" > "$VERFILE"
     exec "$PERSIST" -socket "$SOCK" -cols "$COLS" -rows "$ROWS" \
         -command docker exec -it -w "$RWS" \
         -e BELVE_SESSION=1 \
@@ -73,6 +86,7 @@ else
     fi
 
     # Create new session
+    echo "$CURRENT_VER" > "$VERFILE"
     exec "$PERSIST" -socket "$SOCK" -cols "$COLS" -rows "$ROWS" \
         -command "$HOME/.belve/session-bootstrap.sh"
 fi
