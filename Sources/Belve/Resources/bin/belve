@@ -8,29 +8,9 @@ set -euo pipefail
 
 PANE_ID="${BELVE_PANE_ID:-unknown}"
 
-EVENTS_FILE="/tmp/belve-agent-events"
-
-json_escape() {
-    local value="${1:-}"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//$'\n'/\\n}"
-    value="${value//$'\r'/\\r}"
-    value="${value//$'\t'/\\t}"
-    printf '%s' "$value"
-}
-
 emit_event() {
     local status="$1"
     local message="$2"
-    local escaped_pane_id escaped_status escaped_message
-    escaped_pane_id="$(json_escape "$PANE_ID")"
-    escaped_status="$(json_escape "$status")"
-    escaped_message="$(json_escape "$message")"
-    # Write JSON event to file (monitored by Belve app)
-    printf '{"paneId":"%s","status":"%s","message":"%s","timestamp":%d}\n' \
-        "$escaped_pane_id" "$escaped_status" "$escaped_message" "$(date +%s)" >> "$EVENTS_FILE"
-    # Also try OSC to /dev/tty (works when tty is available)
     printf '\033]9;BELVE:%s:%s:%s\007' "$PANE_ID" "$status" "$message" > /dev/tty 2>/dev/null || true
 }
 
@@ -92,6 +72,26 @@ case "${1:-}" in
                     emit_event "running" "$local_prompt"
                 else
                     emit_event "running" "Generating"
+                fi
+                ;;
+            pre-tool-use)
+                # Capture tool name from stdin JSON
+                local_tool=""
+                if command -v node > /dev/null 2>&1; then
+                    local_tool=$(node -e '
+                        let d="";
+                        process.stdin.on("data",c=>d+=c);
+                        process.stdin.on("end",()=>{
+                            try{const j=JSON.parse(d);
+                                process.stdout.write(j.tool_name||j.tool||"")}
+                            catch{process.stdout.write("")}
+                        })
+                    ' 2>/dev/null) || local_tool=""
+                else
+                    read_stdin
+                fi
+                if [ -n "$local_tool" ]; then
+                    emit_event "running" "tool:$local_tool"
                 fi
                 ;;
             stop)

@@ -15,93 +15,128 @@ struct AgentState {
 	var message: String
 }
 
-struct TerminalNotification: Identifiable {
+/// One record per agent session. Status updates in-place.
+struct AgentSession: Identifiable {
 	let id = UUID()
 	let projectId: UUID
-	let title: String
-	let body: String
-	let timestamp: Date
+	var paneId: String?
+	var status: AgentStatus
+	var message: String
+	var label: String?
+	var lastUserPrompt: String?
+	var lastAgentActivity: String?
+	var currentTool: String?
+	let startedAt: Date
+	var updatedAt: Date
 	var isRead: Bool = false
 }
 
 class NotificationStore: ObservableObject {
-	@Published var notifications: [TerminalNotification] = []
+	@Published var sessions: [AgentSession] = []
 	@Published var agentStatus: [UUID: AgentState] = [:] // keyed by projectId
+	@Published var agentPaneId: [UUID: String] = [:] // projectId → active paneId
 	@Published var sessionLabels: [UUID: String] = [:] // keyed by projectId
 
-	// Mapping: paneId → projectId (set by TerminalPaneView)
+	// Mapping: paneId → projectId
 	var paneToProject: [String: UUID] = [:]
-	private var hasSessionLabel: Set<UUID> = [] // track if first prompt was captured
+	// Active session index per project (for in-place updates)
+	private var activeSessionIndex: [UUID: Int] = [:]
 
 	func registerPane(paneId: String, projectId: UUID) {
 		paneToProject[paneId] = projectId
-		NSLog("[Belve] registerPane: paneId=\(paneId) projectId=\(projectId)")
 	}
 
 	func updateAgentStatus(paneId: String, status: String, message: String) {
 		guard let projectId = paneToProject[paneId],
-			  let agentStatus = AgentStatus(rawValue: status) else {
-			NSLog("[Belve] Agent status ignored: pane \(paneId) not mapped or unknown status \(status)")
-			return
-		}
+			  let agentStatus = AgentStatus(rawValue: status) else { return }
 
 		self.agentStatus[projectId] = AgentState(status: agentStatus, message: message)
-		NSLog("[Belve] Agent status: \(status) - \(message) (project: \(projectId))")
+		self.agentPaneId[projectId] = paneId
 
-		// Capture first prompt as session label
-		if agentStatus == .running && !hasSessionLabel.contains(projectId) && message != "Generating" {
-			sessionLabels[projectId] = message
-			hasSessionLabel.insert(projectId)
-			NSLog("[Belve] Session label: \(message) (project: \(projectId))")
-		}
-
-		// Reset session label tracking on session end
-		if agentStatus == .sessionEnd {
-			hasSessionLabel.remove(projectId)
-		}
-
-		// Add notification + desktop notification for waiting state
-		if agentStatus == .waiting {
-			add(projectId: projectId, title: "Claude Code", body: message)
-			sendDesktopNotification(title: "Claude Code", body: message, projectId: projectId)
-		}
-	}
-
-	func add(projectId: UUID, title: String, body: String) {
-		let notification = TerminalNotification(
-			projectId: projectId,
-			title: title,
-			body: body,
-			timestamp: Date()
-		)
-		notifications.insert(notification, at: 0)
-		NSLog("[Belve] Notification: \(title) - \(body)")
-	}
-
-	func unreadCount(for projectId: UUID) -> Int {
-		notifications.filter { $0.projectId == projectId && !$0.isRead }.count
-	}
-
-	func totalUnreadCount() -> Int {
-		notifications.filter { !$0.isRead }.count
-	}
-
-	func markAllRead(for projectId: UUID) {
-		for i in notifications.indices {
-			if notifications[i].projectId == projectId {
-				notifications[i].isRead = true
+		switch agentStatus {
+		case .sessionStart:
+			// Remove existing session for same pane (reload case)
+			if let existingIdx = sessions.firstIndex(where: { $0.paneId == paneId }) {
+				sessions.remove(at: existingIdx)
+				// Fix active indices after removal
+				for (key, idx) in activeSessionIndex {
+					if idx > existingIdx { activeSessionIndex[key] = idx - 1 }
+					else if idx == existingIdx { activeSessionIndex.removeValue(forKey: key) }
+				}
 			}
+			// New session record
+			let session = AgentSession(
+				projectId: projectId,
+				paneId: paneId,
+				status: .sessionStart,
+				message: message,
+				startedAt: Date(),
+				updatedAt: Date()
+			)
+			sessions.insert(session, at: 0)
+			activeSessionIndex[projectId] = 0
+			// Shift other indices
+			for (key, idx) in activeSessionIndex where key != projectId {
+				activeSessionIndex[key] = idx + 1
+			}
+
+		case .running:
+			updateActiveSession(projectId: projectId) { session in
+				session.status = .running
+				session.message = message
+				// Capture first prompt as label
+				if session.label == nil && message != "Generating" {
+					session.label = message
+					self.sessionLabels[projectId] = message
+				}
+				// Track agent activity and tool usage
+				if message.hasPrefix("tool:") {
+					session.currentTool = String(message.dropFirst(5))
+				} else if message != "Generating" {
+					session.lastUserPrompt = message
+					session.currentTool = nil
+				}
+			}
+
+		case .waiting:
+			updateActiveSession(projectId: projectId) { session in
+				session.status = .waiting
+				session.message = message
+				session.currentTool = nil
+				session.isRead = false
+			}
+			sendDesktopNotification(title: "Claude Code", body: message, projectId: projectId)
+
+		case .completed:
+			updateActiveSession(projectId: projectId) { session in
+				session.status = .completed
+				session.message = message
+				session.currentTool = nil
+			}
+
+		case .sessionEnd:
+			updateActiveSession(projectId: projectId) { session in
+				session.status = .sessionEnd
+			}
+			activeSessionIndex.removeValue(forKey: projectId)
+
+		case .idle:
+			break
 		}
 	}
 
-	func latestNotification(for projectId: UUID) -> TerminalNotification? {
-		notifications.first { $0.projectId == projectId }
+	private func updateActiveSession(projectId: UUID, update: (inout AgentSession) -> Void) {
+		if let idx = activeSessionIndex[projectId], idx < sessions.count,
+		   sessions[idx].projectId == projectId {
+			update(&sessions[idx])
+			sessions[idx].updatedAt = Date()
+		}
 	}
+
+
 
 	func requestNotificationPermission() {
-		UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-			NSLog("[Belve] Notification permission: \(granted), error: \(String(describing: error))")
-		}
+		UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 	}
 
 	func sendDesktopNotification(title: String, body: String, projectId: UUID? = nil) {
@@ -112,12 +147,7 @@ class NotificationStore: ObservableObject {
 		if let projectId {
 			content.userInfo = ["projectId": projectId.uuidString]
 		}
-
-		let request = UNNotificationRequest(
-			identifier: UUID().uuidString,
-			content: content,
-			trigger: nil
-		)
+		let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
 		UNUserNotificationCenter.current().add(request)
 	}
 }

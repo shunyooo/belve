@@ -5,6 +5,7 @@ struct MainWindow: View {
 	@EnvironmentObject var commandPaletteState: CommandPaletteState
 	@EnvironmentObject var projectStore: ProjectStore
 	@State private var sidebarWidthAtDragStart: CGFloat = 0
+	@State private var sessionBarWidthAtDragStart: CGFloat = 0
 	@State private var openFile: OpenFile?
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
@@ -175,33 +176,58 @@ struct MainWindow: View {
 				),
 				onAddProject: { let _ = projectStore.addProject() },
 				onToggleSidebar: toggleSidebar,
-				onOpenNotifications: {},
 				onRenameProject: { id, name in projectStore.renameProject(id, name: name) },
-				onDeleteProject: { id in projectStore.deleteProject(id) }
+				onDeleteProject: { id in projectStore.deleteProject(id) },
+				onMoveProject: { source, dest in projectStore.moveProject(from: source, to: dest) }
 			)
 			.frame(width: layoutState.sidebarWidth)
 
+			// Divider: project bar ↔ session bar (drags project bar width)
 			Rectangle()
 				.fill(Theme.borderSubtle)
 				.frame(width: 1)
 				.contentShape(Rectangle().inset(by: -3))
-				.onHover { hovering in
-					if hovering {
-						NSCursor.resizeLeftRight.push()
-					} else {
-						NSCursor.pop()
+				.onHover { h in if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+				.gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+					.onChanged { value in
+						if sidebarWidthAtDragStart == 0 { sidebarWidthAtDragStart = layoutState.sidebarWidth }
+						layoutState.sidebarWidth = max(100, min(300, sidebarWidthAtDragStart + value.translation.width))
+					}
+					.onEnded { _ in sidebarWidthAtDragStart = layoutState.sidebarWidth }
+				)
+
+			AgentSessionBar(
+				projects: projectStore.projects,
+				selectedProject: Binding(
+					get: { projectStore.selectedProject },
+					set: { projectStore.select($0) }
+				),
+				activeCommandState: commandAreaState(for: projectStore.selectedProject?.id ?? UUID()),
+				onFocusPane: { projectId, paneId in
+					if let paneUUID = UUID(uuidString: paneId) {
+						commandAreaState(for: projectId).activePaneId = paneUUID
+						projectStore.refocusTerminal(paneId: paneId)
 					}
 				}
+			)
+			.frame(width: layoutState.sessionBarWidth)
+
+			// Divider: session bar ↔ terminal area (drags session bar width)
+			Rectangle()
+				.fill(Theme.borderSubtle)
+				.frame(width: 1)
+				.contentShape(Rectangle().inset(by: -3))
+				.onHover { h in if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
 				.gesture(
 					DragGesture(minimumDistance: 1, coordinateSpace: .global)
 						.onChanged { value in
-							if sidebarWidthAtDragStart == 0 {
-								sidebarWidthAtDragStart = layoutState.sidebarWidth
+							if sessionBarWidthAtDragStart == 0 {
+								sessionBarWidthAtDragStart = layoutState.sessionBarWidth
 							}
-							layoutState.sidebarWidth = max(140, min(350, sidebarWidthAtDragStart + value.translation.width))
+							layoutState.sessionBarWidth = max(100, min(300, sessionBarWidthAtDragStart + value.translation.width))
 						}
 						.onEnded { _ in
-							sidebarWidthAtDragStart = layoutState.sidebarWidth
+							sessionBarWidthAtDragStart = layoutState.sessionBarWidth
 						}
 				)
 		}
@@ -252,7 +278,7 @@ struct MainWindow: View {
 		let clampedSplit = splitBinding.wrappedValue
 		let isEditorVisible = projectLayout.showEditor
 		let commandWidth = isEditorVisible ? clampedSplit : availableWidth
-		let previewWidth = max(0, availableWidth - clampedSplit - dividerWidth)
+		let previewWidth = isEditorVisible ? max(0, availableWidth - clampedSplit - dividerWidth) : 0
 
 		return ZStack(alignment: .bottomTrailing) {
 			HStack(spacing: 0) {
@@ -304,6 +330,19 @@ struct MainWindow: View {
 		}
 		.opacity(isSelected ? 1 : 0)
 		.allowsHitTesting(isSelected)
+		.onChange(of: isSelected) { _, nowSelected in
+			if nowSelected {
+				// Force re-fit terminals after becoming visible
+				// (non-active projects have wrong WKWebView viewport size)
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+					NotificationCenter.default.post(
+						name: .belveTerminalRefit,
+						object: nil,
+						userInfo: ["projectId": project.id]
+					)
+				}
+			}
+		}
 	}
 
 	@ViewBuilder

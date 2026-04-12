@@ -83,6 +83,8 @@ extension Notification.Name {
 	static let belveOpenFileSearch = Notification.Name("belveOpenFileSearch")
 	static let belvePresentFileSearch = Notification.Name("belvePresentFileSearch")
 	static let belveTerminalConnectionState = Notification.Name("belveTerminalConnectionState")
+	static let belveTerminalConnectionStatus = Notification.Name("belveTerminalConnectionStatus")
+	static let belveTerminalRefit = Notification.Name("belveTerminalRefit")
 	static let belveTerminalDisconnected = Notification.Name("belveTerminalDisconnected")
 	static let belveSplitVertical = Notification.Name("belveSplitVertical")
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
@@ -103,7 +105,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 	let commandPaletteState = CommandPaletteState()
 	let notificationStore = NotificationStore()
 	let projectStore = ProjectStore()
-	let agentFileMonitor = AgentEventFileMonitor()
 	private var localKeyMonitor: Any?
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
@@ -152,12 +153,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			NotificationCenter.default.post(name: .belveOpenFileSearch, object: nil)
 			return nil
 		}
-
-		// Start monitoring agent events file
-		agentFileMonitor.onEvent = { [weak self] paneId, status, message in
-			self?.notificationStore.updateAgentStatus(paneId: paneId, status: status, message: message)
-		}
-		agentFileMonitor.start()
 
 		NotificationCenter.default.addObserver(
 			forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main

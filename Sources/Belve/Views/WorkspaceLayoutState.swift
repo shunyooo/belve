@@ -51,6 +51,9 @@ final class WorkspaceLayoutStateManager: ObservableObject {
 	@Published var sidebarWidth: CGFloat = 200 {
 		didSet { saveIfNeeded() }
 	}
+	@Published var sessionBarWidth: CGFloat = 160 {
+		didSet { saveIfNeeded() }
+	}
 
 	private var projectStates: [UUID: ProjectLayoutState] = [:]
 	private var isRestoring = false
@@ -58,6 +61,7 @@ final class WorkspaceLayoutStateManager: ObservableObject {
 	private struct PersistedLayoutState: Codable {
 		let showSidebar: Bool
 		let sidebarWidth: CGFloat
+		var sessionBarWidth: CGFloat?
 		let projects: [String: ProjectLayoutState]
 	}
 
@@ -101,6 +105,7 @@ final class WorkspaceLayoutStateManager: ObservableObject {
 		let persisted = PersistedLayoutState(
 			showSidebar: showSidebar,
 			sidebarWidth: sidebarWidth,
+			sessionBarWidth: sessionBarWidth,
 			projects: projectStates.reduce(into: [:]) { result, pair in
 				result[pair.key.uuidString] = pair.value
 			}
@@ -120,6 +125,7 @@ final class WorkspaceLayoutStateManager: ObservableObject {
 		isRestoring = true
 		showSidebar = persisted.showSidebar
 		sidebarWidth = persisted.sidebarWidth
+		sessionBarWidth = persisted.sessionBarWidth ?? 160
 		projectStates = persisted.projects.reduce(into: [:]) { result, pair in
 			guard let projectId = UUID(uuidString: pair.key) else { return }
 			attach(pair.value)

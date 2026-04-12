@@ -14,6 +14,9 @@ class OSCAgentTransport: AgentNotificationTransport {
 	/// Scan data for BELVE:<pane_id>:<status>:<message> in OSC 9 sequences.
 	func scan(_ data: Data) {
 		guard let str = String(data: data, encoding: .utf8) else { return }
+		if str.contains("BELVE:") {
+			NSLog("[Belve] OSCAgentTransport: found BELVE in data len=%d", data.count)
+		}
 
 		// Pattern: \x1b]9;BELVE:<pane_id>:<status>:<message>\x07
 		guard let pattern = try? NSRegularExpression(
