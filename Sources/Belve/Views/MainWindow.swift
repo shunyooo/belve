@@ -237,6 +237,7 @@ struct MainWindow: View {
 		TopBar(
 			projectName: projectStore.selectedProject?.name ?? "",
 			connectionInfo: projectStore.selectedProject.map { Self.connectionInfo(for: $0) } ?? nil,
+			gitBranch: projectStore.gitBranch,
 			showSidebar: layoutState.showSidebar,
 			onToggleSidebar: toggleSidebar,
 			sessionLabel: nil
@@ -903,6 +904,7 @@ private struct MainWindowFileSearchRow: View {
 struct TopBar: View {
 	let projectName: String
 	let connectionInfo: String?  // e.g. "SSH: host", "DevContainer: host", nil for local
+	var gitBranch: String?
 	let showSidebar: Bool
 	let onToggleSidebar: () -> Void
 	var sessionLabel: String?
@@ -925,6 +927,19 @@ struct TopBar: View {
 			Text(projectName)
 				.font(.system(size: 12, weight: .medium))
 				.foregroundStyle(Theme.textSecondary)
+
+			if let branch = gitBranch {
+				HStack(spacing: 3) {
+					Image(systemName: "arrow.triangle.branch")
+						.font(.system(size: 9))
+					Text(branch)
+						.font(.system(size: 10, weight: .medium))
+				}
+				.foregroundStyle(Theme.accent)
+				.padding(.horizontal, 6)
+				.padding(.vertical, 2)
+				.background(RoundedRectangle(cornerRadius: 4).fill(Theme.accent.opacity(0.12)))
+			}
 
 			if let info = connectionInfo {
 				ConnectionBadge(text: info)

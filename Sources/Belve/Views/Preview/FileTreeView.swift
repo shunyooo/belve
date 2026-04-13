@@ -20,6 +20,7 @@ class FileTreeState: ObservableObject {
 	@Published var focusedPath: String?
 	@Published var isRootLoading = false
 	@Published var loadingDirectories: Set<String> = []
+	@Published var ignoredPaths: Set<String> = []
 
 	// Multi-selection
 	@Published var selectedPaths: Set<String> = []
@@ -55,9 +56,13 @@ class FileTreeState: ObservableObject {
 		isRootLoading = true
 		DispatchQueue.global().async {
 			let result = project.executionContext.listDirectory(rootPath)
+			let ignored = project.executionContext.gitCheckIgnore(rootPath, paths: result.map(\.name))
 			DispatchQueue.main.async {
 				self.items = result
 				self.isRootLoading = false
+				for item in result where ignored.contains(item.name) {
+					self.ignoredPaths.insert(item.path)
+				}
 				if self.focusedPath == nil {
 					self.focusedPath = result.first?.path
 				}
@@ -112,12 +117,23 @@ class FileTreeState: ObservableObject {
 			expandedPaths.insert(path)
 			if childrenCache[path] == nil {
 				loadingDirectories.insert(path)
+				let rootPath = project.effectivePath
 				DispatchQueue.global().async {
 					let children = project.executionContext.listDirectory(path)
+					// Check gitignore for children (use relative paths from repo root)
+					let relativePaths = children.map { item -> String in
+						if item.path.hasPrefix(rootPath) {
+							return String(item.path.dropFirst(rootPath.count).drop(while: { $0 == "/" }))
+						}
+						return item.name
+					}
+					let ignored = project.executionContext.gitCheckIgnore(rootPath, paths: relativePaths)
 					DispatchQueue.main.async {
-						NSLog("[Belve] Loaded \(children.count) children for \(path)")
 						self.loadingDirectories.remove(path)
 						self.childrenCache[path] = children
+						for (item, relPath) in zip(children, relativePaths) where ignored.contains(relPath) {
+							self.ignoredPaths.insert(item.path)
+						}
 					}
 				}
 			}
@@ -511,6 +527,7 @@ struct FileTreeView: View {
 	let rootPath: String
 	let onFileSelect: (String) -> Void
 	@ObservedObject var state: FileTreeState
+	var gitFileStatus: [String: String] = [:]
 	@FocusState private var isTreeFocused: Bool
 
 	private var isEditing: Bool {
@@ -532,7 +549,8 @@ struct FileTreeView: View {
 							depth: 0,
 							state: state,
 							project: project,
-							onFileSelect: onFileSelect
+							onFileSelect: onFileSelect,
+							gitFileStatus: gitFileStatus
 						)
 					}
 				}
@@ -672,6 +690,7 @@ struct FileTreeRow: View {
 	@ObservedObject var state: FileTreeState
 	let project: Project
 	let onFileSelect: (String) -> Void
+	var gitFileStatus: [String: String] = [:]
 	@State private var isHovering = false
 	@FocusState private var renameFocused: Bool
 	@FocusState private var newFileFocused: Bool
@@ -698,6 +717,43 @@ struct FileTreeRow: View {
 
 	private var isRenaming: Bool {
 		state.renamingPath == item.path
+	}
+
+	private var gitStatus: String? {
+		// gitFileStatus keys are relative paths (files + directories)
+		// item.path is absolute — match by suffix
+		for (gitPath, status) in gitFileStatus {
+			if item.path.hasSuffix("/" + gitPath) {
+				return status
+			}
+		}
+		return nil
+	}
+
+	private var gitStatusBadge: String? {
+		guard let s = gitStatus else { return nil }
+		switch s {
+		case "M": return "M"
+		case "A", "??": return "A"
+		case "D": return "D"
+		case "R": return "R"
+		default: return s
+		}
+	}
+
+	private var isIgnored: Bool {
+		state.ignoredPaths.contains(item.path)
+	}
+
+	private var gitStatusColor: Color? {
+		if isIgnored { return Theme.textTertiary }
+		guard let s = gitStatus else { return nil }
+		switch s {
+		case "M": return Theme.yellow
+		case "A", "??": return Theme.green
+		case "D": return Theme.red
+		default: return Theme.yellow
+		}
 	}
 
 	private var rowBackground: Color {
@@ -748,11 +804,17 @@ struct FileTreeRow: View {
 				} else {
 					Text(item.name)
 						.font(.system(size: 12))
-						.foregroundStyle(Theme.textPrimary)
+						.foregroundStyle(gitStatusColor ?? Theme.textPrimary)
 						.lineLimit(1)
 				}
 
 				Spacer()
+
+				if let badge = gitStatusBadge {
+					Text(badge)
+						.font(.system(size: 9, weight: .bold, design: .monospaced))
+						.foregroundStyle(gitStatusColor ?? Theme.textTertiary)
+				}
 			}
 			.padding(.leading, CGFloat(depth) * 14 + 6)
 			.padding(.vertical, 3)
@@ -844,7 +906,8 @@ struct FileTreeRow: View {
 						depth: depth + 1,
 						state: state,
 						project: project,
-						onFileSelect: onFileSelect
+						onFileSelect: onFileSelect,
+						gitFileStatus: gitFileStatus
 					)
 				}
 			}

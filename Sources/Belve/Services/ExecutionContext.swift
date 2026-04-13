@@ -32,6 +32,69 @@ enum ExecutionContext: Codable, Hashable {
 		return result.output
 	}
 
+	/// Execute a shell command and return stdout even on non-zero exit.
+	private func runAllowFailure(_ command: String) -> String? {
+		execute(command)?.output
+	}
+
+	// MARK: - Git
+
+	/// Get current branch name.
+	func gitBranch(_ path: String) -> String? {
+		run("cd \(shellQuote(path)) && git rev-parse --abbrev-ref HEAD 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines)
+	}
+
+	/// Get git status --porcelain for file-level change markers.
+	func gitStatus(_ path: String) -> [String: String] {
+		guard let output = run("cd \(shellQuote(path)) && git status --porcelain 2>/dev/null") else { return [:] }
+		var result: [String: String] = [:]
+		for line in output.components(separatedBy: "\n") where line.count >= 4 {
+			let status = String(line.prefix(2)).trimmingCharacters(in: .whitespaces)
+			let file = String(line.dropFirst(3))
+			result[file] = status
+		}
+		return result
+	}
+
+	/// Get git diff for line-level change markers (added/modified/deleted line ranges).
+	struct GitDiffHunk {
+		let oldStart: Int
+		let oldCount: Int
+		let newStart: Int
+		let newCount: Int
+	}
+
+	func gitDiffHunks(_ path: String, file: String) -> [GitDiffHunk] {
+		guard let output = run("cd \(shellQuote(path)) && git diff -U0 -- \(shellQuote(file)) 2>/dev/null") else { return [] }
+		var hunks: [GitDiffHunk] = []
+		for line in output.components(separatedBy: "\n") where line.hasPrefix("@@") {
+			// Parse @@ -oldStart,oldCount +newStart,newCount @@
+			let parts = line.components(separatedBy: " ")
+			guard parts.count >= 3 else { continue }
+			let oldPart = parts[1].dropFirst() // remove "-"
+			let newPart = parts[2].dropFirst() // remove "+"
+			func parseRange(_ s: Substring) -> (Int, Int) {
+				let comps = s.split(separator: ",")
+				let start = Int(comps[0]) ?? 0
+				let count = comps.count > 1 ? (Int(comps[1]) ?? 1) : 1
+				return (start, count)
+			}
+			let (os, oc) = parseRange(oldPart)
+			let (ns, nc) = parseRange(newPart)
+			hunks.append(GitDiffHunk(oldStart: os, oldCount: oc, newStart: ns, newCount: nc))
+		}
+		return hunks
+	}
+
+	/// Check which paths are ignored by .gitignore. Returns set of ignored paths.
+	func gitCheckIgnore(_ repoPath: String, paths: [String]) -> Set<String> {
+		guard !paths.isEmpty else { return [] }
+		let quotedPaths = paths.map { shellQuote($0) }.joined(separator: " ")
+		// git check-ignore returns ignored paths (one per line), exit 1 if none ignored
+		guard let output = runAllowFailure("cd \(shellQuote(repoPath)) && git check-ignore \(quotedPaths) 2>/dev/null") else { return [] }
+		return Set(output.components(separatedBy: "\n").filter { !$0.isEmpty })
+	}
+
 	/// Execute a shell command and return stdout + exit status.
 	private func execute(_ command: String) -> CommandResult? {
 		let process = Process()

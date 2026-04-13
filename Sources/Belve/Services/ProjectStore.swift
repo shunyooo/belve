@@ -9,6 +9,8 @@ class ProjectStore: ObservableObject {
 	@Published var selectedProject: Project?
 	@Published var showDevContainerBanner = false
 	@Published private var terminalReloadTokens: [UUID: Int] = [:]
+	@Published var gitBranch: String?
+	@Published var gitFileStatus: [String: String] = [:]  // relativePath → status (M, A, D, ??, etc.)
 
 	init() {
 		loadProjects()
@@ -51,6 +53,49 @@ class ProjectStore: ObservableObject {
 		if project?.sshHost != nil && !(project?.isDevContainer ?? false) {
 			checkForDevContainer()
 		}
+		refreshGitStatus()
+	}
+
+	func refreshGitStatus() {
+		guard let project = selectedProject else {
+			gitBranch = nil
+			gitFileStatus = [:]
+			return
+		}
+		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+			let ctx = project.executionContext
+			let path = project.effectivePath
+			let branch = ctx.gitBranch(path)
+			let rawStatus = ctx.gitStatus(path)
+
+			// Build expanded map: include parent directories
+			// e.g. "Sources/Belve/foo.swift" → "M" also adds "Sources/Belve" → "M", "Sources" → "M"
+			var expanded: [String: String] = [:]
+			for (filePath, status) in rawStatus {
+				expanded[filePath] = status
+				// Add all parent directories
+				var dir = (filePath as NSString).deletingLastPathComponent
+				while !dir.isEmpty && dir != "." {
+					// Directory gets highest-priority status: M > A > D > ??
+					if let existing = expanded[dir] {
+						expanded[dir] = Self.mergeGitStatus(existing, status)
+					} else {
+						expanded[dir] = status
+					}
+					dir = (dir as NSString).deletingLastPathComponent
+				}
+			}
+
+			DispatchQueue.main.async {
+				self?.gitBranch = branch
+				self?.gitFileStatus = expanded
+			}
+		}
+	}
+
+	private static func mergeGitStatus(_ a: String, _ b: String) -> String {
+		let priority = ["M": 3, "D": 2, "A": 1, "??": 0]
+		return (priority[a] ?? 0) >= (priority[b] ?? 0) ? a : b
 	}
 
 	/// Select project by index (for Cmd+1-9).

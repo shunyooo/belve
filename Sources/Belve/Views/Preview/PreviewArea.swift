@@ -20,6 +20,7 @@ struct PreviewArea: View {
 	let project: Project
 	@ObservedObject var layoutState: ProjectLayoutState
 	@Binding var openFile: OpenFile?
+	@EnvironmentObject var projectStore: ProjectStore
 	@StateObject private var fileTreeState = FileTreeState()
 	@State private var isDirty = false
 	@State private var editedContent: String = ""
@@ -48,7 +49,8 @@ struct PreviewArea: View {
 							onFileSelect: { path in
 								loadFile(at: path)
 							},
-							state: fileTreeState
+							state: fileTreeState,
+							gitFileStatus: projectStore.gitFileStatus
 						)
 						.frame(width: layoutState.fileTreeWidth)
 
