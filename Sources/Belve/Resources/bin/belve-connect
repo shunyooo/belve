@@ -59,6 +59,20 @@ if [ "$DEVCONTAINER" = "1" ] && [ -n "$PROJ_SHORT" ]; then
     # Source cached container info
     . "$HOME/.belve/projects/${PROJ_SHORT}.env"
 
+    # Sync scripts into container (md5 check, fast if unchanged)
+    for f in belve claude codex belve-persist session-bootstrap.sh; do
+        src="$HOME/.belve/bin/$f"
+        dst="/root/.belve/bin/$f"
+        [ "$f" = "session-bootstrap.sh" ] && dst="/root/.belve/session-bootstrap.sh"
+        [ -f "$src" ] || continue
+        local_md5=$(md5sum "$src" 2>/dev/null | cut -d' ' -f1)
+        remote_md5=$(docker exec "$CID" md5sum "$dst" 2>/dev/null | cut -d' ' -f1)
+        if [ "$local_md5" != "$remote_md5" ]; then
+            docker cp "$src" "$CID:$dst" 2>/dev/null
+            docker exec "$CID" chmod +x "$dst" 2>/dev/null
+        fi
+    done
+
     # Two-layer persist:
     # - Host persist: manages docker exec lifecycle + resize forwarding
     # - Container persist: manages bash session (survives docker exec restarts)
