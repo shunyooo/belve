@@ -85,6 +85,7 @@ extension Notification.Name {
 	static let belveTerminalConnectionState = Notification.Name("belveTerminalConnectionState")
 	static let belveTerminalConnectionStatus = Notification.Name("belveTerminalConnectionStatus")
 	static let belveTerminalRefit = Notification.Name("belveTerminalRefit")
+	static let belvePaneClosed = Notification.Name("belvePaneClosed")
 	static let belveTerminalDisconnected = Notification.Name("belveTerminalDisconnected")
 	static let belveSplitVertical = Notification.Name("belveSplitVertical")
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")

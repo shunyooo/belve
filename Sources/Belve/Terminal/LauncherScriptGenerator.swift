@@ -29,7 +29,7 @@ enum LauncherScriptGenerator {
 		SCP_OPTS="$SETUP_COMMON"
 		SETUP_SSH="ssh $SETUP_COMMON"
 		# Connect uses independent connection (no ControlMaster) so SIGWINCH propagates correctly
-		CONNECT_SSH="ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
+		CONNECT_SSH="ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
 
 		# Deploy a file via SCP with md5 checksum skip
 		# Uses .new + mv to avoid "Text file busy" on running binaries
@@ -80,17 +80,19 @@ enum LauncherScriptGenerator {
 		        fi
 		    fi
 
+		    # Always sync key scripts (md5 check skips unchanged files)
+		    deploy_file "$BELVE_BIN_DIR/belve" "$BELVE_SSH_HOST" "~/.belve/bin/belve"
+		    deploy_file "$BELVE_BIN_DIR/claude" "$BELVE_SSH_HOST" "~/.belve/bin/claude"
+		    deploy_file "$BELVE_BIN_DIR/codex" "$BELVE_SSH_HOST" "~/.belve/bin/codex"
+		    deploy_file "$BELVE_BIN_DIR/belve-connect" "$BELVE_SSH_HOST" "~/.belve/bin/belve-connect"
+		    deploy_file "$BELVE_BIN_DIR/session-bootstrap.sh" "$BELVE_SSH_HOST" "~/.belve/session-bootstrap.sh"
+
 		    if [ "$NEED_SETUP" = "1" ]; then
-		        # --- Phase 1: Deploy files via SCP ---
+		        # --- Phase 1: Deploy heavy binaries + setup ---
 		        belve_status "Deploying files..."
 		        $SETUP_SSH "$BELVE_SSH_HOST" "mkdir -p ~/.belve/bin ~/.belve/sessions ~/.belve/zdotdir ~/.belve/projects"
 		        deploy_persist_binary "$BELVE_SSH_HOST"
-		        deploy_file "$BELVE_BIN_DIR/belve" "$BELVE_SSH_HOST" "~/.belve/bin/belve"
-		        deploy_file "$BELVE_BIN_DIR/claude" "$BELVE_SSH_HOST" "~/.belve/bin/claude"
-		        deploy_file "$BELVE_BIN_DIR/codex" "$BELVE_SSH_HOST" "~/.belve/bin/codex"
 		        deploy_file "$BELVE_BIN_DIR/belve-setup" "$BELVE_SSH_HOST" "~/.belve/bin/belve-setup"
-		        deploy_file "$BELVE_BIN_DIR/belve-connect" "$BELVE_SSH_HOST" "~/.belve/bin/belve-connect"
-		        deploy_file "$BELVE_BIN_DIR/session-bootstrap.sh" "$BELVE_SSH_HOST" "~/.belve/session-bootstrap.sh"
 		        $SETUP_SSH "$BELVE_SSH_HOST" "chmod +x ~/.belve/bin/* ~/.belve/session-bootstrap.sh 2>/dev/null"
 
 		        # --- Phase 2: Setup (non-interactive SSH, single command) ---

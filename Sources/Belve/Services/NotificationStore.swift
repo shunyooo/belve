@@ -29,6 +29,7 @@ struct AgentSession: Identifiable, Codable {
 	let startedAt: Date
 	var updatedAt: Date
 	var isRead: Bool = false
+	var isArchived: Bool = false
 
 	init(projectId: UUID, paneId: String? = nil, status: AgentStatus, message: String, startedAt: Date = Date(), updatedAt: Date = Date()) {
 		self.id = UUID()
@@ -201,6 +202,14 @@ class NotificationStore: ObservableObject {
 		if let data = try? JSONEncoder().encode(toSave) {
 			try? data.write(to: Self.saveURL)
 		}
+	}
+
+	func archiveSessionsForPane(_ paneId: String) {
+		for i in sessions.indices where sessions[i].paneId == paneId {
+			sessions[i].isArchived = true
+		}
+		activeSessionIndex.removeValue(forKey: paneId)
+		saveSessions()
 	}
 
 	func requestNotificationPermission() {

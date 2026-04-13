@@ -208,6 +208,11 @@ class CommandAreaState: ObservableObject {
 		if removeNode(paneId, from: root, parent: nil) {
 			objectWillChange.send()
 			onLayoutChanged?()
+			NotificationCenter.default.post(
+				name: .belvePaneClosed,
+				object: nil,
+				userInfo: ["paneId": paneId.uuidString]
+			)
 		}
 	}
 

@@ -12,30 +12,64 @@ struct AgentSessionBar: View {
 		projects.first { $0.id == id }?.name
 	}
 
+	private var activeSessions: [AgentSession] {
+		notificationStore.sessions.filter { !$0.isArchived }
+	}
+
+	private var archivedSessions: [AgentSession] {
+		notificationStore.sessions.filter { $0.isArchived }
+	}
+
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
 			Spacer().frame(height: Theme.titlebarHeight)
 
 			ScrollView {
 				LazyVStack(spacing: 2) {
-					ForEach(notificationStore.sessions) { session in
-						SessionRow(
-							session: session,
-							projectName: projectName(for: session.projectId),
-							isFocused: session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId
-						)
-						.onTapGesture {
-							if let project = projects.first(where: { $0.id == session.projectId }) {
-								selectedProject = project
-							}
-							if let paneId = session.paneId {
-								onFocusPane?(session.projectId, paneId)
-							}
+					ForEach(activeSessions) { session in
+						sessionRow(session)
+					}
+
+					if !archivedSessions.isEmpty {
+						HStack(spacing: 6) {
+							Theme.borderSubtle.frame(height: 1)
+							Text("Archive")
+								.font(.system(size: 9, weight: .medium))
+								.foregroundStyle(Theme.textTertiary)
+							Theme.borderSubtle.frame(height: 1)
+						}
+						.padding(.horizontal, 8)
+						.padding(.vertical, 6)
+
+						ForEach(archivedSessions) { session in
+							sessionRow(session)
+								.opacity(0.5)
 						}
 					}
 				}
 				.padding(.horizontal, 4)
 				.padding(.top, 4)
+			}
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belvePaneClosed)) { notif in
+			if let paneId = notif.userInfo?["paneId"] as? String {
+				notificationStore.archiveSessionsForPane(paneId)
+			}
+		}
+	}
+
+	private func sessionRow(_ session: AgentSession) -> some View {
+		SessionRow(
+			session: session,
+			projectName: projectName(for: session.projectId),
+			isFocused: !session.isArchived && session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId
+		)
+		.onTapGesture {
+			if let project = projects.first(where: { $0.id == session.projectId }) {
+				selectedProject = project
+			}
+			if !session.isArchived, let paneId = session.paneId {
+				onFocusPane?(session.projectId, paneId)
 			}
 		}
 	}

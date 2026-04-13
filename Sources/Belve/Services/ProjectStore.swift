@@ -139,10 +139,15 @@ class ProjectStore: ObservableObject {
 		}
 
 		// Replace with a fresh project (new ID = clean slate for layout, sessions, etc.)
-		let newProject = Project(
+		// Preserve connection info (sshHost, devContainer settings)
+		let oldProject = projects[index]
+		var newProject = Project(
 			name: (path as NSString).lastPathComponent,
+			sshHost: oldProject.sshHost,
 			remotePath: path
 		)
+		newProject.devContainerPath = oldProject.devContainerPath
+		newProject.containerImageName = oldProject.containerImageName
 		projects[index] = newProject
 		saveProjects()
 		select(newProject)

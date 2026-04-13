@@ -224,7 +224,14 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	}()
 
 	// Wait for child — daemon stays alive until child exits
-	cmd.Wait()
+	err = cmd.Wait()
+	// Log why the master is exiting (for debugging unexpected exits)
+	logFile, _ := os.OpenFile("/tmp/belve-persist-exit.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if logFile != nil {
+		fmt.Fprintf(logFile, "%s master exit: socket=%s childPid=%d err=%v\n",
+			time.Now().Format(time.RFC3339), socketPath, childPid, err)
+		logFile.Close()
+	}
 	listener.Close()
 	os.Remove(socketPath)
 }
@@ -292,10 +299,19 @@ func tryAttach(socketPath string) bool {
 
 	done := make(chan struct{}, 1)
 
+	logExit := func(reason string) {
+		f, _ := os.OpenFile("/tmp/belve-persist-client.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if f != nil {
+			fmt.Fprintf(f, "%s client exit: socket=%s reason=%s\n", time.Now().Format(time.RFC3339), socketPath, reason)
+			f.Close()
+		}
+	}
+
 	go func() {
 		for {
 			t, payload, err := readMsg(conn)
 			if err != nil {
+				logExit("socket-read: " + err.Error())
 				break
 			}
 			if t == msgData {
@@ -313,6 +329,7 @@ func tryAttach(socketPath string) bool {
 				writeMsg(conn, msgData, buf[:n])
 			}
 			if err != nil {
+				logExit("stdin-read: " + err.Error())
 				break
 			}
 		}
