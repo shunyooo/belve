@@ -95,17 +95,9 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	// Ignore SIGHUP to survive SSH/docker disconnects
 	signal.Ignore(syscall.SIGHUP)
 
-	// Clean up old container processes — only when running INSIDE a container
-	// (no containerID detected = we ARE the container persist, not the host persist)
-	if containerID == "" && containerPaneID == "" {
-		// Check if we're in a container by looking for /.dockerenv
-		if _, err := os.Stat("/.dockerenv"); err == nil {
-			paneID := os.Getenv("BELVE_PANE_ID")
-			if paneID != "" {
-				cleanupLocalProcesses(paneID)
-			}
-		}
-	}
+	// No cleanup here — container persist sessions must survive across
+	// docker exec restarts. Old sessions are naturally cleaned up when
+	// tryAttach succeeds (reusing existing session) or when bash exits.
 
 	ptyFd, ttyPath, err := openPTY()
 	if err != nil {
@@ -144,7 +136,7 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 
 	var mu sync.Mutex
 	var clients []net.Conn
-	const replayMax = 256 * 1024 // ~2500 lines of terminal output
+	const replayMax = 64 * 1024 // ~800 lines of terminal output
 	var replayBuf []byte
 
 	addClient := func(c net.Conn) {

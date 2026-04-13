@@ -12,7 +12,7 @@ const term = new Terminal({
 	fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 	allowProposedApi: true,
 	macOptionIsMeta: true,
-	scrollback: 10000,
+	scrollback: 1000,
 	theme: {
 		background: '#1e1e2e',
 		foreground: '#cdd6f4',
@@ -65,36 +65,51 @@ function buildFullUrl(buf, startY, urlStart) {
 	return { url: url, continuations: continuations };
 }
 
-// Peer underline overlays for cross-line hover
-var _peerEls = [];
+// Persistent overlay container for link underlines (outside xterm-screen to avoid reflow)
+var _underlineContainer = document.createElement('div');
+_underlineContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:5;';
+document.getElementById('terminal').appendChild(_underlineContainer);
+
 function showPeerUnderlines(ranges) {
-	hidePeerUnderlines();
+	_underlineContainer.innerHTML = '';
 	var dims = term._core._renderService.dimensions;
 	var cellW = dims.css.cell.width;
 	var cellH = dims.css.cell.height;
-	var parent = document.querySelector('.xterm-screen');
-	if (!parent) return;
 	ranges.forEach(function(r) {
 		var viewY = r.y - 1 - term.buffer.active.viewportY;
 		if (viewY < 0 || viewY >= term.rows) return;
 		var div = document.createElement('div');
-		div.style.cssText = 'position:absolute;pointer-events:none;z-index:5;' +
+		div.style.cssText = 'position:absolute;pointer-events:none;' +
 			'left:' + ((r.startX - 1) * cellW) + 'px;' +
 			'top:' + (viewY * cellH + cellH - 1) + 'px;' +
 			'width:' + ((r.endX - r.startX + 1) * cellW) + 'px;' +
 			'height:1px;background:#7aa2f7;';
-		parent.appendChild(div);
-		_peerEls.push(div);
+		_underlineContainer.appendChild(div);
 	});
 }
 function hidePeerUnderlines() {
-	_peerEls.forEach(function(el) { el.remove(); });
-	_peerEls = [];
+	_underlineContainer.innerHTML = '';
 }
 
-// Custom URL link provider
+// Custom URL link provider (with cache to prevent hover flicker)
+var _linkCache = {};
+var _linkCacheVersion = 0;
+var _wasAltBuffer = false;
+
+term.onWriteParsed(function() {
+	_linkCache = {}; _linkCacheVersion++;
+	var isAlt = term.buffer.active === term.buffer.alternate;
+	if (_wasAltBuffer && !isAlt) {
+		term.scrollToBottom();
+	}
+	_wasAltBuffer = isAlt;
+});
+
+
 term.registerLinkProvider({
 	provideLinks: function(y, callback) {
+		var cacheKey = y + ':' + _linkCacheVersion;
+		if (_linkCache[cacheKey]) { callback(_linkCache[cacheKey]); return; }
 		var buf = term.buffer.active;
 		var line = buf.getLine(y - 1);
 		if (!line) { callback([]); return; }
@@ -151,14 +166,19 @@ term.registerLinkProvider({
 			}
 		}
 
+		_linkCache[cacheKey] = links;
 		callback(links);
 	}
 });
 
 
 term.attachCustomKeyEventHandler(function(e) {
-	if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
-		postMessage({ type: 'input', data: utf8ToBase64('\u001b[13;2u') });
+	if (e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+		if (e.type === 'keydown') {
+			postMessage({ type: 'input', data: utf8ToBase64('\u001b[13;2u') });
+		}
+		e.preventDefault();
+		e.stopPropagation();
 		return false;
 	}
 	return true;
@@ -433,6 +453,9 @@ term.onSelectionChange(function() {
 
 // Paste handling: listen for Cmd+V
 document.addEventListener('keydown', function(e) {
+	if (e.key === 'Enter' && e.shiftKey) {
+		postMessage({ type: 'log', msg: 'document keydown: Shift+Enter detected' });
+	}
 	if (e.key === 'Meta') {
 		setMetaPressed(true);
 	}
