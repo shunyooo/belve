@@ -684,6 +684,8 @@ struct XTermTerminalView: NSViewRepresentable {
 					NSLog("[Belve] DEBUG: triggering debugResize(40, 20) on pane=%@", paneId ?? "nil")
 					webView?.evaluateJavaScript("window.debugResize(40, 20)", completionHandler: nil)
 				}
+			case ",":
+				NotificationCenter.default.post(name: .belveOpenSettings, object: nil)
 			default:
 				// Forward Cmd+1-9 for project switching
 				if let digit = Int(key), digit >= 1 && digit <= 9 {

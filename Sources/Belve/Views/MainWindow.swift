@@ -7,6 +7,7 @@ struct MainWindow: View {
 	@State private var sidebarWidthAtDragStart: CGFloat = 0
 	@State private var sessionBarWidthAtDragStart: CGFloat = 0
 	@State private var openFile: OpenFile?
+	@State private var showSettings = false
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
 	@State private var fileSearchResults: [MainWindowFileSearchResult] = []
@@ -28,6 +29,12 @@ struct MainWindow: View {
 
 	var body: some View {
 		configuredContent
+			.sheet(isPresented: $showSettings) {
+				SettingsView()
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .belveOpenSettings)) { _ in
+				showSettings.toggle()
+			}
 	}
 
 	private var configuredContent: AnyView {

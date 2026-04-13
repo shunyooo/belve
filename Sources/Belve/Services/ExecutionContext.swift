@@ -146,7 +146,7 @@ enum ExecutionContext: Codable, Hashable {
 		let fm = FileManager.default
 		guard let entries = try? fm.contentsOfDirectory(atPath: path) else { return [] }
 		return entries
-			.filter { $0 != ".DS_Store" }
+			.filter { !AppConfig.shared.shouldExclude($0) }
 			.sorted { a, b in
 				// Dotfiles after regular files
 				let aDot = a.hasPrefix(".")
@@ -165,7 +165,11 @@ enum ExecutionContext: Codable, Hashable {
 	private func listDirectoryRemote(_ path: String) -> [FileItem] {
 		guard let output = run("ls -1aF \(shellQuote(path))") else { return [] }
 		return output.components(separatedBy: "\n")
-			.filter { !$0.isEmpty && $0 != "./" && $0 != "../" && $0 != ".DS_Store" }
+			.filter { !$0.isEmpty && $0 != "./" && $0 != "../" }
+			.filter { entry in
+				let name = entry.hasSuffix("/") ? String(entry.dropLast()) : entry.replacingOccurrences(of: "*", with: "")
+				return !AppConfig.shared.shouldExclude(name)
+			}
 			.sorted { a, b in
 				let aDot = a.hasPrefix(".")
 				let bDot = b.hasPrefix(".")

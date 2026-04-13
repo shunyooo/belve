@@ -87,6 +87,7 @@ extension Notification.Name {
 	static let belveTerminalRefit = Notification.Name("belveTerminalRefit")
 	static let belvePaneClosed = Notification.Name("belvePaneClosed")
 	static let belveRefreshFileTree = Notification.Name("belveRefreshFileTree")
+	static let belveOpenSettings = Notification.Name("belveOpenSettings")
 	static let belveTerminalDisconnected = Notification.Name("belveTerminalDisconnected")
 	static let belveSplitVertical = Notification.Name("belveSplitVertical")
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
@@ -153,11 +154,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
 			let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 			guard flags == [.command],
-				  event.charactersIgnoringModifiers?.lowercased() == "p" else {
+				  let key = event.charactersIgnoringModifiers?.lowercased() else {
 				return event
 			}
-			NotificationCenter.default.post(name: .belveOpenFileSearch, object: nil)
-			return nil
+			switch key {
+			case "p":
+				NotificationCenter.default.post(name: .belveOpenFileSearch, object: nil)
+				return nil
+			case ",":
+				NotificationCenter.default.post(name: .belveOpenSettings, object: nil)
+				return nil
+			case "o":
+				NotificationCenter.default.post(name: .belveOpenFolder, object: nil)
+				return nil
+			case "r":
+				NotificationCenter.default.post(name: .belveReloadProject, object: nil)
+				return nil
+			case "e":
+				if event.modifierFlags.contains(.shift) {
+					NotificationCenter.default.post(name: .belveToggleFileTree, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
+				}
+				return nil
+			case "\\":
+				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
+				return nil
+			default:
+				return event
+			}
 		}
 
 		NotificationCenter.default.addObserver(
