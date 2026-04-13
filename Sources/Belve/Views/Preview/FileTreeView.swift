@@ -56,19 +56,73 @@ class FileTreeState: ObservableObject {
 		isRootLoading = true
 		DispatchQueue.global().async {
 			let result = project.executionContext.listDirectory(rootPath)
-			let ignored = project.executionContext.gitCheckIgnore(rootPath, paths: result.map(\.name))
 			DispatchQueue.main.async {
 				self.items = result
 				self.isRootLoading = false
-				for item in result where ignored.contains(item.name) {
-					self.ignoredPaths.insert(item.path)
-				}
 				if self.focusedPath == nil {
 					self.focusedPath = result.first?.path
 				}
 				completion?()
 			}
+			// Check gitignore asynchronously (non-blocking)
+			let ignored = project.executionContext.gitCheckIgnore(rootPath, paths: result.map(\.name))
+			if !ignored.isEmpty {
+				DispatchQueue.main.async {
+					for item in result where ignored.contains(item.name) {
+						self.ignoredPaths.insert(item.path)
+					}
+				}
+			}
 		}
+	}
+
+	/// Refresh root + expanded directories only (lightweight)
+	func refreshVisible(project: Project, rootPath: String) {
+		DispatchQueue.global().async {
+			let rootItems = project.executionContext.listDirectory(rootPath)
+			// Refresh expanded directories
+			var updatedCache: [String: [FileItem]] = [:]
+			for path in self.expandedPaths {
+				updatedCache[path] = project.executionContext.listDirectory(path)
+			}
+			DispatchQueue.main.async {
+				self.items = rootItems
+				for (path, children) in updatedCache {
+					self.childrenCache[path] = children
+				}
+			}
+		}
+	}
+
+	/// Compact single-child directory chains: "Sources" → "Sources/Belve" if Belve is the only child
+	private func compactFolders(_ items: [FileItem], project: Project, baseName: String?) -> [FileItem] {
+		let dirs = items.filter(\.isDirectory)
+		let files = items.filter { !$0.isDirectory }
+
+		// Only compact if there's exactly one directory and no files
+		if dirs.count == 1 && files.isEmpty {
+			let dir = dirs[0]
+			let compactedName = baseName.map { $0 + "/" + dir.name } ?? dir.name
+			// Check deeper
+			let subChildren = project.executionContext.listDirectory(dir.path)
+			let subDirs = subChildren.filter(\.isDirectory)
+			let subFiles = subChildren.filter { !$0.isDirectory }
+			if subDirs.count == 1 && subFiles.isEmpty {
+				// Continue compacting
+				return compactFolders(subChildren, project: project, baseName: compactedName)
+			}
+			// End of chain: return the final directory with compacted name
+			var compactedItem = dir
+			compactedItem.compactName = compactedName
+			// Pre-cache children
+			DispatchQueue.main.async {
+				self.childrenCache[dir.path] = subChildren
+			}
+			return [compactedItem]
+		}
+
+		// No compaction possible: apply baseName if we were mid-chain
+		return items
 	}
 
 	/// Get flat list of visible items for keyboard navigation
@@ -112,15 +166,31 @@ class FileTreeState: ObservableObject {
 
 	func toggle(path: String, project: Project) {
 		if expandedPaths.contains(path) {
+			// Collapse: also collapse any compact-expanded children
 			expandedPaths.remove(path)
+			if let children = childrenCache[path] {
+				for child in children where child.compactName != nil && child.isDirectory {
+					expandedPaths.remove(child.path)
+				}
+			}
 		} else {
 			expandedPaths.insert(path)
 			if childrenCache[path] == nil {
 				loadingDirectories.insert(path)
 				let rootPath = project.effectivePath
 				DispatchQueue.global().async {
-					let children = project.executionContext.listDirectory(path)
-					// Check gitignore for children (use relative paths from repo root)
+					var children = project.executionContext.listDirectory(path)
+					// Compact folders: if only child is a single directory, merge names
+					children = self.compactFolders(children, project: project, baseName: nil)
+					DispatchQueue.main.async {
+						self.loadingDirectories.remove(path)
+						self.childrenCache[path] = children
+						// Auto-expand compacted directories
+						for child in children where child.compactName != nil && child.isDirectory {
+							self.expandedPaths.insert(child.path)
+						}
+					}
+					// Check gitignore asynchronously
 					let relativePaths = children.map { item -> String in
 						if item.path.hasPrefix(rootPath) {
 							return String(item.path.dropFirst(rootPath.count).drop(while: { $0 == "/" }))
@@ -128,11 +198,11 @@ class FileTreeState: ObservableObject {
 						return item.name
 					}
 					let ignored = project.executionContext.gitCheckIgnore(rootPath, paths: relativePaths)
-					DispatchQueue.main.async {
-						self.loadingDirectories.remove(path)
-						self.childrenCache[path] = children
-						for (item, relPath) in zip(children, relativePaths) where ignored.contains(relPath) {
-							self.ignoredPaths.insert(item.path)
+					if !ignored.isEmpty {
+						DispatchQueue.main.async {
+							for (item, relPath) in zip(children, relativePaths) where ignored.contains(relPath) {
+								self.ignoredPaths.insert(item.path)
+							}
 						}
 					}
 				}
@@ -681,6 +751,9 @@ struct FileTreeView: View {
 		.onReceive(NotificationCenter.default.publisher(for: .belveUndo)) { _ in
 			state.performUndo(project: project)
 		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveRefreshFileTree)) { _ in
+			state.refreshVisible(project: project, rootPath: rootPath)
+		}
 	}
 }
 
@@ -802,7 +875,7 @@ struct FileTreeRow: View {
 							renameFocused = true
 						}
 				} else {
-					Text(item.name)
+					Text(item.displayName)
 						.font(.system(size: 12))
 						.foregroundStyle(gitStatusColor ?? Theme.textPrimary)
 						.lineLimit(1)

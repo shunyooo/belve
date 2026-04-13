@@ -41,6 +41,7 @@ final class EditorWebView: WKWebView {
 
 struct CodeEditorView: NSViewRepresentable {
 	let projectId: UUID
+	let project: Project
 	let filename: String
 	let content: String
 	let line: Int?
@@ -67,6 +68,7 @@ struct CodeEditorView: NSViewRepresentable {
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
+		context.coordinator.project = project
 		context.coordinator.openFile(filename: filename, content: content, line: line, column: column)
 	}
 
@@ -101,6 +103,7 @@ struct CodeEditorView: NSViewRepresentable {
 
 	class Coordinator: NSObject, WKScriptMessageHandler {
 		weak var webView: WKWebView?
+		var project: Project?
 		var pendingFile: (filename: String, content: String, line: Int?, column: Int?)?
 		var isReady = false
 		private var lastOpenedFile: (filename: String, content: String, line: Int?, column: Int?)?
@@ -198,6 +201,37 @@ struct CodeEditorView: NSViewRepresentable {
 			let columnArgument = column.map(String.init) ?? "null"
 			let script = "editorOpenFile(`\(escaped)`, `\(escapedFilename)`, \(lineArgument), \(columnArgument))"
 			webView?.evaluateJavaScript(script, completionHandler: nil)
+
+			// Load diff markers in background
+			if let project {
+				let filePath = filename
+				DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+					let rootPath = project.effectivePath
+					let relativePath = filePath.hasPrefix(rootPath) ?
+						String(filePath.dropFirst(rootPath.count).drop(while: { $0 == "/" })) : filePath
+					let hunks = project.executionContext.gitDiffHunks(rootPath, file: relativePath)
+					guard !hunks.isEmpty else { return }
+					var markers: [[String: Any]] = []
+					for hunk in hunks {
+						if hunk.oldCount == 0 {
+							// Pure addition
+							markers.append(["from": hunk.newStart, "to": hunk.newStart + max(1, hunk.newCount) - 1, "type": "add"])
+						} else if hunk.newCount == 0 {
+							// Pure deletion — mark the line before
+							markers.append(["from": max(1, hunk.newStart), "to": max(1, hunk.newStart), "type": "delete"])
+						} else {
+							// Modification
+							markers.append(["from": hunk.newStart, "to": hunk.newStart + hunk.newCount - 1, "type": "modify"])
+						}
+					}
+					if let json = try? JSONSerialization.data(withJSONObject: markers),
+					   let jsonStr = String(data: json, encoding: .utf8) {
+						DispatchQueue.main.async {
+							self?.webView?.evaluateJavaScript("window.editorSetDiffMarkers(\(jsonStr))", completionHandler: nil)
+						}
+					}
+				}
+			}
 		}
 	}
 }

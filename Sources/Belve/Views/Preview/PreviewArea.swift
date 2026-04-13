@@ -99,6 +99,7 @@ struct PreviewArea: View {
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileSave)) { _ in
 			saveCurrentFile()
+			projectStore.refreshGitStatus()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileDeleted)) { notif in
 			if let deletedPaths = notif.object as? [String],
@@ -176,6 +177,7 @@ struct PreviewArea: View {
 					case .code, .unknown:
 						CodeEditorView(
 							projectId: project.id,
+							project: project,
 							filename: file.path,
 							content: file.content,
 							line: file.line,

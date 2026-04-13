@@ -11,9 +11,20 @@ class ProjectStore: ObservableObject {
 	@Published private var terminalReloadTokens: [UUID: Int] = [:]
 	@Published var gitBranch: String?
 	@Published var gitFileStatus: [String: String] = [:]  // relativePath → status (M, A, D, ??, etc.)
+	private var lastGitRefresh: Date = .distantPast
+
+	private var gitPollTimer: Timer?
 
 	init() {
 		loadProjects()
+		// Start git status polling
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+			self?.refreshGitStatus(force: true)
+			self?.gitPollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+				self?.refreshGitStatus()
+				NotificationCenter.default.post(name: .belveRefreshFileTree, object: nil)
+			}
+		}
 	}
 
 	// MARK: - Reload
@@ -56,7 +67,10 @@ class ProjectStore: ObservableObject {
 		refreshGitStatus()
 	}
 
-	func refreshGitStatus() {
+	func refreshGitStatus(force: Bool = false) {
+		// Throttle: skip if refreshed within last 2 seconds
+		if !force && Date().timeIntervalSince(lastGitRefresh) < 2 { return }
+		lastGitRefresh = Date()
 		guard let project = selectedProject else {
 			gitBranch = nil
 			gitFileStatus = [:]

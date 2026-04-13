@@ -146,8 +146,14 @@ enum ExecutionContext: Codable, Hashable {
 		let fm = FileManager.default
 		guard let entries = try? fm.contentsOfDirectory(atPath: path) else { return [] }
 		return entries
-			.filter { !$0.hasPrefix(".") }
-			.sorted()
+			.filter { $0 != ".DS_Store" }
+			.sorted { a, b in
+				// Dotfiles after regular files
+				let aDot = a.hasPrefix(".")
+				let bDot = b.hasPrefix(".")
+				if aDot != bDot { return !aDot }
+				return a.localizedStandardCompare(b) == .orderedAscending
+			}
 			.map { name in
 				let fullPath = (path as NSString).appendingPathComponent(name)
 				var isDir: ObjCBool = false
@@ -157,14 +163,18 @@ enum ExecutionContext: Codable, Hashable {
 	}
 
 	private func listDirectoryRemote(_ path: String) -> [FileItem] {
-		guard let output = run("ls -1F \(shellQuote(path))") else { return [] }
+		guard let output = run("ls -1aF \(shellQuote(path))") else { return [] }
 		return output.components(separatedBy: "\n")
-			.filter { !$0.isEmpty }
-			.sorted()
+			.filter { !$0.isEmpty && $0 != "./" && $0 != "../" && $0 != ".DS_Store" }
+			.sorted { a, b in
+				let aDot = a.hasPrefix(".")
+				let bDot = b.hasPrefix(".")
+				if aDot != bDot { return !aDot }
+				return a.localizedStandardCompare(b) == .orderedAscending
+			}
 			.compactMap { entry in
 				let isDir = entry.hasSuffix("/")
 				let name = isDir ? String(entry.dropLast()) : entry.replacingOccurrences(of: "*", with: "")
-				guard !name.hasPrefix(".") else { return nil }
 				let fullPath = (path as NSString).appendingPathComponent(name)
 				return FileItem(name: name, path: fullPath, isDirectory: isDir)
 			}

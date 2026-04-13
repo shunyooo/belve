@@ -86,6 +86,7 @@ extension Notification.Name {
 	static let belveTerminalConnectionStatus = Notification.Name("belveTerminalConnectionStatus")
 	static let belveTerminalRefit = Notification.Name("belveTerminalRefit")
 	static let belvePaneClosed = Notification.Name("belvePaneClosed")
+	static let belveRefreshFileTree = Notification.Name("belveRefreshFileTree")
 	static let belveTerminalDisconnected = Notification.Name("belveTerminalDisconnected")
 	static let belveSplitVertical = Notification.Name("belveSplitVertical")
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
@@ -182,6 +183,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 	func applicationDidBecomeActive(_ notification: Notification) {
 		NSLog("[Belve] App became active")
 		adjustTrafficLights()
+		// Refresh git status + file tree when app regains focus
+		projectStore.refreshGitStatus()
+		NotificationCenter.default.post(name: .belveRefreshFileTree, object: nil)
 	}
 
 	// MARK: - UNUserNotificationCenterDelegate
