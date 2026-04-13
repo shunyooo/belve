@@ -331,6 +331,7 @@ window.terminalFit = function() {
 	var dims = fitAddon.proposeDimensions();
 	if (!dims || dims.cols < 2 || dims.rows < 1) return null;
 	term.resize(dims.cols, dims.rows);
+	term.scrollToBottom();
 	return { cols: dims.cols, rows: dims.rows };
 };
 
