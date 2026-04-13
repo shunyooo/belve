@@ -59,13 +59,18 @@ if [ "$DEVCONTAINER" = "1" ] && [ -n "$PROJ_SHORT" ]; then
     # Source cached container info
     . "$HOME/.belve/projects/${PROJ_SHORT}.env"
 
-    # Try attach if session socket exists (non-exec so we can fallback)
+    # Two-layer persist:
+    # - Host persist: manages docker exec lifecycle + resize forwarding
+    # - Container persist: manages bash session (survives docker exec restarts)
+    CONTAINER_SOCK="/root/.belve/sessions/${SESSION_NAME}.sock"
+
+    # Try attach to host persist if it exists
     if [ -S "$SOCK" ]; then
         "$PERSIST" -socket "$SOCK" 2>/dev/null && exit 0
         rm -f "$SOCK"  # Stale socket
     fi
 
-    # Create new session: persist on HOST, docker exec as child
+    # Create host persist with docker exec → container persist as child
     echo "$CURRENT_VER" > "$VERFILE"
     exec "$PERSIST" -socket "$SOCK" -cols "$COLS" -rows "$ROWS" \
         -command docker exec -it -w "$RWS" \
@@ -74,7 +79,9 @@ if [ "$DEVCONTAINER" = "1" ] && [ -n "$PROJ_SHORT" ]; then
         -e "BELVE_PANE_INDEX=$PANE_INDEX" \
         -e "BELVE_PANE_ID=$PANE_ID" \
         -e TERM=xterm-256color \
-        "$CID" /root/.belve/session-bootstrap.sh
+        "$CID" /root/.belve/bin/belve-persist \
+        -socket "$CONTAINER_SOCK" -cols "$COLS" -rows "$ROWS" \
+        -command /root/.belve/session-bootstrap.sh
 else
     # Plain SSH: persist on HOST, bootstrap as child
     [ -n "$WORKDIR" ] && cd "$WORKDIR" 2>/dev/null || true

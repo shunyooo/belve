@@ -216,6 +216,11 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 							if containerID != "" {
 								go resizeContainerPty(containerID, containerPaneID, cols, rows)
 							}
+							f, _ := os.OpenFile("/tmp/belve-persist-resize.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+							if f != nil {
+								fmt.Fprintf(f, "%s resize: cols=%d rows=%d cid=%s pane=%s\n", time.Now().Format(time.RFC3339), cols, rows, containerID, containerPaneID)
+								f.Close()
+							}
 						}
 					}
 				}
@@ -436,13 +441,13 @@ func resizeContainerPty(cid, paneID string, cols, rows uint16) {
 	var script string
 	if paneID != "" {
 		// Fast path: use PID file written by session-bootstrap.sh
-		// Falls back to /proc scan if PID file doesn't exist
+		// After stty, send SIGWINCH to the process and its group (for 2-layer persist)
 		script = fmt.Sprintf(
 			`pidfile="$HOME/.belve/panes/%s.pid"; `+
 				`if [ -f "$pidfile" ]; then `+
 				`pid=$(cat "$pidfile"); `+
 				`tty=$(readlink /proc/$pid/fd/0 2>/dev/null); `+
-				`if [ -n "$tty" ]; then stty -F "$tty" rows %d cols %d 2>/dev/null; exit 0; fi; `+
+				`if [ -n "$tty" ]; then stty -F "$tty" rows %d cols %d 2>/dev/null; kill -WINCH "$pid" 2>/dev/null; pkill -WINCH -P "$pid" 2>/dev/null; pkill -WINCH -P $(pgrep -P "$pid" | head -1) 2>/dev/null; exit 0; fi; `+
 				`fi; `+
 				`best=""; besttty=""; `+
 				`for d in /proc/[0-9]*/environ; do `+
