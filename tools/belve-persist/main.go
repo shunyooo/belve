@@ -95,9 +95,16 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	// Ignore SIGHUP to survive SSH/docker disconnects
 	signal.Ignore(syscall.SIGHUP)
 
-	// Clean up old container processes with the same pane ID before starting new one
-	if containerID != "" && containerPaneID != "" {
-		cleanupOldContainerProcesses(containerID, containerPaneID)
+	// Clean up old container processes — only when running INSIDE a container
+	// (no containerID detected = we ARE the container persist, not the host persist)
+	if containerID == "" && containerPaneID == "" {
+		// Check if we're in a container by looking for /.dockerenv
+		if _, err := os.Stat("/.dockerenv"); err == nil {
+			paneID := os.Getenv("BELVE_PANE_ID")
+			if paneID != "" {
+				cleanupLocalProcesses(paneID)
+			}
+		}
 	}
 
 	ptyFd, ttyPath, err := openPTY()
@@ -374,6 +381,21 @@ func readMsg(r io.Reader) (byte, []byte, error) {
 		}
 	}
 	return header[0], payload, nil
+}
+
+// cleanupLocalProcesses kills old local processes with the same pane ID.
+// Used inside containers where there's no docker exec wrapper.
+func cleanupLocalProcesses(paneID string) {
+	// Kill old belve-persist daemons for the same session
+	// (the socket will be re-created by us)
+	cmd := exec.Command("sh", "-c",
+		fmt.Sprintf(`for d in /proc/[0-9]*/environ; do
+			pid=${d#/proc/}; pid=${pid%%%%/environ}
+			grep -qz 'BELVE_PANE_ID=%s' "$d" 2>/dev/null || continue
+			[ "$pid" = "$$" ] && continue
+			kill -9 "$pid" 2>/dev/null
+		done`, paneID))
+	cmd.Run()
 }
 
 // cleanupOldContainerProcesses kills old container processes with the same pane ID.

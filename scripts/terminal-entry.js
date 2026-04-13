@@ -1,6 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
+// WebLinksAddon replaced by custom link provider (supports multi-line URLs)
 
 const fitAddon = new FitAddon();
 const terminalContainer = document.getElementById('terminal');
@@ -38,9 +38,123 @@ const term = new Terminal({
 });
 
 term.loadAddon(fitAddon);
-term.loadAddon(new WebLinksAddon(function(event, uri) {
-	postMessage({ type: 'openUrl', url: uri });
-}));
+// Build full URL by joining continuation lines. Returns {url, continuations: [{y, startX, endX}]}
+function buildFullUrl(buf, startY, urlStart) {
+	var url = urlStart;
+	var line = buf.getLine(startY);
+	var text = line.translateToString(true);
+	var urlEndPos = text.indexOf(urlStart) + urlStart.length;
+	var continuations = [];
+	if (urlEndPos < text.length - 2) return { url: url, continuations: continuations };
+
+	var nextY = startY + 1;
+	while (nextY < buf.length) {
+		var nextLine = buf.getLine(nextY);
+		if (!nextLine) break;
+		var nextText = nextLine.translateToString(true);
+		var trimmed = nextText.replace(/^\s+/, '');
+		var indent = nextText.length - trimmed.length;
+		var cont = trimmed.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#]+)/);
+		if (cont && !trimmed.match(/^https?:\/\//)) {
+			url += cont[1];
+			continuations.push({ y: nextY + 1, startX: indent + 1, endX: indent + cont[1].length });
+			if (cont[1].match(/\.(html?|php|json|xml|txt|pdf|png|jpg|gif|svg|css|js|md|py|go|rs|ts|jsx|tsx)$/i)) break;
+			nextY++;
+		} else { break; }
+	}
+	return { url: url, continuations: continuations };
+}
+
+// Peer underline overlays for cross-line hover
+var _peerEls = [];
+function showPeerUnderlines(ranges) {
+	hidePeerUnderlines();
+	var dims = term._core._renderService.dimensions;
+	var cellW = dims.css.cell.width;
+	var cellH = dims.css.cell.height;
+	var parent = document.querySelector('.xterm-screen');
+	if (!parent) return;
+	ranges.forEach(function(r) {
+		var viewY = r.y - 1 - term.buffer.active.viewportY;
+		if (viewY < 0 || viewY >= term.rows) return;
+		var div = document.createElement('div');
+		div.style.cssText = 'position:absolute;pointer-events:none;z-index:5;' +
+			'left:' + ((r.startX - 1) * cellW) + 'px;' +
+			'top:' + (viewY * cellH + cellH - 1) + 'px;' +
+			'width:' + ((r.endX - r.startX + 1) * cellW) + 'px;' +
+			'height:1px;background:#7aa2f7;';
+		parent.appendChild(div);
+		_peerEls.push(div);
+	});
+}
+function hidePeerUnderlines() {
+	_peerEls.forEach(function(el) { el.remove(); });
+	_peerEls = [];
+}
+
+// Custom URL link provider
+term.registerLinkProvider({
+	provideLinks: function(y, callback) {
+		var buf = term.buffer.active;
+		var line = buf.getLine(y - 1);
+		if (!line) { callback([]); return; }
+		var text = line.translateToString(true);
+		var links = [];
+
+		// URLs starting on this line
+		var urlRegex = /https?:\/\/[^\s<>"'`)\]]+/g;
+		var m;
+		while ((m = urlRegex.exec(text)) !== null) {
+			var result = buildFullUrl(buf, y - 1, m[0]);
+			var sx = mapStringIndexToCell(line, m.index) + 1;
+			var ex = mapStringIndexToCell(line, m.index + m[0].length);
+			var selfRange = { y: y, startX: sx, endX: ex };
+			(function(u, self, peers) {
+				var allRanges = [self].concat(peers);
+				links.push({
+					range: { start: { x: sx, y: y }, end: { x: ex, y: y } },
+					text: u, decorations: { pointerCursor: true },
+					activate: function() { postMessage({ type: 'openUrl', url: u }); },
+					hover: function() { showPeerUnderlines(allRanges); },
+					leave: function() { hidePeerUnderlines(); }
+				});
+			})(result.url, selfRange, result.continuations);
+		}
+
+		// Continuation of URL from previous line
+		if (links.length === 0 && y > 1) {
+			var prevLine = buf.getLine(y - 2);
+			if (prevLine) {
+				var prevText = prevLine.translateToString(true);
+				var prevMatch = prevText.match(/(https?:\/\/[^\s<>"'`)\]]+)$/);
+				if (prevMatch && prevMatch.index + prevMatch[1].length >= prevText.length - 2) {
+					var trimmed = text.replace(/^\s+/, '');
+					var indent = text.length - trimmed.length;
+					var cont = trimmed.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#]+)/);
+					if (cont && !trimmed.match(/^https?:\/\//)) {
+						var result = buildFullUrl(buf, y - 2, prevMatch[1]);
+						var peerSx = mapStringIndexToCell(prevLine, prevMatch.index) + 1;
+						var peerEx = mapStringIndexToCell(prevLine, prevMatch.index + prevMatch[1].length);
+						var peerRange = { y: y - 1, startX: peerSx, endX: peerEx };
+						var selfRange = { y: y, startX: indent + 1, endX: indent + cont[1].length };
+						(function(u, allR) {
+							links.push({
+								range: { start: { x: indent + 1, y: y }, end: { x: indent + cont[1].length, y: y } },
+								text: u, decorations: { pointerCursor: true },
+								activate: function() { postMessage({ type: 'openUrl', url: u }); },
+								hover: function() { showPeerUnderlines(allR); },
+								leave: function() { hidePeerUnderlines(); }
+							});
+						})(result.url, [peerRange, selfRange]);
+					}
+				}
+			}
+		}
+
+		callback(links);
+	}
+});
+
 
 term.attachCustomKeyEventHandler(function(e) {
 	if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
