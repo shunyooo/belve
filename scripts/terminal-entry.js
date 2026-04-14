@@ -45,20 +45,24 @@ function buildFullUrl(buf, startY, urlStart) {
 	var text = line.translateToString(true);
 	var urlEndPos = text.indexOf(urlStart) + urlStart.length;
 	var continuations = [];
-	if (urlEndPos < text.length - 2) return { url: url, continuations: continuations };
+	// Check if URL ends near end of line OR next line is wrapped
+	var nextLineObj = buf.getLine(startY + 1);
+	var isNextWrapped = nextLineObj && nextLineObj.isWrapped;
+	if (urlEndPos < text.length - 2 && !isNextWrapped) return { url: url, continuations: continuations };
 
 	var nextY = startY + 1;
 	while (nextY < buf.length) {
 		var nextLine = buf.getLine(nextY);
 		if (!nextLine) break;
 		var nextText = nextLine.translateToString(true);
-		var trimmed = nextText.replace(/^\s+/, '');
+		var trimmed = nextLine.isWrapped ? nextText : nextText.replace(/^\s+/, '');
 		var indent = nextText.length - trimmed.length;
-		var cont = trimmed.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#]+)/);
+		var cont = trimmed.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
 		if (cont && !trimmed.match(/^https?:\/\//)) {
 			url += cont[1];
 			continuations.push({ y: nextY + 1, startX: indent + 1, endX: indent + cont[1].length });
-			if (cont[1].match(/\.(html?|php|json|xml|txt|pdf|png|jpg|gif|svg|css|js|md|py|go|rs|ts|jsx|tsx)$/i)) break;
+			// Continue if the match consumed the full line (more may follow)
+			if (cont[1].length < trimmed.length) break;
 			nextY++;
 		} else { break; }
 	}
@@ -136,16 +140,17 @@ term.registerLinkProvider({
 			})(result.url, selfRange, result.continuations);
 		}
 
-		// Continuation of URL from previous line
+		// Continuation of URL from previous line (indented or soft-wrapped)
 		if (links.length === 0 && y > 1) {
 			var prevLine = buf.getLine(y - 2);
+			var isSoftWrapped = line.isWrapped;
 			if (prevLine) {
 				var prevText = prevLine.translateToString(true);
 				var prevMatch = prevText.match(/(https?:\/\/[^\s<>"'`)\]]+)$/);
-				if (prevMatch && prevMatch.index + prevMatch[1].length >= prevText.length - 2) {
-					var trimmed = text.replace(/^\s+/, '');
+				if (prevMatch && (prevMatch.index + prevMatch[1].length >= prevText.length - 2 || isSoftWrapped)) {
+					var trimmed = isSoftWrapped ? text : text.replace(/^\s+/, '');
 					var indent = text.length - trimmed.length;
-					var cont = trimmed.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#]+)/);
+					var cont = trimmed.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
 					if (cont && !trimmed.match(/^https?:\/\//)) {
 						var result = buildFullUrl(buf, y - 2, prevMatch[1]);
 						var peerSx = mapStringIndexToCell(prevLine, prevMatch.index) + 1;

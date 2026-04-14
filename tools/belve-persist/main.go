@@ -86,7 +86,12 @@ var containerID string
 var containerPaneID string
 
 func runMaster(socketPath, command string, args []string, cols, rows uint16) {
-	os.Remove(socketPath)
+	// If another daemon is already listening, exit quietly (don't steal the socket)
+	if conn, err := net.Dial("unix", socketPath); err == nil {
+		conn.Close()
+		return
+	}
+	os.Remove(socketPath) // only remove stale sockets
 
 	// Detect container ID and pane ID from docker exec command args
 	containerID = detectContainerID(command, args)
@@ -288,7 +293,8 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 		logFile.Close()
 	}
 	listener.Close()
-	os.Remove(socketPath)
+	// Don't remove socket — a new daemon may have already created one.
+	// Stale sockets are cleaned up by runMaster's connection check on startup.
 }
 
 // spawnDaemon starts the master as a background process.
