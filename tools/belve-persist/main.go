@@ -227,13 +227,64 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 		}
 	}()
 
+	// Monitor child health in background
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			if cmd.ProcessState != nil {
+				return // already exited
+			}
+			// Check if child is still alive
+			if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+				f, _ := os.OpenFile("/tmp/belve-persist-exit.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if f != nil {
+					fmt.Fprintf(f, "%s child-check: pid=%d signal(0) err=%v (child may be dying)\n",
+						time.Now().Format(time.RFC3339), childPid, err)
+					f.Close()
+				}
+				return
+			}
+		}
+	}()
+
 	// Wait for child — daemon stays alive until child exits
 	err = cmd.Wait()
-	// Log why the master is exiting (for debugging unexpected exits)
+
+	// Detailed exit diagnostics
 	logFile, _ := os.OpenFile("/tmp/belve-persist-exit.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if logFile != nil {
-		fmt.Fprintf(logFile, "%s master exit: socket=%s childPid=%d err=%v\n",
-			time.Now().Format(time.RFC3339), socketPath, childPid, err)
+		exitSignal := ""
+		exitCode := -1
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+				if status.Signaled() {
+					exitSignal = status.Signal().String()
+				}
+			}
+		} else if err == nil {
+			exitCode = 0
+		}
+
+		// Capture process tree snapshot
+		procSnapshot := ""
+		if out, snapErr := exec.Command("ps", "aux", "--sort=-start_time").Output(); snapErr == nil {
+			lines := 0
+			for _, b := range out {
+				if b == '\n' { lines++ }
+				if lines > 20 { break }
+				procSnapshot += string(b)
+			}
+		}
+
+		// Memory info
+		memInfo := ""
+		if out, memErr := exec.Command("sh", "-c", "cat /proc/meminfo 2>/dev/null | head -3").Output(); memErr == nil {
+			memInfo = string(out)
+		}
+
+		fmt.Fprintf(logFile, "=== %s master exit ===\nsocket=%s childPid=%d err=%v exitCode=%d signal=%s\n--- memory ---\n%s--- top processes ---\n%s\n",
+			time.Now().Format(time.RFC3339), socketPath, childPid, err, exitCode, exitSignal, memInfo, procSnapshot)
 		logFile.Close()
 	}
 	listener.Close()
