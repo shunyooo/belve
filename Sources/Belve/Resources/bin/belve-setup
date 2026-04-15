@@ -46,11 +46,21 @@ if [ "$DEVCONTAINER" = "1" ] && [ -n "$WORKSPACE" ]; then
     printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$CIP" > "$HOME/.belve/projects/${PROJ_SHORT}.env"
 
     # Deploy scripts into container via docker cp
-    docker exec "$CID" mkdir -p /root/.belve/bin /root/.belve/sessions /root/.belve/zdotdir 2>/dev/null
+    docker exec "$CID" mkdir -p /root/.belve/bin /root/.belve/sessions /root/.belve/zdotdir /root/.belve/panes 2>/dev/null
     docker cp "$HOME/.belve/bin/belve" "$CID:/root/.belve/bin/belve" 2>/dev/null
     docker cp "$HOME/.belve/bin/claude" "$CID:/root/.belve/bin/claude" 2>/dev/null
     docker cp "$HOME/.belve/bin/codex" "$CID:/root/.belve/bin/codex" 2>/dev/null
-    docker cp "$HOME/.belve/bin/belve-persist" "$CID:/root/.belve/bin/belve-persist" 2>/dev/null
     docker cp "$HOME/.belve/session-bootstrap.sh" "$CID:/root/.belve/session-bootstrap.sh" 2>/dev/null
+
+    # belve-persist: compare hash, kill broker + update if changed
+    LOCAL_HASH=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}')
+    REMOTE_HASH=$(docker exec "$CID" md5sum /root/.belve/bin/belve-persist 2>/dev/null | awk '{print $1}')
+    if [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
+        # Kill running broker so the binary isn't "Text file busy"
+        docker exec "$CID" pkill -9 -f 'belve-persist.*tcplisten' 2>/dev/null || true
+        sleep 0.5
+        docker cp "$HOME/.belve/bin/belve-persist" "$CID:/root/.belve/bin/belve-persist" 2>/dev/null
+    fi
+
     docker exec "$CID" chmod +x /root/.belve/bin/* /root/.belve/session-bootstrap.sh 2>/dev/null || true
 fi

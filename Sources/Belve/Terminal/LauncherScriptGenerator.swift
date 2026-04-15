@@ -80,18 +80,18 @@ enum LauncherScriptGenerator {
 		        fi
 		    fi
 
-		    # Always sync key scripts (md5 check skips unchanged files)
+		    # Always sync key scripts + binaries (md5 check skips unchanged files)
 		    deploy_file "$BELVE_BIN_DIR/belve" "$BELVE_SSH_HOST" "~/.belve/bin/belve"
 		    deploy_file "$BELVE_BIN_DIR/claude" "$BELVE_SSH_HOST" "~/.belve/bin/claude"
 		    deploy_file "$BELVE_BIN_DIR/codex" "$BELVE_SSH_HOST" "~/.belve/bin/codex"
 		    deploy_file "$BELVE_BIN_DIR/belve-connect" "$BELVE_SSH_HOST" "~/.belve/bin/belve-connect"
 		    deploy_file "$BELVE_BIN_DIR/session-bootstrap.sh" "$BELVE_SSH_HOST" "~/.belve/session-bootstrap.sh"
+		    deploy_persist_binary "$BELVE_SSH_HOST"
 
 		    if [ "$NEED_SETUP" = "1" ]; then
-		        # --- Phase 1: Deploy heavy binaries + setup ---
+		        # --- Phase 1: Deploy setup script + run ---
 		        belve_status "Deploying files..."
 		        $SETUP_SSH "$BELVE_SSH_HOST" "mkdir -p ~/.belve/bin ~/.belve/sessions ~/.belve/zdotdir ~/.belve/projects"
-		        deploy_persist_binary "$BELVE_SSH_HOST"
 		        deploy_file "$BELVE_BIN_DIR/belve-setup" "$BELVE_SSH_HOST" "~/.belve/bin/belve-setup"
 		        $SETUP_SSH "$BELVE_SSH_HOST" "chmod +x ~/.belve/bin/* ~/.belve/session-bootstrap.sh 2>/dev/null"
 
