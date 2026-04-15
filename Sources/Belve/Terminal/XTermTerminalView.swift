@@ -655,20 +655,37 @@ struct XTermTerminalView: NSViewRepresentable {
 			)
 		}
 
+		private var ptyRetryCount = 0
+
 		private func handlePTYExit(status: Int32) {
 			postConnectionState(isLoading: false)
 			guard let project else { return }
 			// Skip if our webView is no longer in the view hierarchy (stale coordinator from reload)
 			guard webView?.window != nil else { return }
-			if project.isRemote {
-				postDisconnectedState(isDisconnected: true)
-			}
 			NSLog(
-				"[Belve] PTY exited for project=%@ pane=%@ status=%d",
+				"[Belve] PTY exited for project=%@ pane=%@ status=%d retryCount=%d",
 				project.name,
 				paneId ?? "nil",
-				status
+				status,
+				ptyRetryCount
 			)
+
+			if project.isRemote {
+				// Auto-retry once for remote projects (initial deploy can exit before connect)
+				if ptyRetryCount < 1 {
+					ptyRetryCount += 1
+					ptyService = nil
+					NSLog("[Belve] Auto-retrying PTY for project=%@", project.name)
+					DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+						guard let self else { return }
+						let cols = self.lastResizeCols > 0 ? self.lastResizeCols : 80
+						let rows = self.lastResizeRows > 0 ? self.lastResizeRows : 24
+						self.startPTY(cols: cols, rows: rows)
+					}
+					return
+				}
+				postDisconnectedState(isDisconnected: true)
+			}
 		}
 
 		private func handleShortcut(key: String, shift: Bool) {
