@@ -35,12 +35,21 @@ enum LauncherScriptGenerator {
 		# Uses .new + mv to avoid "Text file busy" on running binaries
 		deploy_file() {
 		    local src="$1" host="$2" dst="$3"
-		    [ -f "$src" ] || return 1
+		    [ -f "$src" ] || { echo "[belve] deploy_file: source not found: $src" >&2; return 1; }
 		    local local_md5=$(md5 -q "$src" 2>/dev/null || md5sum "$src" 2>/dev/null | cut -d' ' -f1)
 		    local remote_md5=$($SETUP_SSH "$host" "md5sum '$dst' 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
 		    if [ "$local_md5" != "$remote_md5" ]; then
-		        scp -q $SCP_OPTS "$src" "$host:${dst}.new" 2>/dev/null || return 1
+		        if ! scp -q $SCP_OPTS "$src" "$host:${dst}.new"; then
+		            echo "[belve] deploy_file: SCP FAILED: $src → $host:$dst" >&2
+		            return 1
+		        fi
 		        $SETUP_SSH "$host" "mv -f '${dst}.new' '$dst'; chmod +x '$dst' 2>/dev/null" 2>/dev/null
+		        # Verify
+		        local verify_md5=$($SETUP_SSH "$host" "md5sum '$dst' 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
+		        if [ "$local_md5" != "$verify_md5" ]; then
+		            echo "[belve] deploy_file: VERIFY FAILED: $dst (local=$local_md5 remote=$verify_md5)" >&2
+		            return 1
+		        fi
 		    fi
 		}
 
