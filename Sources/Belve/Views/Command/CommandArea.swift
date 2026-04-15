@@ -559,7 +559,10 @@ struct CommandArea: View {
 							}
 							.overlay {
 								if disconnectedPanes.contains(pane.paneId) {
-									TerminalDisconnectedOverlay(projectId: project.id)
+									TerminalDisconnectedOverlay(
+										projectId: project.id,
+										statusMessage: connectionStatusMessages[pane.paneId]
+									)
 								}
 							}
 					}
@@ -707,6 +710,7 @@ private struct TerminalLoadingOverlay: View {
 
 private struct TerminalDisconnectedOverlay: View {
 	let projectId: UUID
+	var statusMessage: String?
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 10) {
@@ -714,7 +718,7 @@ private struct TerminalDisconnectedOverlay: View {
 				.font(.system(size: 13, weight: .semibold))
 				.foregroundStyle(Theme.textPrimary)
 
-			Text("Reconnect to resume this terminal.")
+			Text(statusMessage ?? "Reconnect to resume this terminal.")
 				.font(.system(size: 11))
 				.foregroundStyle(Theme.textSecondary)
 

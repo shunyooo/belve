@@ -45,6 +45,9 @@ var childPid int // set by runMaster after cmd.Start()
 func setSysProcAttr(ttyFile *os.File) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{
 		Setsid: true,
+		// Setctty requires CAP_SYS_ADMIN in non-privileged containers
+		// (Go hardcodes TIOCSCTTY arg=1). bash shows "cannot set terminal
+		// process group" but this is cosmetic — functionality is unaffected.
 	}
 }
 

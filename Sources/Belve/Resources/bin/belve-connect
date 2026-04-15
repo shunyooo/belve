@@ -56,8 +56,13 @@ export BELVE_PANE_ID="$PANE_ID"
 export TERM=xterm-256color
 
 if [ "$DEVCONTAINER" = "1" ] && [ -n "$PROJ_SHORT" ]; then
-    # Source cached container info
+    # Source cached container info (CID, RWS, CIP)
     . "$HOME/.belve/projects/${PROJ_SHORT}.env"
+
+    # Re-query container IP if not set (older .env files)
+    if [ -z "$CIP" ]; then
+        CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | head -1)
+    fi
 
     # Sync scripts into container (md5 check, fast if unchanged)
     for f in belve claude codex belve-persist session-bootstrap.sh; do
@@ -73,44 +78,42 @@ if [ "$DEVCONTAINER" = "1" ] && [ -n "$PROJ_SHORT" ]; then
         fi
     done
 
-    CONTAINER_SOCK="/root/.belve/sessions/${SESSION_NAME}.sock"
-    CONTAINER_PERSIST="/root/.belve/bin/belve-persist"
-
-    # Ensure container persist daemon is running.
-    # Use -daemon flag directly (docker exec -d is already detached, no fork needed).
-    # runMaster checks if socket is already alive and exits if so (no duplicate daemons).
-    docker exec -d \
-        -e BELVE_SESSION=1 \
-        -e "BELVE_PROJECT_ID=$PROJECT_ID" \
-        -e "BELVE_PANE_INDEX=$PANE_INDEX" \
-        -e "BELVE_PANE_ID=$PANE_ID" \
-        -e TERM=xterm-256color \
-        -w "$RWS" \
-        "$CID" "$CONTAINER_PERSIST" \
-        -daemon -socket "$CONTAINER_SOCK" -cols "$COLS" -rows "$ROWS" \
-        -command /root/.belve/session-bootstrap.sh
-    if ! docker exec "$CID" test -S "$CONTAINER_SOCK" 2>/dev/null; then
-        # Wait for socket to appear
+    # Ensure TCP broker is running in container (port 19222)
+    if ! timeout 1 bash -c "echo > /dev/tcp/$CIP/19222" 2>/dev/null; then
+        docker exec -d \
+            -e BELVE_SESSION=1 \
+            -e "BELVE_PROJECT_ID=$PROJECT_ID" \
+            -e TERM=xterm-256color \
+            -w "$RWS" \
+            "$CID" /root/.belve/bin/belve-persist \
+            -tcplisten 0.0.0.0:19222 \
+            -command /root/.belve/session-bootstrap.sh
+        # Wait for broker to be ready
         for i in $(seq 1 30); do
-            docker exec "$CID" test -S "$CONTAINER_SOCK" 2>/dev/null && break
+            timeout 1 bash -c "echo > /dev/tcp/$CIP/19222" 2>/dev/null && break
             sleep 0.2
         done
     fi
 
-    # Attach via docker exec (attach only, no -command → no spawnDaemon)
-    # Host persist wraps this for resize forwarding
+    # Attach to existing host daemon or create new one
     if [ -S "$SOCK" ]; then
         "$PERSIST" -socket "$SOCK" 2>/dev/null && exit 0
         rm -f "$SOCK"
     fi
 
     echo "$CURRENT_VER" > "$VERFILE"
-    exec "$PERSIST" -socket "$SOCK" -cols "$COLS" -rows "$ROWS" \
-        -command docker exec -it -w "$RWS" \
-        -e "BELVE_PANE_ID=$PANE_ID" \
-        -e TERM=xterm-256color \
-        "$CID" "$CONTAINER_PERSIST" \
-        -socket "$CONTAINER_SOCK"
+
+    # Start host TCP backend daemon in background
+    nohup "$PERSIST" -socket "$SOCK" -cols "$COLS" -rows "$ROWS" \
+        -tcpbackend "$CIP:19222" -session "$SESSION_NAME" \
+        >/dev/null 2>&1 &
+
+    # Wait for socket to appear, then attach
+    for i in $(seq 1 50); do
+        [ -S "$SOCK" ] && break
+        sleep 0.1
+    done
+    exec "$PERSIST" -socket "$SOCK"
 else
     # Plain SSH: persist on HOST, bootstrap as child
     [ -n "$WORKDIR" ] && cd "$WORKDIR" 2>/dev/null || true

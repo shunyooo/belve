@@ -204,9 +204,11 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		/// Buffer PTY output and flush on a timer to avoid excessive JS calls
 		private var outputBuffer = Data()
+		private var statusScanBuffer = Data()
 		private var flushTimer: Timer?
 		private var isWaitingForInitialOutput = false
 		private var isTerminalReady = false
+		private var isShowingTransientStatus = false
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let body = message.body as? [String: Any],
@@ -384,17 +386,29 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		/// Buffer PTY output and flush every ~4ms to reduce JS calls
 		private func bufferOutput(_ data: Data) {
-			// Check for belve-status OSC sequence before clearing loading state
-			if isWaitingForInitialOutput, !data.isEmpty {
-				if let statusMessage = extractBelveStatus(from: data) {
-					postConnectionStatus(statusMessage)
-					return  // Don't clear loading state for status messages
-				}
+			let parsed = extractBelveStatusMessages(from: statusScanBuffer + data)
+			statusScanBuffer = parsed.trailingData
+
+			for statusMessage in parsed.messages {
+				handleBelveStatusMessage(statusMessage)
+			}
+
+			let cleanData = parsed.outputData
+			guard !cleanData.isEmpty else { return }
+
+			if isShowingTransientStatus {
+				isShowingTransientStatus = false
+				postConnectionState(isLoading: false)
+				postConnectionStatus(nil)
+			}
+
+			// Clear initial loading state on first real PTY output.
+			if isWaitingForInitialOutput {
 				isWaitingForInitialOutput = false
 				postConnectionState(isLoading: false)
 				postConnectionStatus(nil)
 			}
-			outputBuffer.append(data)
+			outputBuffer.append(cleanData)
 			if flushTimer == nil {
 				flushTimer = Timer.scheduledTimer(withTimeInterval: 0.004, repeats: false) { [weak self] _ in
 					self?.flushOutput()
@@ -402,16 +416,56 @@ struct XTermTerminalView: NSViewRepresentable {
 			}
 		}
 
-		/// Extract belve-status message from OSC 9 sequence: \x1b]9;belve-status;MESSAGE\x07
-		private func extractBelveStatus(from data: Data) -> String? {
-			guard let str = String(data: data, encoding: .utf8) else { return nil }
-			let prefix = "\u{1b}]9;belve-status;"
-			let suffix = "\u{07}"
-			guard let prefixRange = str.range(of: prefix),
-				  let suffixRange = str.range(of: suffix, range: prefixRange.upperBound..<str.endIndex) else {
-				return nil
+		/// Extract belve-status OSC 9 sequences while preserving normal terminal output.
+		private func extractBelveStatusMessages(from data: Data) -> (messages: [String], outputData: Data, trailingData: Data) {
+			let prefix = Array("\u{1b}]9;belve-status;".utf8)
+			let suffix: UInt8 = 0x07
+			let bytes = Array(data)
+			var messages: [String] = []
+			var output = Data()
+			var cursor = 0
+			var lastCopied = 0
+
+			while cursor + prefix.count <= bytes.count {
+				if Array(bytes[cursor..<(cursor + prefix.count)]) != prefix {
+					cursor += 1
+					continue
+				}
+
+				if lastCopied < cursor {
+					output.append(contentsOf: bytes[lastCopied..<cursor])
+				}
+
+				var end = cursor + prefix.count
+				while end < bytes.count {
+					if bytes[end] == suffix {
+						let messageBytes = Data(bytes[(cursor + prefix.count)..<end])
+						if let message = String(data: messageBytes, encoding: .utf8), !message.isEmpty {
+							messages.append(message)
+						}
+						cursor = end + 1
+						lastCopied = cursor
+						break
+					}
+					end += 1
+				}
+
+				if end == bytes.count {
+					return (messages, output, Data(bytes[cursor...]))
+				}
 			}
-			return String(str[prefixRange.upperBound..<suffixRange.lowerBound])
+
+			if lastCopied < bytes.count {
+				output.append(contentsOf: bytes[lastCopied...])
+			}
+			return (messages, output, Data())
+		}
+
+		private func handleBelveStatusMessage(_ message: String) {
+			isShowingTransientStatus = true
+			postDisconnectedState(isDisconnected: false)
+			postConnectionState(isLoading: true)
+			postConnectionStatus(message)
 		}
 
 		private func flushOutput() {
@@ -485,7 +539,7 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 			}
 			resizeDebounceWorkItem = workItem
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: workItem)
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
 		}
 
 		func copySelectionToPasteboard() {

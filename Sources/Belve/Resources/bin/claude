@@ -17,6 +17,21 @@ find_real_claude() {
     return 1
 }
 
+has_existing_claude_hooks() {
+    local f
+    for f in \
+        "${HOME}/.claude/settings.local.json" \
+        "${HOME}/.claude/settings.json" \
+        "${HOME}/.config/claude/settings.json"
+    do
+        [ -f "$f" ] || continue
+        if grep -q '"hooks"[[:space:]]*:' "$f" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Pass through if not in Belve
 if [[ -z "${BELVE_SESSION:-}" ]]; then
     REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
@@ -30,21 +45,29 @@ case "${1:-}" in
     mcp|config|api-key) exec "$REAL_CLAUDE" "$@" ;;
 esac
 
+# Claude merges --settings with existing ~/.claude hook configuration.
+# If the environment already defines hooks, injecting another hook set here
+# creates a stacked teardown path that has correlated with self-SIGKILL exits.
+if has_existing_claude_hooks; then
+    exec "$REAL_CLAUDE" "$@"
+fi
+
 # Find belve CLI (same directory as this wrapper)
 BELVE_BIN="$(cd "$(dirname "$0")" && pwd)/belve"
 
-# Build hooks JSON - all hooks call `belve claude-hook <subcommand>`
+# Build hooks JSON - all hooks call `belve claude-hook <subcommand>`.
+# Avoid SessionEnd/Stop injection because user environments may already define
+# teardown hooks there, and stacking another full hook set has correlated with
+# Claude self-terminating via SIGKILL during shutdown.
 H="\\\"${BELVE_BIN}\\\" claude-hook"
 HOOKS_JSON="{\"hooks\":{\
 \"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} session-start\",\"timeout\":5}]}],\
-\"SessionEnd\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} session-end\",\"timeout\":1}]}],\
 \"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} prompt-submit\",\"timeout\":5}]}],\
 \"Notification\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} notification\",\"timeout\":5}]}],\
 \"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} pre-tool-use\",\"timeout\":3}]}],\
 \"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} post-tool-use\",\"timeout\":3}]}],\
 \"SubagentStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} subagent-start\",\"timeout\":3}]}],\
-\"SubagentStop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} subagent-stop\",\"timeout\":3}]}],\
-\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} stop\",\"timeout\":5}]}]\
+\"SubagentStop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} subagent-stop\",\"timeout\":3}]}]\
 }}"
 
 exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"

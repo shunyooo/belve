@@ -335,8 +335,11 @@ window.terminalFit = function() {
 	if (!window.term || !window.fitAddon) return null;
 	var dims = fitAddon.proposeDimensions();
 	if (!dims || dims.cols < 2 || dims.rows < 1) return null;
+	// Only scrollToBottom if user was already at the bottom (watching live output)
+	var buf = term.buffer.active;
+	var wasAtBottom = buf.viewportY >= buf.baseY;
 	term.resize(dims.cols, dims.rows);
-	term.scrollToBottom();
+	if (wasAtBottom) term.scrollToBottom();
 	return { cols: dims.cols, rows: dims.rows };
 };
 
