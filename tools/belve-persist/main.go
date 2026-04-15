@@ -954,16 +954,14 @@ func tryAttach(socketPath string) bool {
 }
 
 func writeMsg(w io.Writer, msgType byte, data []byte) error {
-	header := [5]byte{msgType}
-	binary.BigEndian.PutUint32(header[1:5], uint32(len(data)))
-	if _, err := w.Write(header[:]); err != nil {
-		return err
-	}
-	if len(data) > 0 {
-		_, err := w.Write(data)
-		return err
-	}
-	return nil
+	// Single write to prevent interleaving when multiple goroutines
+	// write to the same connection concurrently.
+	buf := make([]byte, 5+len(data))
+	buf[0] = msgType
+	binary.BigEndian.PutUint32(buf[1:5], uint32(len(data)))
+	copy(buf[5:], data)
+	_, err := w.Write(buf)
+	return err
 }
 
 func belveStatusData(message string) []byte {
