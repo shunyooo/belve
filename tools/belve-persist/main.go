@@ -110,15 +110,10 @@ var containerID string
 var containerPaneID string
 
 func runMaster(socketPath, command string, args []string, cols, rows uint16) {
-	// If another daemon is already listening, exit quietly (don't steal the socket)
-	if conn, err := net.Dial("unix", socketPath); err == nil {
-		conn.Close()
-		return
-	}
-
-	// Kill old daemons and their children for this socket before taking over
+	// Always kill old daemons for this socket, then take over.
 	killOldDaemons(socketPath)
 	os.Remove(socketPath)
+	writePidFile(socketPath)
 
 	// Detect container ID, pane ID, socket, workdir from docker exec command args
 	containerID = detectContainerID(command, args)
@@ -350,6 +345,7 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	}
 
 	listener.Close()
+	os.Remove(socketPath + ".pid")
 }
 
 func logExitDiagnostics(socketPath string, pid int, err error, exitCode int, exitSignal string) {
@@ -675,13 +671,10 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 // runMasterTCPBackend runs a host persist daemon that bridges Unix socket clients
 // to a TCP broker in the container. No child process or PTY needed on the host side.
 func runMasterTCPBackend(socketPath, tcpAddr, sessName string, cols, rows uint16) {
-	// If another daemon is already listening, exit quietly
-	if conn, err := net.Dial("unix", socketPath); err == nil {
-		conn.Close()
-		return
-	}
+	// Always kill old daemons for this socket, then take over.
 	killOldDaemons(socketPath)
 	os.Remove(socketPath)
+	writePidFile(socketPath)
 
 	signal.Ignore(syscall.SIGHUP)
 
@@ -1024,24 +1017,60 @@ func readMsg(r io.Reader) (byte, []byte, error) {
 // killOldDaemons finds and kills old belve-persist daemon processes (and their
 // entire process trees) that reference the same socket path. This prevents
 // process accumulation when daemons restart after child SIGKILL or socket staleness.
+// killOldDaemons kills any existing daemon for this socket using a PID file,
+// then falls back to /proc scan. Works on both Linux and macOS.
 func killOldDaemons(socketPath string) {
+	pidFile := socketPath + ".pid"
 	myPid := os.Getpid()
-	// Find all processes with this socket path in cmdline,
-	// recursively kill their children, then the process itself.
-	script := fmt.Sprintf(
-		`killtree() { `+
-			`for cpid in $(pgrep -P "$1" 2>/dev/null); do killtree "$cpid"; done; `+
-			`kill -9 "$1" 2>/dev/null; `+
-			`}; `+
+
+	// 1. Try PID file
+	if data, err := os.ReadFile(pidFile); err == nil {
+		var oldPid int
+		if _, err := fmt.Sscanf(string(data), "%d", &oldPid); err == nil && oldPid != myPid && oldPid > 0 {
+			// Kill process tree
+			killTree(oldPid)
+		}
+	}
+	os.Remove(pidFile)
+
+	// 2. Fallback: /proc scan (Linux only)
+	if _, err := os.Stat("/proc/1"); err == nil {
+		script := fmt.Sprintf(
 			`mypid=%d; `+
-			`for d in /proc/[0-9]*/cmdline; do `+
-			`pid=${d#/proc/}; pid=${pid%%%%/cmdline}; `+
-			`[ "$pid" = "$mypid" ] && continue; `+
-			`tr '\0' ' ' < "$d" 2>/dev/null | grep -q 'belve-persist.*%s' || continue; `+
-			`killtree "$pid"; `+
-			`done`,
-		myPid, socketPath)
-	exec.Command("sh", "-c", script).Run()
+				`for d in /proc/[0-9]*/cmdline; do `+
+				`pid=${d#/proc/}; pid=${pid%%%%/cmdline}; `+
+				`[ "$pid" = "$mypid" ] && continue; `+
+				`tr '\0' ' ' < "$d" 2>/dev/null | grep -q 'belve-persist.*%s' || continue; `+
+				`kill -9 "$pid" 2>/dev/null; `+
+				`done`,
+			myPid, socketPath)
+		exec.Command("sh", "-c", script).Run()
+	}
+
+	// 3. Fallback: pkill (macOS)
+	exec.Command("sh", "-c",
+		fmt.Sprintf(`pgrep -f 'belve-persist.*%s' 2>/dev/null | while read pid; do [ "$pid" != "%d" ] && kill -9 "$pid" 2>/dev/null; done`,
+			socketPath, myPid)).Run()
+}
+
+// killTree kills a process and all its children.
+func killTree(pid int) {
+	// Kill children first
+	if out, err := exec.Command("pgrep", "-P", fmt.Sprintf("%d", pid)).Output(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			var childPid int
+			if _, err := fmt.Sscanf(line, "%d", &childPid); err == nil && childPid > 0 {
+				killTree(childPid)
+			}
+		}
+	}
+	syscall.Kill(pid, syscall.SIGKILL)
+}
+
+// writePidFile writes the current PID to a file associated with the socket.
+func writePidFile(socketPath string) {
+	pidFile := socketPath + ".pid"
+	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 }
 
 // cleanupLocalProcesses kills old local processes with the same pane ID.
