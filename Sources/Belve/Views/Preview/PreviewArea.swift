@@ -380,7 +380,7 @@ struct PreviewArea: View {
 	}
 
 	private func searchFileNames(query: String, limit: Int) -> [FileSearchResult] {
-		project.executionContext.searchFileNames(rootPath: rootPath, query: query, limit: limit).map { match in
+		project.provider.searchFileNames(rootPath: rootPath, query: query, limit: limit).map { match in
 			FileSearchResult(
 				path: match.path,
 				relativePath: relativeDisplayPath(for: match.path),
@@ -420,9 +420,9 @@ struct PreviewArea: View {
 
 		loadingPath = path
 		postFileLoadingState(path: path, isLoading: true)
-		let ctx = project.executionContext
+		let provider = project.provider
 		DispatchQueue.global().async {
-			if let content = ctx.readFile(path) {
+			if let content = provider.readFile(path) {
 				NSLog("[Belve] File loaded: \(path), \(content.count) chars")
 				DispatchQueue.main.async {
 					loadingPath = nil
@@ -455,9 +455,9 @@ struct PreviewArea: View {
 
 	func saveCurrentFile() {
 		guard let file = openFile, isDirty else { return }
-		let ctx = project.executionContext
+		let provider = project.provider
 		DispatchQueue.global().async {
-			let success = ctx.writeFile(file.path, content: editedContent)
+			let success = provider.writeFile(file.path, content: editedContent)
 			DispatchQueue.main.async {
 				if success {
 					openFile = OpenFile(
@@ -473,9 +473,9 @@ struct PreviewArea: View {
 	}
 
 	private func handleDefinitionRequest(_ request: EditorDefinitionRequest) {
-		let ctx = project.executionContext
+		let provider = project.provider
 		DispatchQueue.global(qos: .userInitiated).async {
-			guard let match = ctx.resolveDefinition(
+			guard let match = provider.resolveDefinition(
 				rootPath: rootPath,
 				filePath: request.filename,
 				symbol: request.symbol,
@@ -491,9 +491,9 @@ struct PreviewArea: View {
 	}
 
 	private func handleDefinitionHoverRequest(_ request: EditorDefinitionRequest, completion: @escaping (Bool) -> Void) {
-		let ctx = project.executionContext
+		let provider = project.provider
 		DispatchQueue.global(qos: .userInitiated).async {
-			let canJump = ctx.resolveDefinition(
+			let canJump = provider.resolveDefinition(
 				rootPath: rootPath,
 				filePath: request.filename,
 				symbol: request.symbol,

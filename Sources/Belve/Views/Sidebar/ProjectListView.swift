@@ -392,15 +392,14 @@ struct ProjectRow: View {
 	@State private var isHovering = false
 
 	private var subtitle: String {
-		if project.isDevContainer {
-			let label = project.containerImageName.map { ($0 as NSString).lastPathComponent } ?? "container"
-			return "DevContainer: \(label)"
-		} else if let host = project.sshHost {
-			let short = host.components(separatedBy: ".").first ?? host
-			return "SSH: \(short)"
-		} else {
-			return "~/\(project.remotePath.map { ($0 as NSString).lastPathComponent } ?? "")"
+		let label = project.provider.displayLabel
+		if !label.isEmpty {
+			return label
 		}
+		if let path = project.path {
+			return "~/\((path as NSString).lastPathComponent)"
+		}
+		return ""
 	}
 
 	var body: some View {

@@ -41,7 +41,7 @@ class ProjectStore: ObservableObject {
 		let project = projects[index]
 
 		// Refresh project metadata without recreating terminals
-		if project.isDevContainer, let workspacePath = project.devContainerPath, let sshHost = project.sshHost {
+		if project.isDevContainer, let sshHost = project.sshHost, let workspacePath = project.path {
 			fetchContainerImageName(sshHost: sshHost, remotePath: workspacePath)
 		}
 
@@ -77,10 +77,10 @@ class ProjectStore: ObservableObject {
 			return
 		}
 		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-			let ctx = project.executionContext
+			let provider = project.provider
 			let path = project.effectivePath
-			let branch = ctx.gitBranch(path)
-			let rawStatus = ctx.gitStatus(path)
+			let branch = provider.gitBranch(path)
+			let rawStatus = provider.gitStatus(path)
 
 			// Build expanded map: include parent directories
 			// e.g. "Sources/Belve/foo.swift" → "M" also adds "Sources/Belve" → "M", "Sources" → "M"
@@ -137,9 +137,10 @@ class ProjectStore: ObservableObject {
 	func addProject(name: String? = nil, sshHost: String? = nil) -> Project {
 		let baseName = name ?? NSHomeDirectory().components(separatedBy: "/").last ?? "Project"
 		let finalName = uniqueName(baseName)
+		let workspace: Workspace = sshHost.map { .ssh(host: $0, path: nil) } ?? .local(path: nil)
 		let project = Project(
 			name: finalName,
-			sshHost: sshHost
+			workspace: workspace
 		)
 		projects.append(project)
 		saveProjects()
@@ -198,15 +199,21 @@ class ProjectStore: ObservableObject {
 		}
 
 		// Replace with a fresh project (new ID = clean slate for layout, sessions, etc.)
-		// Preserve connection info (sshHost, devContainer settings)
+		// Preserve connection type, update path
 		let oldProject = projects[index]
-		var newProject = Project(
+		let newWorkspace: Workspace
+		switch oldProject.workspace {
+		case .local:
+			newWorkspace = .local(path: path)
+		case .ssh(let host, _):
+			newWorkspace = .ssh(host: host, path: path)
+		case .devContainer(let host, _):
+			newWorkspace = .devContainer(host: host, workspace: path)
+		}
+		let newProject = Project(
 			name: (path as NSString).lastPathComponent,
-			sshHost: oldProject.sshHost,
-			remotePath: path
+			workspace: newWorkspace
 		)
-		newProject.devContainerPath = oldProject.devContainerPath
-		newProject.containerImageName = oldProject.containerImageName
 		projects[index] = newProject
 		saveProjects()
 		select(newProject)
@@ -276,13 +283,13 @@ class ProjectStore: ObservableObject {
 
 	func connectSSH(host: String) {
 		if let index = indexOfSelected {
-			projects[index].sshHost = host
+			let oldProject = projects[index]
 			// Only set name to host if no folder name is set yet
-			if projects[index].remotePath == nil {
-				projects[index].name = host.components(separatedBy: ".").first ?? host
-			}
+			let name = oldProject.path == nil ? (host.components(separatedBy: ".").first ?? host) : oldProject.name
+			let newProject = Project(name: name, workspace: .ssh(host: host, path: oldProject.path))
+			projects[index] = newProject
 			saveProjects()
-			selectedProject = projects[index]
+			select(newProject)
 			// Connect via existing terminal
 			sendToActiveTerminal("ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -t \(host)\n")
 		} else {
@@ -294,138 +301,71 @@ class ProjectStore: ObservableObject {
 
 	func openDevContainer() {
 		guard let index = indexOfSelected,
-			  projects[index].sshHost != nil,
-			  let workspacePath = projects[index].remotePath else {
-			NSLog("[Belve] Cannot open DevContainer: no remotePath set. Use Cmd+O first.")
+			  let sshHost = projects[index].sshHost,
+			  let workspacePath = projects[index].path else {
+			NSLog("[Belve] Cannot open DevContainer: no path set. Use Cmd+O first.")
 			return
 		}
-		// Update name from workspace path, recreate with new ID for fresh terminals
-		var updated = projects[index]
-		updated.devContainerPath = workspacePath
-		updated.name = (workspacePath as NSString).lastPathComponent
-		replaceWithNewId(at: index, updated: updated)
-		// Fetch container image name from host-side devcontainer.json
-		if let sshHost = updated.sshHost {
-			fetchContainerImageName(sshHost: sshHost, remotePath: workspacePath)
-		}
-		NSLog("[Belve] DevContainer enabled for \(updated.name)")
+		let newProject = Project(
+			name: (workspacePath as NSString).lastPathComponent,
+			workspace: .devContainer(host: sshHost, workspace: workspacePath)
+		)
+		projects[index] = newProject
+		saveProjects()
+		select(newProject)
+		fetchContainerImageName(sshHost: sshHost, remotePath: workspacePath)
+		NSLog("[Belve] DevContainer enabled for \(newProject.name)")
 	}
 
 	func disconnectSSH() {
 		guard let index = indexOfSelected else { return }
 		let name = projects[index].name
-		var updated = projects[index]
-		updated.sshHost = nil
-		updated.remotePath = nil
-		updated.devContainerPath = nil
-		replaceWithNewId(at: index, updated: updated)
+		let newProject = Project(name: name, workspace: .local(path: nil))
+		projects[index] = newProject
+		saveProjects()
+		select(newProject)
 		NSLog("[Belve] SSH disconnected for \(name), reverted to local")
 	}
 
 	func closeDevContainer() {
 		guard let index = indexOfSelected else { return }
-		var updated = projects[index]
-		updated.devContainerPath = nil
-		replaceWithNewId(at: index, updated: updated)
+		let old = projects[index]
+		guard let sshHost = old.sshHost else { return }
+		let newProject = Project(
+			name: old.name,
+			workspace: .ssh(host: sshHost, path: old.path)
+		)
+		projects[index] = newProject
+		saveProjects()
+		select(newProject)
 		NSLog("[Belve] DevContainer disabled, reverting to SSH")
 	}
 
 	/// Replace a project with a new ID to force terminal recreation.
-	/// Old terminal surfaces remain in memory (Ghostty can't free them) but become invisible.
 	private func replaceWithNewId(at index: Int, updated: Project) {
-		let newProject = Project(
-			name: updated.name,
-			sshHost: updated.sshHost,
-			remotePath: updated.remotePath,
-			devContainerPath: updated.devContainerPath,
-			containerImageName: updated.containerImageName
-		)
+		let newProject = updated.withNewId()
 		projects[index] = newProject
 		saveProjects()
 		select(newProject)
 	}
 
 	private func fetchContainerImageName(sshHost: String, remotePath: String) {
-		let jsonPath = "\(remotePath)/.devcontainer/devcontainer.json"
-		DispatchQueue.global().async { [weak self] in
-			// Read devcontainer.json directly from SSH host (not inside container)
-			let process = Process()
-			process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-			process.arguments = [
-				"-o", "StrictHostKeyChecking=accept-new",
-				"-o", "ConnectTimeout=5",
-				"-o", "BatchMode=yes",
-				"-o", "ControlMaster=auto",
-				"-o", "ControlPath=/tmp/belve-ssh-%r@%h:%p",
-				"-o", "ControlPersist=600",
-				sshHost,
-				"cat \(jsonPath)"
-			]
-			let pipe = Pipe()
-			process.standardOutput = pipe
-			process.standardError = Pipe()
-			try? process.run()
-			process.waitUntilExit()
-			let data = pipe.fileHandleForReading.readDataToEndOfFile()
-			guard !data.isEmpty else { return }
-
-			// Strip JSON comments (// style) before parsing
-			let raw = String(data: data, encoding: .utf8) ?? ""
-			let stripped = raw.components(separatedBy: "\n")
-				.map { line in
-					// Remove // comments (simple heuristic, doesn't handle strings)
-					if let range = line.range(of: "//") {
-						let before = line[line.startIndex..<range.lowerBound]
-						// Only strip if not inside a string
-						if before.filter({ $0 == "\"" }).count % 2 == 0 {
-							return String(before)
-						}
-					}
-					return line
-				}
-				.joined(separator: "\n")
-
-			guard let jsonData = stripped.data(using: .utf8),
-				  let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { return }
-
-			// Try "image", then "dockerComposeFile" service name, then "build.dockerfile"
-			let imageName: String?
-			if let image = json["image"] as? String {
-				imageName = image
-			} else if let service = json["service"] as? String {
-				imageName = service
-			} else if let build = json["build"] as? [String: Any], let dockerfile = build["dockerfile"] as? String {
-				imageName = "Dockerfile: \(dockerfile)"
-			} else {
-				imageName = nil
-			}
-
-			guard let imageName else { return }
-
-			DispatchQueue.main.async {
-				guard let self else { return }
-				// Find the project by matching remotePath and DevContainer status
-				guard let idx = self.projects.firstIndex(where: { $0.devContainerPath == remotePath }) else { return }
-				self.projects[idx].containerImageName = imageName
-				self.saveProjects()
-				if self.selectedProject?.id == self.projects[idx].id {
-					self.selectedProject = self.projects[idx]
-				}
-				NSLog("[Belve] Container image: \(imageName)")
-			}
-		}
+		// Container image name is no longer stored on Project.
+		// DevContainerProvider.displayLabel provides a static label.
+		// This method is kept as a no-op for future enhancement.
+		NSLog("[Belve] DevContainer detected at \(remotePath) on \(sshHost)")
 	}
 
 	private func checkForDevContainer() {
 		guard let project = selectedProject,
 			  project.sshHost != nil,
-			  let remotePath = project.remotePath,
+			  let remotePath = project.path,
 			  !project.isDevContainer else { return }
 
-		let ctx = project.executionContext
+		let provider = project.provider
 		DispatchQueue.global().async { [weak self] in
-			let hasDevContainer = ctx.fileExists("\(remotePath)/.devcontainer/devcontainer.json")
-				|| ctx.fileExists("\(remotePath)/.devcontainer.json")
+			let hasDevContainer = provider.fileExists("\(remotePath)/.devcontainer/devcontainer.json")
+				|| provider.fileExists("\(remotePath)/.devcontainer.json")
 			DispatchQueue.main.async {
 				withAnimation(.easeOut(duration: 0.2)) {
 					self?.showDevContainerBanner = hasDevContainer

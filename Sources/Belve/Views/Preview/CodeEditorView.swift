@@ -209,7 +209,7 @@ struct CodeEditorView: NSViewRepresentable {
 					let rootPath = project.effectivePath
 					let relativePath = filePath.hasPrefix(rootPath) ?
 						String(filePath.dropFirst(rootPath.count).drop(while: { $0 == "/" })) : filePath
-					let hunks = project.executionContext.gitDiffHunks(rootPath, file: relativePath)
+					let hunks = project.provider.gitDiffHunks(rootPath, file: relativePath)
 					guard !hunks.isEmpty else { return }
 					var markers: [[String: Any]] = []
 					for hunk in hunks {

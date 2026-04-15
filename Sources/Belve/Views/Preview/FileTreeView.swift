@@ -55,7 +55,7 @@ class FileTreeState: ObservableObject {
 	func loadRoot(project: Project, rootPath: String, completion: (() -> Void)? = nil) {
 		isRootLoading = true
 		DispatchQueue.global().async {
-			let result = project.executionContext.listDirectory(rootPath)
+			let result = project.provider.listDirectory(rootPath)
 			DispatchQueue.main.async {
 				self.items = result
 				self.isRootLoading = false
@@ -65,7 +65,7 @@ class FileTreeState: ObservableObject {
 				completion?()
 			}
 			// Check gitignore asynchronously (non-blocking)
-			let ignored = project.executionContext.gitCheckIgnore(rootPath, paths: result.map(\.name))
+			let ignored = project.provider.gitCheckIgnore(rootPath, paths: result.map(\.name))
 			if !ignored.isEmpty {
 				DispatchQueue.main.async {
 					for item in result where ignored.contains(item.name) {
@@ -79,11 +79,11 @@ class FileTreeState: ObservableObject {
 	/// Refresh root + expanded directories only (lightweight)
 	func refreshVisible(project: Project, rootPath: String) {
 		DispatchQueue.global().async {
-			let rootItems = project.executionContext.listDirectory(rootPath)
+			let rootItems = project.provider.listDirectory(rootPath)
 			// Refresh expanded directories
 			var updatedCache: [String: [FileItem]] = [:]
 			for path in self.expandedPaths {
-				updatedCache[path] = project.executionContext.listDirectory(path)
+				updatedCache[path] = project.provider.listDirectory(path)
 			}
 			DispatchQueue.main.async {
 				self.items = rootItems
@@ -104,7 +104,7 @@ class FileTreeState: ObservableObject {
 			let dir = dirs[0]
 			let compactedName = baseName.map { $0 + "/" + dir.name } ?? dir.name
 			// Check deeper
-			let subChildren = project.executionContext.listDirectory(dir.path)
+			let subChildren = project.provider.listDirectory(dir.path)
 			let subDirs = subChildren.filter(\.isDirectory)
 			let subFiles = subChildren.filter { !$0.isDirectory }
 			if subDirs.count == 1 && subFiles.isEmpty {
@@ -179,7 +179,7 @@ class FileTreeState: ObservableObject {
 				loadingDirectories.insert(path)
 				let rootPath = project.effectivePath
 				DispatchQueue.global().async {
-					var children = project.executionContext.listDirectory(path)
+					var children = project.provider.listDirectory(path)
 					// Compact folders: if only child is a single directory, merge names
 					children = self.compactFolders(children, project: project, baseName: nil)
 					DispatchQueue.main.async {
@@ -197,7 +197,7 @@ class FileTreeState: ObservableObject {
 						}
 						return item.name
 					}
-					let ignored = project.executionContext.gitCheckIgnore(rootPath, paths: relativePaths)
+					let ignored = project.provider.gitCheckIgnore(rootPath, paths: relativePaths)
 					if !ignored.isEmpty {
 						DispatchQueue.main.async {
 							for (item, relPath) in zip(children, relativePaths) where ignored.contains(relPath) {
@@ -272,7 +272,7 @@ class FileTreeState: ObservableObject {
 			return
 		}
 
-		let ctx = project.executionContext
+		let ctx = project.provider
 		DispatchQueue.global().async {
 			let success = ctx.moveItem(from: oldPath, to: newPath)
 			DispatchQueue.main.async {
@@ -312,7 +312,7 @@ class FileTreeState: ObservableObject {
 		let pathsToDelete = pendingDeletePaths
 		pendingDeletePaths = []
 
-		let ctx = project.executionContext
+		let ctx = project.provider
 		DispatchQueue.global().async {
 			var deletedPaths: [String] = []
 			var undoEntries: [FileTreeUndoEntry] = []
@@ -366,7 +366,7 @@ class FileTreeState: ObservableObject {
 		guard let action = undoStack.popLast() else { return }
 
 		showStatus("Undoing: \(action.label)...")
-		let ctx = project.executionContext
+		let ctx = project.provider
 
 		DispatchQueue.global().async {
 			var affectedPaths: [String] = []
@@ -425,7 +425,7 @@ class FileTreeState: ObservableObject {
 		if childrenCache[parentDir] != nil {
 			loadingDirectories.insert(parentDir)
 			DispatchQueue.global().async {
-				let children = project.executionContext.listDirectory(parentDir)
+				let children = project.provider.listDirectory(parentDir)
 				DispatchQueue.main.async {
 					self.loadingDirectories.remove(parentDir)
 					self.childrenCache[parentDir] = children
@@ -437,7 +437,7 @@ class FileTreeState: ObservableObject {
 			DispatchQueue.global().async {
 				// Find root path by checking if parentDir matches the root
 				// We re-list the parent
-				let children = project.executionContext.listDirectory(parentDir)
+				let children = project.provider.listDirectory(parentDir)
 				DispatchQueue.main.async {
 					self.isRootLoading = false
 					// Check if any root item's parent matches
@@ -495,7 +495,7 @@ class FileTreeState: ObservableObject {
 
 		loadingDirectories.insert(current)
 		DispatchQueue.global().async {
-			let children = project.executionContext.listDirectory(current)
+			let children = project.provider.listDirectory(current)
 			DispatchQueue.main.async {
 				self.loadingDirectories.remove(current)
 				self.childrenCache[current] = children
@@ -568,7 +568,7 @@ class FileTreeState: ObservableObject {
 			return
 		}
 		let newPath = (dir as NSString).appendingPathComponent(newFileName)
-		let ctx = project.executionContext
+		let ctx = project.provider
 		DispatchQueue.global().async {
 			let success = ctx.createFile(newPath)
 			DispatchQueue.main.async {

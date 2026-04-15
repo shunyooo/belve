@@ -371,7 +371,7 @@ struct MainWindow: View {
 					FolderBrowserView(
 						isPresented: $commandPaletteState.isPresented,
 						initialPath: browserPath,
-						executionContext: projectStore.selectedProject?.executionContext ?? .local
+						provider: projectStore.selectedProject?.provider ?? LocalProvider(path: nil)
 					) { path in
 						projectStore.setProjectFolder(path)
 					}
@@ -534,7 +534,7 @@ struct MainWindow: View {
 		guard let project = projectStore.selectedProject else { return }
 		isSearchingFiles = true
 		DispatchQueue.global(qos: .userInitiated).async {
-			let matches = project.executionContext.searchFileNames(rootPath: project.effectivePath, query: query, limit: 60)
+			let matches = project.provider.searchFileNames(rootPath: project.effectivePath, query: query, limit: 60)
 			let results = matches.map {
 				MainWindowFileSearchResult(
 					path: $0.path,
@@ -703,15 +703,8 @@ struct MainWindow: View {
 	// MARK: - Folder Browser
 
 	private static func connectionInfo(for project: Project) -> String? {
-		switch project.executionContext {
-		case .local: return nil
-		case .ssh(let host):
-			let short = host.components(separatedBy: ".").first ?? host
-			return "SSH: \(short)"
-		case .devContainer(_, _):
-			let label = project.containerImageName.map { ($0 as NSString).lastPathComponent } ?? "container"
-			return "DevContainer: \(label)"
-		}
+		let label = project.provider.displayLabel
+		return label.isEmpty ? nil : label
 	}
 
 	private func commandAreaState(for projectId: UUID) -> CommandAreaState {

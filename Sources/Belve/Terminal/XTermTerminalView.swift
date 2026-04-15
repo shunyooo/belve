@@ -304,17 +304,15 @@ struct XTermTerminalView: NSViewRepresentable {
 			guard let project else { return }
 			isWaitingForInitialOutput = project.isRemote
 
-			// Build environment
-			var env: [String: String] = [
-				"BELVE_SESSION": "1",
-				"BELVE_PROJECT_ID": project.id.uuidString,
-				"BELVE_PANE_INDEX": "\(paneIndex)",
-				"BELVE_COLS": "\(cols)",
-				"BELVE_ROWS": "\(rows)",
-			]
-			if let paneId {
-				env["BELVE_PANE_ID"] = paneId
-			}
+			// Build environment from provider
+			var env = project.provider.launcherEnvironment(
+				projectId: project.id.uuidString,
+				paneId: paneId ?? "",
+				paneIndex: paneIndex
+			)
+			env["BELVE_SESSION"] = "1"
+			env["BELVE_COLS"] = "\(cols)"
+			env["BELVE_ROWS"] = "\(rows)"
 
 			// Add Belve's bin directory to PATH
 			if let execDir = Bundle.main.executableURL?.deletingLastPathComponent() {
@@ -323,18 +321,6 @@ struct XTermTerminalView: NSViewRepresentable {
 					.appendingPathComponent("Resources/bin")
 				let currentPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
 				env["PATH"] = "\(resourceBin.path):\(currentPath)"
-			}
-
-			// Path and connection env vars (used by launcher script)
-			if let remotePath = project.remotePath {
-				env["BELVE_WORKDIR"] = remotePath
-			}
-			if project.isDevContainer, let sshHost = project.sshHost, let workspacePath = project.devContainerPath {
-				env["BELVE_SSH_HOST"] = sshHost
-				env["BELVE_WORKDIR"] = workspacePath
-				env["BELVE_DEVCONTAINER"] = "1"
-			} else if let sshHost = project.sshHost {
-				env["BELVE_SSH_HOST"] = sshHost
 			}
 
 			// Resolve launcher script path
@@ -586,7 +572,7 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			let parts = splitPathAndLocation(trimmed)
 			let candidate = parts.path
-			let ctx = project.executionContext
+			let provider = project.provider
 			let basePath = project.effectivePath
 
 			let candidates: [String]
@@ -604,7 +590,7 @@ struct XTermTerminalView: NSViewRepresentable {
 			}
 
 			for path in candidates {
-				if ctx.fileExists(path) {
+				if provider.fileExists(path) {
 					return path
 				}
 			}
