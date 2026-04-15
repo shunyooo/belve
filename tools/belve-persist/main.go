@@ -715,10 +715,10 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName string, cols, rows uint16
 	sendToTCP := func(msgType byte, data []byte) {
 		tcpMu.Lock()
 		tc := tcpConn
-		tcpMu.Unlock()
 		if tc != nil {
 			writeMsg(tc, msgType, data)
 		}
+		tcpMu.Unlock()
 	}
 
 	logf := func(format string, args ...interface{}) {
