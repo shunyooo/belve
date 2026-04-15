@@ -230,13 +230,13 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	const maxRespawns = 10
 	respawnCount := 0
 	for {
-		ptyFd, ttyPath, err := openPTY()
+		ptyFile, ttyPath, err := openPTY()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "openpty: %v\n", err)
 			os.Exit(1)
 		}
 		if cols > 0 && rows > 0 {
-			setPtySize(ptyFd, cols, rows)
+			setPtySize(ptyFile.Fd(), cols, rows)
 		}
 		ttyFile, err := os.OpenFile(ttyPath, os.O_RDWR, 0)
 		if err != nil {
@@ -256,11 +256,10 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 		}
 		childPid = cmd.Process.Pid
 		ttyFile.Close()
-		ptyFile := os.NewFile(ptyFd, "pty")
 
 		mu.Lock()
 		currentPtyFile = ptyFile
-		currentPtyFd = ptyFd
+		currentPtyFd = ptyFile.Fd()
 		mu.Unlock()
 
 		// PTY → broadcast
@@ -563,7 +562,7 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 	respawnCount := 0
 
 	for {
-		ptyFd, ttyPath, err := openPTY()
+		ptyFile, ttyPath, err := openPTY()
 		if err != nil {
 			logf("session %s: openpty error: %v", s.name, err)
 			s.mu.Lock()
@@ -572,7 +571,7 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 			return
 		}
 		if s.cols > 0 && s.rows > 0 {
-			setPtySize(ptyFd, s.cols, s.rows)
+			setPtySize(ptyFile.Fd(), s.cols, s.rows)
 		}
 		ttyFile, err := os.OpenFile(ttyPath, os.O_RDWR, 0)
 		if err != nil {
@@ -604,11 +603,10 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 		}
 		pid := cmd.Process.Pid
 		ttyFile.Close()
-		ptyFile := os.NewFile(ptyFd, "pty")
 
 		s.mu.Lock()
 		s.ptyFile = ptyFile
-		s.ptyFd = ptyFd
+		s.ptyFd = ptyFile.Fd()
 		s.childPid = pid
 		s.mu.Unlock()
 
