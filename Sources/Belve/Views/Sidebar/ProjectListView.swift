@@ -111,12 +111,10 @@ struct ProjectListView: View {
 				.padding(.top, 4)
 			}
 
-			// Dismiss context menu on tap outside
+		}
+		.onTapGesture {
 			if contextMenuProjectId != nil {
-				Color.clear
-					.contentShape(Rectangle())
-					.onTapGesture { contextMenuProjectId = nil }
-					.onExitCommand { contextMenuProjectId = nil }
+				contextMenuProjectId = nil
 			}
 		}
 		.animation(.easeOut(duration: 0.12), value: contextMenuProjectId != nil)

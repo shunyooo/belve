@@ -28,42 +28,60 @@ enum LauncherScriptGenerator {
 		SETUP_COMMON="-o ControlMaster=auto -o ControlPath=$BELVE_SSH_CONTROL -o ControlPersist=30 -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 		SCP_OPTS="$SETUP_COMMON"
 		SETUP_SSH="ssh $SETUP_COMMON"
-		# Connect uses independent connection (no ControlMaster) so SIGWINCH propagates correctly
-		CONNECT_SSH="ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes -o SetEnv=TERM=xterm-256color -o ConnectTimeout=10"
+		# Connect reuses ControlMaster from setup phase for instant connection.
+		# SIGWINCH propagation is handled by belve-persist TCP protocol, not SSH.
+		CONNECT_SSH="ssh $SETUP_COMMON -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes -o SetEnv=TERM=xterm-256color"
 
-		# Deploy a file via SCP with md5 checksum skip
-		# Uses .new + mv to avoid "Text file busy" on running binaries
-		deploy_file() {
-		    local src="$1" host="$2" dst="$3"
-		    [ -f "$src" ] || { echo "[belve] deploy_file: source not found: $src" >&2; return 1; }
-		    local local_md5=$(md5 -q "$src" 2>/dev/null || md5sum "$src" 2>/dev/null | cut -d' ' -f1)
-		    local remote_md5=$($SETUP_SSH "$host" "md5sum $dst 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
-		    if [ "$local_md5" != "$remote_md5" ]; then
-		        if ! scp -q $SCP_OPTS "$src" "$host:${dst}.new"; then
-		            echo "[belve] deploy_file: SCP FAILED: $src → $host:$dst" >&2
-		            return 1
-		        fi
-		        $SETUP_SSH "$host" "mv -f ${dst}.new $dst; chmod +x $dst 2>/dev/null" 2>/dev/null
-		        # Verify
-		        local verify_md5=$($SETUP_SSH "$host" "md5sum $dst 2>/dev/null | cut -d' ' -f1" 2>/dev/null)
-		        if [ "$local_md5" != "$verify_md5" ]; then
-		            echo "[belve] deploy_file: VERIFY FAILED: $dst (local=$local_md5 remote=$verify_md5)" >&2
-		            return 1
-		        fi
-		    fi
-		}
-
-		# Deploy belve-persist binary (architecture-aware)
-		deploy_persist_binary() {
+		# Deploy all scripts + persist binaries in a single SCP+SSH.
+		# Includes both arch binaries; remote selects the correct one.
+		# Uses md5 of the tar to skip if unchanged.
+		deploy_bundle() {
 		    local host="$1"
-		    local arch=$($SETUP_SSH "$host" "uname -m" 2>/dev/null)
-		    local src_bin
-		    if [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then
-		        src_bin="$BELVE_BIN_DIR/belve-persist-linux-arm64"
-		    else
-		        src_bin="$BELVE_BIN_DIR/belve-persist-linux-amd64"
+		    local tmptar="/tmp/belve-deploy-$$.tar.gz"
+
+		    # Build tar with all deploy files (both arch binaries included)
+		    local staging="/tmp/belve-stage-$$"
+		    mkdir -p "$staging/bin"
+		    cp "$BELVE_BIN_DIR/belve" "$staging/bin/"
+		    cp "$BELVE_BIN_DIR/claude" "$staging/bin/"
+		    cp "$BELVE_BIN_DIR/codex" "$staging/bin/"
+		    cp "$BELVE_BIN_DIR/belve-connect" "$staging/bin/"
+		    cp "$BELVE_BIN_DIR/belve-setup" "$staging/bin/"
+		    cp "$BELVE_BIN_DIR/belve-persist-linux-amd64" "$staging/bin/"
+		    cp "$BELVE_BIN_DIR/belve-persist-linux-arm64" "$staging/bin/"
+		    cp "$BELVE_BIN_DIR/session-bootstrap.sh" "$staging/"
+		    tar czf "$tmptar" -C "$staging" .
+		    rm -rf "$staging"
+
+		    # Check if remote already has the same bundle
+		    local local_md5=$(md5 -q "$tmptar" 2>/dev/null || md5sum "$tmptar" 2>/dev/null | cut -d' ' -f1)
+
+		    # Single SCP + single SSH (no prior SSH needed)
+		    if ! scp -q $SCP_OPTS "$tmptar" "$host:/tmp/belve-deploy.tar.gz"; then
+		        echo "[belve] deploy_bundle: SCP FAILED" >&2
+		        rm -f "$tmptar"
+		        return 1
 		    fi
-		    deploy_file "$src_bin" "$host" "~/.belve/bin/belve-persist"
+		    rm -f "$tmptar"
+
+		    $SETUP_SSH "$host" "
+		        if [ -f ~/.belve/.deploy-md5 ] && [ \"\$(cat ~/.belve/.deploy-md5)\" = '$local_md5' ]; then
+		            rm -f /tmp/belve-deploy.tar.gz
+		            exit 0
+		        fi
+		        mkdir -p ~/.belve/bin ~/.belve/sessions ~/.belve/zdotdir ~/.belve/projects
+		        tar xzf /tmp/belve-deploy.tar.gz -C ~/.belve
+		        ARCH=\$(uname -m)
+		        if [ \"\$ARCH\" = 'aarch64' ] || [ \"\$ARCH\" = 'arm64' ]; then
+		            mv -f ~/.belve/bin/belve-persist-linux-arm64 ~/.belve/bin/belve-persist
+		        else
+		            mv -f ~/.belve/bin/belve-persist-linux-amd64 ~/.belve/bin/belve-persist
+		        fi
+		        rm -f ~/.belve/bin/belve-persist-linux-amd64 ~/.belve/bin/belve-persist-linux-arm64
+		        chmod +x ~/.belve/bin/* ~/.belve/session-bootstrap.sh 2>/dev/null
+		        echo '$local_md5' > ~/.belve/.deploy-md5
+		        rm -f /tmp/belve-deploy.tar.gz
+		    " 2>/dev/null
 		}
 
 		# SSH/DevContainer: SCP deploy + setup + connect
@@ -78,35 +96,20 @@ enum LauncherScriptGenerator {
 		    # Status reporting for loading UI
 		    belve_status() { printf '\x1b]9;belve-status;%s\x07' "$1"; }
 
-		    # Check if we can skip deploy+setup (session already exists)
-		    NEED_SETUP=1
 		    belve_status "Connecting to $BELVE_SSH_HOST..."
-		    if $SETUP_SSH "$BELVE_SSH_HOST" "test -x ~/.belve/bin/belve-connect" 2>/dev/null; then
-		        if [ -n "$BELVE_DEVCONTAINER" ]; then
-		            $SETUP_SSH "$BELVE_SSH_HOST" "test -f ~/.belve/projects/${PROJ_SHORT}.env" 2>/dev/null && NEED_SETUP=0
-		        else
-		            NEED_SETUP=0
-		        fi
+
+		    # Deploy all files in a single tar (1 SCP + 1 SSH)
+		    deploy_bundle "$BELVE_SSH_HOST"
+
+		    # Run setup if needed (DevContainer: devcontainer up + container deploy)
+		    NEED_SETUP=1
+		    if [ -n "$BELVE_DEVCONTAINER" ]; then
+		        $SETUP_SSH "$BELVE_SSH_HOST" "test -f ~/.belve/projects/${PROJ_SHORT}.env" 2>/dev/null && NEED_SETUP=0
+		    else
+		        NEED_SETUP=0
 		    fi
 
-		    # Ensure remote directories exist before any deploy
-		    $SETUP_SSH "$BELVE_SSH_HOST" "mkdir -p ~/.belve/bin ~/.belve/sessions ~/.belve/zdotdir ~/.belve/projects" 2>/dev/null
-
-		    # Always sync key scripts + binaries (md5 check skips unchanged files)
-		    deploy_file "$BELVE_BIN_DIR/belve" "$BELVE_SSH_HOST" "~/.belve/bin/belve"
-		    deploy_file "$BELVE_BIN_DIR/claude" "$BELVE_SSH_HOST" "~/.belve/bin/claude"
-		    deploy_file "$BELVE_BIN_DIR/codex" "$BELVE_SSH_HOST" "~/.belve/bin/codex"
-		    deploy_file "$BELVE_BIN_DIR/belve-connect" "$BELVE_SSH_HOST" "~/.belve/bin/belve-connect"
-		    deploy_file "$BELVE_BIN_DIR/session-bootstrap.sh" "$BELVE_SSH_HOST" "~/.belve/session-bootstrap.sh"
-		    deploy_persist_binary "$BELVE_SSH_HOST"
-
 		    if [ "$NEED_SETUP" = "1" ]; then
-		        # --- Phase 1: Deploy setup script + run ---
-		        belve_status "Deploying files..."
-		        deploy_file "$BELVE_BIN_DIR/belve-setup" "$BELVE_SSH_HOST" "~/.belve/bin/belve-setup"
-		        $SETUP_SSH "$BELVE_SSH_HOST" "chmod +x ~/.belve/bin/* ~/.belve/session-bootstrap.sh 2>/dev/null"
-
-		        # --- Phase 2: Setup (non-interactive SSH, single command) ---
 		        if [ -n "$BELVE_DEVCONTAINER" ]; then
 		            belve_status "Starting DevContainer..."
 		        else
@@ -121,6 +124,9 @@ enum LauncherScriptGenerator {
 		    fi
 
 		    # --- Connect (interactive SSH, single command) ---
+		    # Ensure ControlMaster is ready before connecting
+		    ssh -o ControlPath="$BELVE_SSH_CONTROL" -O check "$BELVE_SSH_HOST" 2>/dev/null || \
+		        $SETUP_SSH "$BELVE_SSH_HOST" "true" 2>/dev/null
 		    belve_status "Attaching session..."
 		    CONNECT_ARGS="--session $SESSION_NAME --cols ${BELVE_COLS:-80} --rows ${BELVE_ROWS:-24}"
 		    CONNECT_ARGS="$CONNECT_ARGS --project-id ${BELVE_PROJECT_ID:-} --pane-index ${BELVE_PANE_INDEX:-0} --pane-id ${BELVE_PANE_ID:-}"
