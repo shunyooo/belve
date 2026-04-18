@@ -2,6 +2,7 @@
 node_modules/
 .build/
 .swiftpm/
+.claude/
 archived/
 Belve.app/
 test-results/
