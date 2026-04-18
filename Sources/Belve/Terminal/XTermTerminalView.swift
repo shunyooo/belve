@@ -86,7 +86,6 @@ final class TerminalWebView: WKWebView {
 }
 
 /// SwiftUI wrapper for xterm.js running in WKWebView.
-/// Replaces GhosttyTerminalView with a fully embeddable terminal.
 struct XTermTerminalView: NSViewRepresentable {
 	let project: Project
 	var paneId: String?

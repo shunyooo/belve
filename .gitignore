@@ -7,11 +7,19 @@ Belve.app/
 test-results/
 tests/ui-baselines/
 
+# Swift build artifacts (stray)
+*.o
+*.d
+*.swiftdeps
+
+# Stale resource dir from v1 era
+WebMarkdown/
+GhosttyKit.xcframework/
+
 # Legacy (VS Code fork remnants)
 .vscode/
 extensions/
 out/
 src/
 dist/
-GhosttyKit.xcframework/
 tmp/

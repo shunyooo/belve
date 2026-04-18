@@ -1,21 +1,5 @@
 # Belve Development Guide
 
-## GhosttyKit セットアップ
-
-GhosttyKit.xcframework は GitHub Releases からダウンロードする:
-
-```bash
-git submodule update --init
-GHOSTTY_SHA=$(git -C ghostty rev-parse HEAD)
-curl -sLo /tmp/GhosttyKit.xcframework.tar.gz \
-  "https://github.com/manaflow-ai/ghostty/releases/download/xcframework-$GHOSTTY_SHA/GhosttyKit.xcframework.tar.gz"
-tar xzf /tmp/GhosttyKit.xcframework.tar.gz
-```
-
-- ghostty サブモジュールの SHA に対応するリリースタグ `xcframework-<SHA>` から取得
-- cmux も同じ方法 (`scripts/download-prebuilt-ghosttykit.sh`)
-- `.gitignore` に `GhosttyKit.xcframework/` が入ってるのでリポジトリに含めない
-
 ## UI スクショ確認
 
 ### ウィンドウ単体キャプチャ

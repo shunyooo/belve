@@ -54,14 +54,9 @@ dock/                              # リポジトリルート
 │           └── markdown-bundle.js # Milkdown Crepe バンドル
 ├── Tests/
 │   └── BelveTests/
-├── WebEditor/                     # CodeMirror ビルド用 npm プロジェクト
-│   ├── package.json
-│   ├── src/editor.ts
-│   └── rollup.config.js
-└── WebMarkdown/                   # Milkdown ビルド用 npm プロジェクト
+└── WebEditor/                     # CodeMirror ビルド用 npm プロジェクト
     ├── package.json
-    ├── src/index.ts
-    └── rollup.config.js
+    └── editor-entry.js
 ```
 
 ## AI エージェントフレンドリーな設計原則
@@ -237,11 +232,8 @@ swift build && swift run Belve
 # テスト
 swift test
 
-# WebEditor ビルド（CodeMirror バンドル）
-cd WebEditor && npm install && npm run build
-
-# WebMarkdown ビルド（Milkdown バンドル）
-cd WebMarkdown && npm install && npm run build
+# xterm.js バンドル (terminal-entry.js の変更時のみ)
+npm run bundle
 ```
 
 ## UI 自動テスト（osascript + screencapture）
@@ -344,12 +336,9 @@ osascript -e 'tell app "System Events" to tell process "Belve" to set size of wi
 
 ### 中優先度
 
-#### ターミナルエンジン差し替え検討
-- 現在: SwiftTerm（Pure Swift、組み込みやすい）
-- 候補: libghostty（GPU 120fps、Ghostty config 互換）
-- Protocol で抽象化済みなので差し替え可能
-- libghostty は Zig ビルドが必要、導入コスト高
-- パフォーマンス問題が出てから検討で OK
+#### ターミナルエンジン
+- 現在: xterm.js (WKWebView) + belve-persist (Go)
+- 差し替え候補はパフォーマンス問題が出てから検討で OK
 
 #### Web プレビュー
 - Preview エリアでの Web ページ表示
@@ -360,11 +349,6 @@ osascript -e 'tell app "System Events" to tell process "Belve" to set size of wi
 - サイドバーでダブルクリック or コマンドパレットで名前変更
 
 ### 低優先度
-
-#### hiddenTitleBar の復活
-- 現在は `unifiedCompact` + `.hiddenTitleBar` 使用中
-- SwiftTerm の AutoLayout クラッシュは解決済み
-- よりクリーンなウィンドウクロムを目指す
 
 #### tmux 連携
 - SSH 先の tmux セッションにアタッチ

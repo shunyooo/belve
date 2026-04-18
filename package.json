@@ -1,33 +1,31 @@
 {
-  "name": "dock-code",
-  "version": "1.0.0",
-  "main": "index.js",
+  "name": "belve",
+  "version": "2.0.0",
   "directories": {
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "bundle": "esbuild scripts/terminal-entry.js --bundle --format=iife --outfile=Sources/Belve/Resources/terminal-bundle.js --minify"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shunyooo/dock-code.git"
+    "url": "git+https://github.com/shunyooo/belve.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/shunyooo/dock-code/issues"
+    "url": "https://github.com/shunyooo/belve/issues"
   },
-  "homepage": "https://github.com/shunyooo/dock-code#readme",
-  "description": "",
+  "homepage": "https://github.com/shunyooo/belve#readme",
+  "description": "Multi-project macOS dev environment with SSH/DevContainer terminals, editor, and Markdown preview.",
   "dependencies": {
-    "xterm": "^5.3.0"
-  },
-  "devDependencies": {
     "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
-    "@xterm/xterm": "^6.0.0",
+    "@xterm/xterm": "^6.0.0"
+  },
+  "devDependencies": {
     "esbuild": "^0.28.0"
   }
 }
