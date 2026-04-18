@@ -1,47 +1,6 @@
 # Belve Development Guide
 
-## UI スクショ確認
-
-### ウィンドウ単体キャプチャ
-
-他アプリが映り込まない方法:
-
-```bash
-WINID=$(swift -e '
-import CoreGraphics
-let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
-for w in list { if let o = w[kCGWindowOwnerName as String] as? String, o == "Belve", let id = w[kCGWindowNumber as String] as? Int { print(id); break } }
-')
-screencapture -l$WINID -x /tmp/belve-win.png
-```
-
-### 部分クロップ
-
-Swift の NSImage で左上 NxM px を切り出し:
-
-```bash
-swift -e '
-import AppKit
-guard let img = NSImage(contentsOfFile: "/tmp/belve-win.png") else { exit(1) }
-let rep = img.representations.first!
-let w = 600; let h = 200
-let cropRect = NSRect(x: 0, y: rep.pixelsHigh - h, width: w, height: h)
-let bitmapRep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-NSGraphicsContext.saveGraphicsState()
-NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmapRep)
-img.draw(in: NSRect(x: 0, y: 0, width: w, height: h), from: cropRect, operation: .copy, fraction: 1.0)
-NSGraphicsContext.restoreGraphicsState()
-try! bitmapRep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "/tmp/belve-crop.png"))
-'
-```
-
-### 注意
-
-- `screencapture -x` は全画面キャプチャ → 他アプリが映る。使わない
-- `screencapture -R` は画面座標 → 他アプリが映る。使わない
-- `screencapture -l$WINID` でウィンドウ単体
-- NSImage の座標は左下原点。クロップ時 `y: pixelsHigh - h` で上端を指定
-- Retina ディスプレイなので画像サイズは論理サイズの2倍
+UI 自動テスト (ビルド・起動・スクショ・osascript 操作) の手順は [CLAUDE.md](../CLAUDE.md#ui-自動テスト) に集約しているのでそちらを参照。
 
 ## 開発ワークフロー
 
@@ -66,8 +25,8 @@ try! bitmapRep.representation(using: .png, properties: [:])!.write(to: URL(fileU
 依存関係のあるレイアウト値は `Theme.swift` に定数として定義する。ハードコードしない。
 
 ```swift
-Theme.titlebarHeight   // サイドバー上部行 & メインヘッダーの高さ
-Theme.sidebarWidth     // サイドバーの幅
+Theme.titlebarHeight       // サイドバー上部行 & メインヘッダーの高さ
+Theme.sidebarWidth         // サイドバーの幅
 Theme.trafficLightLeading  // トラフィックライトの右端位置
 ```
 
@@ -78,19 +37,27 @@ Theme.trafficLightLeading  // トラフィックライトの右端位置
 | ショートカット | 機能 |
 |---|---|
 | Cmd+Shift+P | コマンドパレット |
+| Cmd+P | ファイル検索 |
 | Cmd+O | フォルダブラウザ |
 | Cmd+S | ファイル保存 |
 | Cmd+D | ペイン縦分割 |
 | Cmd+Shift+D | ペイン横分割 |
-| Cmd+1-9 | プロジェクト切替 |
-| Cmd+' | アプリ表示/非表示（グローバル） |
+| Cmd+W | ペインを閉じる |
+| Cmd+1〜9 | プロジェクト切替 (番号指定) |
+| Cmd+[ / Cmd+] | プロジェクト切替 (前後) |
+| Cmd+' / Cmd+; | ペインフォーカス前後 |
+| Cmd+Shift+\ | セッションバー開閉 |
+| Cmd+\ | プロジェクトサイドバー開閉 |
+| Cmd+E | エディタ開閉 |
+| Cmd+Shift+E | ファイルツリー開閉 |
+| Cmd+' (グローバル) | Belve アプリ表示/非表示 |
 
 ## Claude Code Hook 連携の既知の制約
 
 ### ラッパー (Resources/bin/claude)
 - `BELVE_SESSION` 環境変数がない場合はパススルー（Belve 外では無害）
 - `BELVE_BIN` は `$(dirname "$0")/belve` で相対解決するため環境依存なし
-- `--settings` でインラインに hooks JSON を注入。ユーザーの `~/.claude/settings.json` には触らない
+- `--settings` でインラインに hooks JSON を注入。ユーザーの `~/.claude/settings.json` とは Claude Code 側で自動マージ (配列は concat + dedup、オブジェクトは deep merge) されるので、ユーザー側の hook もそのまま動く
 
 ### belve CLI (Resources/bin/belve)
 - **`node` 依存**: `notification` hook で stdin JSON をパースするために使用。`node` がなければ `"input needed"` 固定でフォールバック
@@ -98,7 +65,9 @@ Theme.trafficLightLeading  // トラフィックライトの右端位置
 - **OSC (`/dev/tty`) はリモートでも動く**: SSH/DevContainer では OSC 経由が唯一の通信手段。ファイル監視はローカルのフォールバック
 
 ### シェル関数注入
-統一ランチャー (`/tmp/belve-shell/belve-launcher.sh`) がシェルを検出して適切に `claude()` 関数を注入:
+
+統一ランチャー (`/tmp/belve-shell/belve-launcher.sh`) がシェルを検出して `claude()` 関数を注入:
+
 - **bash**: `export -f claude` — bash はエクスポートされた関数を子プロセスに引き継ぐ
 - **zsh**: ZDOTDIR の `.zshrc` で `.zshrc` source 後に関数定義
 - **fish**: `--init-command` でインライン関数定義
@@ -108,5 +77,4 @@ Theme.trafficLightLeading  // トラフィックライトの右端位置
 
 ### SSH/DevContainer 対応状況
 - ローカル: ✅ ファイル監視 + OSC 両方で動作
-- SSH: ⚠️ OSC のみ。`BelveRemoteInstaller` でラッパーをデプロイ + `sendRemoteBelveEnv` で環境変数注入が必要（SwiftTerm ベースの TerminalPaneView でのみ実装済み。Ghostty ベースでは未対応）
-- DevContainer: ⚠️ 同上
+- SSH / DevContainer: ✅ OSC のみ。ラッパーは `LauncherScriptGenerator` が生成するシェル起動スクリプトが `$HOME/.belve/bin` にデプロイし、`BELVE_PANE_ID` などの環境変数は belve-persist の TCP ハンドシェイクで注入
