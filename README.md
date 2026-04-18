@@ -6,7 +6,7 @@
   <p align="center">
     <img src="https://img.shields.io/badge/platform-macOS%2014%2B-black.svg" alt="macOS 14+">
     <img src="https://img.shields.io/badge/Swift-5.9-orange.svg" alt="Swift 5.9">
-    <img src="https://img.shields.io/badge/License-ISC-blue.svg" alt="License: ISC">
+    <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
   </p>
   <p align="center">
     <a href="#features">Features</a> · <a href="#install">Install</a> · <a href="#stack">Stack</a> · <a href="#docs">Docs</a>
