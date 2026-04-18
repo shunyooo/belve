@@ -39,6 +39,9 @@ protocol WorkspaceProvider {
 	// MARK: Definition
 	func resolveDefinition(rootPath: String, filePath: String, symbol: String, language: String, line: Int, column: Int) -> DefinitionMatch?
 
+	// MARK: File download (binary-safe, for media preview)
+	func downloadFile(remotePath: String, to localURL: URL) -> Bool
+
 	// MARK: Launcher
 	func launcherEnvironment(projectId: String, paneId: String, paneIndex: Int) -> [String: String]
 }
@@ -82,10 +85,10 @@ private func shellQuote(_ path: String) -> String {
 	return "'\(path.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 
+/// Shared ControlPath so all Belve SSH operations (file ops, SCP, SSHTunnelManager
+/// port forwards, launcher's deploy+setup) reuse one SSH ControlMaster per host.
 private func sshControlPath(for host: String) -> String {
-	let dir = "/tmp/belve-ssh"
-	try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-	return "\(dir)/\(host)"
+	"/tmp/belve-ssh-ctrl-\(host)"
 }
 
 private func sshArgs(host: String) -> [String] {
@@ -111,13 +114,13 @@ private func executeLocal(_ command: String) -> CommandResult? {
 
 	do {
 		try process.run()
-		process.waitUntilExit()
 	} catch {
 		NSLog("[Belve] local run failed: \(error)")
 		return nil
 	}
 
 	let data = pipe.fileHandleForReading.readDataToEndOfFile()
+	process.waitUntilExit()
 	let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .newlines) ?? ""
 	return CommandResult(output: output, status: process.terminationStatus)
 }
@@ -381,20 +384,15 @@ struct LocalProvider: WorkspaceProvider {
 	func listDirectory(_ path: String) -> [FileItem] {
 		let fm = FileManager.default
 		guard let entries = try? fm.contentsOfDirectory(atPath: path) else { return [] }
-		return entries
+		let items = entries
 			.filter { !AppConfig.shared.shouldExclude($0) }
-			.sorted { a, b in
-				let aDot = a.hasPrefix(".")
-				let bDot = b.hasPrefix(".")
-				if aDot != bDot { return !aDot }
-				return a.localizedStandardCompare(b) == .orderedAscending
-			}
-			.map { name in
+			.map { name -> FileItem in
 				let fullPath = (path as NSString).appendingPathComponent(name)
 				var isDir: ObjCBool = false
 				fm.fileExists(atPath: fullPath, isDirectory: &isDir)
 				return FileItem(name: name, path: fullPath, isDirectory: isDir.boolValue)
 			}
+		return items.sortedLikeVSCode()
 	}
 
 	func fileExists(_ path: String) -> Bool {
@@ -437,6 +435,24 @@ struct LocalProvider: WorkspaceProvider {
 		FileManager.default.createFile(atPath: path, contents: nil)
 	}
 
+	func downloadFile(remotePath: String, to localURL: URL) -> Bool {
+		// Local: just copy
+		let absPath: String
+		if remotePath.hasPrefix("/") {
+			absPath = remotePath
+		} else {
+			absPath = (effectivePath as NSString).appendingPathComponent(remotePath)
+		}
+		do {
+			try? FileManager.default.removeItem(at: localURL)
+			try FileManager.default.copyItem(atPath: absPath, toPath: localURL.path)
+			return true
+		} catch {
+			NSLog("[Belve] downloadFile local failed: \(error)")
+			return false
+		}
+	}
+
 	func launcherEnvironment(projectId: String, paneId: String, paneIndex: Int) -> [String: String] {
 		var env: [String: String] = [
 			"BELVE_PROJECT_ID": projectId,
@@ -475,6 +491,27 @@ struct SSHProvider: WorkspaceProvider {
 	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) { deleteItemRemote(path) }
 	func moveItem(from: String, to: String) -> Bool { run("mv \(shellQuote(from)) \(shellQuote(to))") != nil }
 	func createFile(_ path: String) -> Bool { run("touch \(shellQuote(path))") != nil }
+
+	func downloadFile(remotePath: String, to localURL: URL) -> Bool {
+		// SCP directly
+		let process = Process()
+		process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
+		let cp = sshControlPath(for: host)
+		process.arguments = [
+			"-o", "ControlMaster=auto", "-o", "ControlPath=\(cp)", "-o", "ControlPersist=600",
+			"-o", "StrictHostKeyChecking=accept-new", "-q",
+			"\(host):\(remotePath)", localURL.path
+		]
+		process.standardError = FileHandle.nullDevice
+		do {
+			try process.run()
+			process.waitUntilExit()
+			return process.terminationStatus == 0
+		} catch {
+			NSLog("[Belve] downloadFile scp failed: \(error)")
+			return false
+		}
+	}
 
 	func launcherEnvironment(projectId: String, paneId: String, paneIndex: Int) -> [String: String] {
 		var env: [String: String] = [
@@ -516,6 +553,57 @@ struct DevContainerProvider: WorkspaceProvider {
 	func moveItem(from: String, to: String) -> Bool { run("mv \(shellQuote(from)) \(shellQuote(to))") != nil }
 	func createFile(_ path: String) -> Bool { run("touch \(shellQuote(path))") != nil }
 
+	func downloadFile(remotePath: String, to localURL: URL) -> Bool {
+		// Get container ID and RWS (container workspace path) from env file
+		guard let info = resolveContainerInfo(host: host, workspace: workspace) else {
+			NSLog("[Belve] downloadFile: cannot resolve container info")
+			return false
+		}
+		let cid = info.cid
+		// docker cp container:path to host tmp, then scp to local
+		let tmpRemote = "/tmp/belve-download-\(ProcessInfo.processInfo.processIdentifier)"
+		let containerPath: String
+		if remotePath.hasPrefix("/") {
+			containerPath = remotePath
+		} else {
+			// Resolve relative path against container's RWS (not host workspace)
+			containerPath = (info.rws as NSString).appendingPathComponent(remotePath)
+		}
+		// SSH: docker cp + cat → pipe to local file
+		let process = Process()
+		let pipe = Pipe()
+		process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+		let cp = sshControlPath(for: host)
+		process.arguments = [
+			"-o", "ControlMaster=auto", "-o", "ControlPath=\(cp)", "-o", "ControlPersist=600",
+			"-o", "StrictHostKeyChecking=accept-new",
+			host,
+			"docker cp \(cid):\(shellQuote(containerPath)) \(tmpRemote) && cat \(tmpRemote) && rm -f \(tmpRemote)"
+		]
+		process.standardOutput = pipe
+		process.standardError = FileHandle.nullDevice
+		do {
+			try process.run()
+		} catch {
+			NSLog("[Belve] downloadFile devcontainer failed: \(error)")
+			return false
+		}
+		let data = pipe.fileHandleForReading.readDataToEndOfFile()
+		process.waitUntilExit()
+		guard process.terminationStatus == 0, !data.isEmpty else {
+			NSLog("[Belve] downloadFile devcontainer exit=%d dataSize=%d", process.terminationStatus, data.count)
+			return false
+		}
+		do {
+			try? FileManager.default.removeItem(at: localURL)
+			try data.write(to: localURL)
+			return true
+		} catch {
+			NSLog("[Belve] downloadFile write failed: \(error)")
+			return false
+		}
+	}
+
 	func launcherEnvironment(projectId: String, paneId: String, paneIndex: Int) -> [String: String] {
 		[
 			"BELVE_SSH_HOST": host,
@@ -528,28 +616,52 @@ struct DevContainerProvider: WorkspaceProvider {
 	}
 }
 
+struct ContainerInfo {
+	let cid: String
+	let rws: String
+}
+
+/// Resolve container ID and RWS from project env files on the SSH host.
+/// Matches by the last path component of the workspace (e.g. "clay-app-report").
+private func resolveContainerInfo(host: String, workspace: String) -> ContainerInfo? {
+	let dirName = (workspace as NSString).lastPathComponent
+	let cmd = "for f in ~/.belve/projects/*.env; do . \"$f\"; case \"$RWS\" in */\(dirName)) echo \"$CID $RWS\"; break;; esac; done"
+	let result = executeSSH(host: host, cmd)
+	guard let r = result, r.status == 0, !r.output.isEmpty else { return nil }
+	let parts = r.output.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: " ")
+	guard parts.count >= 2 else { return nil }
+	return ContainerInfo(cid: parts[0], rws: parts.dropFirst().joined(separator: " "))
+}
+
 // MARK: - Shared Remote Helpers
 
 private func listDirectoryRemote(_ path: String, run: (String) -> String?) -> [FileItem] {
 	guard let output = run("ls -1aF \(shellQuote(path))") else { return [] }
-	return output.components(separatedBy: "\n")
+	let items = output.components(separatedBy: "\n")
 		.filter { !$0.isEmpty && $0 != "./" && $0 != "../" }
 		.filter { entry in
 			let name = entry.hasSuffix("/") ? String(entry.dropLast()) : entry.replacingOccurrences(of: "*", with: "")
 			return !AppConfig.shared.shouldExclude(name)
 		}
-		.sorted { a, b in
-			let aDot = a.hasPrefix(".")
-			let bDot = b.hasPrefix(".")
-			if aDot != bDot { return !aDot }
-			return a.localizedStandardCompare(b) == .orderedAscending
-		}
-		.compactMap { entry in
+		.compactMap { entry -> FileItem? in
 			let isDir = entry.hasSuffix("/")
 			let name = isDir ? String(entry.dropLast()) : entry.replacingOccurrences(of: "*", with: "")
 			let fullPath = (path as NSString).appendingPathComponent(name)
 			return FileItem(name: name, path: fullPath, isDirectory: isDir)
 		}
+	return items.sortedLikeVSCode()
+}
+
+extension Array where Element == FileItem {
+	/// Match VS Code's default explorer sort: folders first, then files.
+	/// Within each group, case-insensitive natural compare — so dot-prefixed
+	/// entries (e.g. `.gitignore`) naturally sort to the top of their group.
+	func sortedLikeVSCode() -> [FileItem] {
+		sorted { a, b in
+			if a.isDirectory != b.isDirectory { return a.isDirectory }
+			return a.name.localizedStandardCompare(b.name) == .orderedAscending
+		}
+	}
 }
 
 extension SSHProvider {

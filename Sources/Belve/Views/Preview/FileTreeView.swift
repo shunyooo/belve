@@ -855,9 +855,7 @@ struct FileTreeRow: View {
 						.frame(width: 12)
 				}
 
-				Image(systemName: item.isDirectory ? "folder.fill" : fileIcon(item.name))
-					.font(.system(size: 11))
-					.foregroundStyle(item.isDirectory ? Theme.yellow : Theme.textSecondary)
+				FileTypeIconView(name: item.name, isDirectory: item.isDirectory)
 
 				if isRenaming {
 					TextField("", text: $state.renamingText)

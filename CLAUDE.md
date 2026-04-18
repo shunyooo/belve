@@ -29,11 +29,9 @@ pkill -f 'MacOS/Belve$' 2>/dev/null
 # xterm.js バンドル再生成（scripts/terminal-entry.js 変更時に必要）
 npx esbuild scripts/terminal-entry.js --bundle --format=iife --outfile=Sources/Belve/Resources/terminal-bundle.js --minify
 
-# belve-persist 単体ビルド（tools/belve-persist/ 変更時）
-cd tools/belve-persist
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o belve-persist-linux-amd64 .
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o belve-persist-linux-arm64 .
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o belve-persist-darwin-arm64 .
+# belve-persist 変更時は必ず build-persist.sh を使う
+# (go build 直接実行だとアプリバンドルに反映されず、deploy_bundle が古いバイナリで上書きする)
+./scripts/build-persist.sh
 
 # npm セットアップ（初回 or パッケージ追加時）
 npm install

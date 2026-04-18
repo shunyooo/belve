@@ -326,6 +326,32 @@ struct XTermTerminalView: NSViewRepresentable {
 			// Resolve launcher script path
 			let launcherPath = "/tmp/belve-shell/belve-launcher.sh"
 
+			// Remote projects: reserve a local port; the launcher establishes the actual
+			// `ssh -O forward` after deploy+setup populate ~/.belve/projects/<short>.env.
+			if project.isRemote, let host = project.sshHost {
+				do {
+					let port = try SSHTunnelManager.shared.reservePort(host: host, projectId: project.id)
+					env["BELVE_LOCAL_BROKER_PORT"] = String(port)
+				} catch {
+					NSLog("[Belve] port reservation failed: \(error)")
+					postConnectionState(isLoading: false)
+					postConnectionStatus("Tunnel failed: \(error.localizedDescription)")
+					postDisconnectedState(isDisconnected: true)
+					return
+				}
+			}
+			spawnPTY(launcherPath: launcherPath, env: env, cols: cols, rows: rows, project: project)
+
+			// Track active pane on focus
+			if let paneId, let paneUUID = UUID(uuidString: paneId) {
+				// Set active pane when this terminal gets focus
+				DispatchQueue.main.async { [weak self] in
+					self?.commandAreaState?.activePaneId = paneUUID
+				}
+			}
+		}
+
+		private func spawnPTY(launcherPath: String, env: [String: String], cols: Int, rows: Int, project: Project) {
 			do {
 				postConnectionState(isLoading: isWaitingForInitialOutput)
 				postDisconnectedState(isDisconnected: false)
@@ -360,17 +386,40 @@ struct XTermTerminalView: NSViewRepresentable {
 				postDisconnectedState(isDisconnected: project.isRemote)
 				NSLog("[Belve] Failed to start PTY: \(error)")
 			}
+		}
 
-			// Track active pane on focus
-			if let paneId, let paneUUID = UUID(uuidString: paneId) {
-				// Set active pane when this terminal gets focus
-				DispatchQueue.main.async { [weak self] in
-					self?.commandAreaState?.activePaneId = paneUUID
-				}
+		/// After PTY resize, hold output until app finishes redrawing
+		private var resizeHoldUntil: Date?
+		private var resizeStartTime: Date?
+		private var resizeFirstDataTime: Date?
+		private var resizeLastDataTime: Date?
+		private var resizeByteCount: Int = 0
+		private var resizeHoldTimer: Timer?
+
+		private var resizeMaxTimer: Timer?
+
+		private func startResizeHold() {
+			resizeHoldUntil = Date().addingTimeInterval(3.0)
+			resizeStartTime = Date()
+			resizeFirstDataTime = nil
+			resizeLastDataTime = nil
+			resizeByteCount = 0
+			// Hard cap: force reveal after 3s even if data keeps flowing
+			resizeMaxTimer?.invalidate()
+			resizeMaxTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+				guard let self else { return }
+				NSLog("[Belve] resize-measure: MAX-TIMEOUT bytes=%d (data still flowing after 3s)", self.resizeByteCount)
+				self.resizeHoldUntil = nil
+				self.resizeHoldTimer?.invalidate()
+				self.resizeHoldTimer = nil
+				let b64 = self.outputBuffer.base64EncodedString()
+				self.outputBuffer.removeAll(keepingCapacity: true)
+				self.webView?.evaluateJavaScript("terminalWrite('\(b64)'); window.terminalSetResizing(false)", completionHandler: nil)
 			}
 		}
 
-		/// Buffer PTY output and flush every ~4ms to reduce JS calls
+		/// Buffer PTY output and flush every ~4ms to reduce JS calls.
+		/// After resize, buffers longer to avoid visible redraw scroll.
 		private func bufferOutput(_ data: Data) {
 			let parsed = extractBelveStatusMessages(from: statusScanBuffer + data)
 			statusScanBuffer = parsed.trailingData
@@ -395,7 +444,43 @@ struct XTermTerminalView: NSViewRepresentable {
 				postConnectionStatus(nil)
 			}
 			outputBuffer.append(cleanData)
-			if flushTimer == nil {
+			if resizeHoldUntil != nil {
+				// Measure data arrival
+				if resizeFirstDataTime == nil, let start = resizeStartTime {
+					resizeFirstDataTime = Date()
+					NSLog("[Belve] resize-measure: first-data-latency=%.0fms", Date().timeIntervalSince(start) * 1000)
+				}
+				if let start = resizeStartTime {
+					NSLog("[Belve] resize-chunk: +%dms +%d bytes (total=%d)", Int(Date().timeIntervalSince(start) * 1000), cleanData.count, resizeByteCount + cleanData.count)
+				}
+				resizeLastDataTime = Date()
+				resizeByteCount += cleanData.count
+				// During resize hold: reset the quiet timer (data still flowing)
+				resizeHoldTimer?.invalidate()
+				resizeHoldTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
+					guard let self else { return }
+					// Print measurements
+					if let start = self.resizeStartTime, let first = self.resizeFirstDataTime, let last = self.resizeLastDataTime {
+						let firstLatency = first.timeIntervalSince(start) * 1000
+						let dataSpan = last.timeIntervalSince(first) * 1000
+						let renderStart = Date()
+						NSLog("[Belve] resize-measure: first=%.0fms dataSpan=%.0fms bytes=%d", firstLatency, dataSpan, self.resizeByteCount)
+						self.resizeHoldUntil = nil
+						self.resizeHoldTimer = nil
+						let b64 = self.outputBuffer.base64EncodedString()
+						self.outputBuffer.removeAll(keepingCapacity: true)
+						self.webView?.evaluateJavaScript("terminalWrite('\(b64)'); window.terminalSetResizing(false)") { _, _ in
+							NSLog("[Belve] resize-measure: render=%.0fms", Date().timeIntervalSince(renderStart) * 1000)
+						}
+						return
+					}
+					self.resizeHoldUntil = nil
+					self.resizeHoldTimer = nil
+					let b64 = self.outputBuffer.base64EncodedString()
+					self.outputBuffer.removeAll(keepingCapacity: true)
+					self.webView?.evaluateJavaScript("terminalWrite('\(b64)'); window.terminalSetResizing(false)", completionHandler: nil)
+				}
+			} else if flushTimer == nil {
 				flushTimer = Timer.scheduledTimer(withTimeInterval: 0.004, repeats: false) { [weak self] _ in
 					self?.flushOutput()
 				}
@@ -457,6 +542,23 @@ struct XTermTerminalView: NSViewRepresentable {
 		private func flushOutput() {
 			flushTimer = nil
 			guard !outputBuffer.isEmpty else { return }
+
+			// During resize hold: buffer until data stops flowing (200ms quiet)
+			if resizeHoldUntil != nil {
+				resizeHoldTimer?.invalidate()
+				resizeHoldTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
+					// No new data for 200ms — redraw is done, flush all at once
+					guard let self else { return }
+					self.resizeHoldUntil = nil
+					self.resizeHoldTimer = nil
+					// Flush buffered data first, then reveal the terminal
+					let b64 = self.outputBuffer.base64EncodedString()
+					self.outputBuffer.removeAll(keepingCapacity: true)
+					self.webView?.evaluateJavaScript("terminalWrite('\(b64)'); window.terminalSetResizing(false)", completionHandler: nil)
+				}
+				return
+			}
+
 			let b64 = outputBuffer.base64EncodedString()
 			outputBuffer.removeAll(keepingCapacity: true)
 			webView?.evaluateJavaScript("terminalWrite('\(b64)')", completionHandler: nil)
@@ -496,9 +598,12 @@ struct XTermTerminalView: NSViewRepresentable {
 		/// Resize terminal using fitAddon.proposeDimensions() for accurate cols/rows.
 		/// Debounces to let SwiftUI layout settle before measuring DOM.
 		/// Also starts the PTY on the first successful fit (after "ready" + correct frame).
+		private var ptyResizeWorkItem: DispatchWorkItem?
+
 		func resizeTerminal(width: CGFloat, height: CGFloat) {
 			resizeDebounceWorkItem?.cancel()
-			let workItem = DispatchWorkItem { [weak self] in
+			// Fit xterm.js after brief debounce (visual only, no PTY resize yet)
+			let fitWorkItem = DispatchWorkItem { [weak self] in
 				guard let self, let webView = self.webView else { return }
 				guard self.isTerminalReady else { return }
 				webView.evaluateJavaScript("window.terminalFit()") { [weak self] result, _ in
@@ -506,7 +611,9 @@ struct XTermTerminalView: NSViewRepresentable {
 					if let dict = result as? [String: Any],
 					   let cols = dict["cols"] as? Int,
 					   let rows = dict["rows"] as? Int {
-						// Start PTY on first fit with correct size
+						if let reflowMs = dict["reflowMs"] as? Double, let oldCols = dict["oldCols"] as? Int {
+							NSLog("[Belve] reflow-measure: oldCols=%d newCols=%d reflow=%.1fms", oldCols, cols, reflowMs)
+						}
 						if self.ptyService == nil {
 							self.lastResizeCols = cols
 							self.lastResizeRows = rows
@@ -518,14 +625,28 @@ struct XTermTerminalView: NSViewRepresentable {
 						guard cols != self.lastResizeCols || rows != self.lastResizeRows else { return }
 						self.lastResizeCols = cols
 						self.lastResizeRows = rows
-						NSLog("[Belve] fit pane=%@ cols=%d rows=%d",
-							  self.paneId ?? "?", cols, rows)
-						self.ptyService?.setSize(cols: cols, rows: rows)
+						// Defer PTY resize (triggers SIGWINCH → app redraw) until drag settles
+						self.ptyResizeWorkItem?.cancel()
+						let ptyWork = DispatchWorkItem { [weak self] in
+							guard let self, let webView = self.webView else { return }
+							NSLog("[Belve] pty resize pane=%@ cols=%d rows=%d",
+								  self.paneId ?? "?", cols, rows)
+							// Hide terminal right before SIGWINCH to prevent visible redraw
+							webView.evaluateJavaScript("window.terminalSetResizing(true)", completionHandler: nil)
+							self.startResizeHold()
+							self.ptyService?.setSize(cols: cols, rows: rows)
+							// Failsafe: always reveal after max time, even if no data arrives
+							DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+								self?.webView?.evaluateJavaScript("window.terminalSetResizing(false)", completionHandler: nil)
+							}
+						}
+						self.ptyResizeWorkItem = ptyWork
+						DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: ptyWork)
 					}
 				}
 			}
-			resizeDebounceWorkItem = workItem
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+			resizeDebounceWorkItem = fitWorkItem
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: fitWorkItem)
 		}
 
 		func copySelectionToPasteboard() {
@@ -671,12 +792,13 @@ struct XTermTerminalView: NSViewRepresentable {
 			)
 
 			if project.isRemote {
-				// Auto-retry once for remote projects (initial deploy can exit before connect)
-				if ptyRetryCount < 1 {
+				// Auto-retry up to 3 times for remote projects (initial deploy/setup can take time)
+				if ptyRetryCount < 3 {
 					ptyRetryCount += 1
 					ptyService = nil
-					NSLog("[Belve] Auto-retrying PTY for project=%@", project.name)
-					DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+					let delay = Double(ptyRetryCount) * 2.0 // 2s, 4s, 6s
+					NSLog("[Belve] Auto-retrying PTY for project=%@ (attempt %d, delay %.0fs)", project.name, ptyRetryCount, delay)
+					DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
 						guard let self else { return }
 						let cols = self.lastResizeCols > 0 ? self.lastResizeCols : 80
 						let rows = self.lastResizeRows > 0 ? self.lastResizeRows : 24
@@ -721,7 +843,11 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "l":
 				NotificationCenter.default.post(name: .belveFocusEditor, object: nil)
 			case "\\":
-				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
+				if shift {
+					NotificationCenter.default.post(name: .belveToggleSessionBar, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
+				}
 			case "e":
 				if shift {
 					NotificationCenter.default.post(name: .belveToggleFileTree, object: nil)

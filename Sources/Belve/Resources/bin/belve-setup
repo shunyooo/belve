@@ -1,22 +1,29 @@
 #!/bin/bash
 # belve-setup: idempotent remote host setup
-# Usage: belve-setup [--devcontainer] [--workspace PATH] [--project-short ID]
+# Usage: belve-setup [--devcontainer] [--workspace PATH] [--project-short ID] [--rebuild]
 #
-# Called by Belve app via: ssh host ~/.belve/bin/belve-setup [args]
-# All scripts (belve, claude, belve-connect, session-bootstrap.sh)
-# are already in ~/.belve/ via SCP before this runs.
+# --rebuild: stop/remove existing container before devcontainer up (forces rebuild)
+#
+# DevContainer flow:
+#   - First connect (no .env): run `devcontainer up`, deploy scripts into container, start broker
+#   - Subsequent connects: skip `devcontainer up` (cached .env), but still ensure broker is running
+#     (container may have been restarted since last belve-setup run)
+# Plain SSH flow:
+#   - Always ensure broker is running on VM loopback:19222
 
 set -euo pipefail
 
 DEVCONTAINER=0
 WORKSPACE=""
 PROJ_SHORT=""
+REBUILD=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --devcontainer) DEVCONTAINER=1; shift ;;
         --workspace) WORKSPACE="$2"; shift 2 ;;
         --project-short) PROJ_SHORT="$2"; shift 2 ;;
+        --rebuild) REBUILD=1; shift ;;
         *) shift ;;
     esac
 done
@@ -24,43 +31,211 @@ done
 # Ensure directories
 mkdir -p "$HOME/.belve/bin" "$HOME/.belve/sessions" "$HOME/.belve/zdotdir"
 
-# belve-persist binary is deployed directly via SCP by the launcher (deploy_persist_binary)
-
 # Ensure all bin scripts are executable
 chmod +x "$HOME/.belve/bin/"* 2>/dev/null || true
 chmod +x "$HOME/.belve/session-bootstrap.sh" 2>/dev/null || true
 
-if [ "$DEVCONTAINER" = "1" ] && [ -n "$WORKSPACE" ]; then
-    # Resolve ~ in workspace path
-    [[ "${WORKSPACE:0:2}" == "~/" ]] && WORKSPACE="$HOME/${WORKSPACE:2}"
-
-    mkdir -p "$HOME/.belve/projects"
-    cd "$WORKSPACE" || exit 1
-
-    INFO=$(devcontainer up --workspace-folder . --log-format json 2>/dev/null | tail -1)
-    CID=$(printf '%s' "$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("containerId",""))')
-    RWS=$(printf '%s' "$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("remoteWorkspaceFolder",""))')
-    [ -n "$CID" ] || exit 1
-
-    CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | head -1)
-    printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$CIP" > "$HOME/.belve/projects/${PROJ_SHORT}.env"
-
-    # Deploy scripts into container via docker cp
-    docker exec "$CID" mkdir -p /root/.belve/bin /root/.belve/sessions /root/.belve/zdotdir /root/.belve/panes 2>/dev/null
-    docker cp "$HOME/.belve/bin/belve" "$CID:/root/.belve/bin/belve" 2>/dev/null
-    docker cp "$HOME/.belve/bin/claude" "$CID:/root/.belve/bin/claude" 2>/dev/null
-    docker cp "$HOME/.belve/bin/codex" "$CID:/root/.belve/bin/codex" 2>/dev/null
-    docker cp "$HOME/.belve/session-bootstrap.sh" "$CID:/root/.belve/session-bootstrap.sh" 2>/dev/null
-
-    # belve-persist: compare hash, kill broker + update if changed
-    LOCAL_HASH=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}')
-    REMOTE_HASH=$(docker exec "$CID" md5sum /root/.belve/bin/belve-persist 2>/dev/null | awk '{print $1}')
-    if [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
-        # Kill running broker so the binary isn't "Text file busy"
-        docker exec "$CID" pkill -9 -f 'belve-persist.*tcplisten' 2>/dev/null || true
-        sleep 0.5
-        docker cp "$HOME/.belve/bin/belve-persist" "$CID:/root/.belve/bin/belve-persist" 2>/dev/null
+# Plain SSH: ensure broker is listening on VM loopback. Restarts if the deployed
+# binary hash differs from the running one (so protocol changes take effect).
+ensure_vm_broker() {
+    local stamp="$HOME/.belve/.broker-md5"
+    local current_md5
+    current_md5=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
+    local running=0
+    if ss -tln 2>/dev/null | grep -q '127.0.0.1:19222' \
+        || netstat -tln 2>/dev/null | grep -q '127.0.0.1:19222'; then
+        running=1
     fi
+    local old_md5=""
+    [ -f "$stamp" ] && old_md5=$(cat "$stamp")
+    if [ "$running" = "1" ] && [ "$current_md5" = "$old_md5" ]; then
+        return 0
+    fi
+    # Binary changed or not running — kill old broker, start fresh
+    if [ "$running" = "1" ]; then
+        pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19222' 2>/dev/null || true
+        sleep 0.5
+    fi
+    nohup "$HOME/.belve/bin/belve-persist" \
+        -tcplisten 127.0.0.1:19222 \
+        -command "$HOME/.belve/session-bootstrap.sh" \
+        >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        bash -c 'echo > /dev/tcp/127.0.0.1/19222' 2>/dev/null && echo "$current_md5" > "$stamp" && return 0
+        sleep 0.2
+    done
+}
 
-    docker exec "$CID" chmod +x /root/.belve/bin/* /root/.belve/session-bootstrap.sh 2>/dev/null || true
+# DevContainer: ensure broker is running inside the container. Syncs scripts/binary first
+# (in case container was rebuilt by us but not since this belve-persist was updated).
+ensure_container_broker() {
+    local cid="$1"
+    local rws="$2"
+    local cip="$3"
+
+    docker exec "$cid" mkdir -p /root/.belve/bin /root/.belve/sessions /root/.belve/zdotdir /root/.belve/panes 2>&1 || \
+        echo "[belve-setup] ERROR: mkdir in container failed" >&2
+    for pair in "belve:bin/belve" "claude:bin/claude" "codex:bin/codex" "session-bootstrap.sh:session-bootstrap.sh"; do
+        local src_name="${pair%%:*}"
+        local dst_path="${pair##*:}"
+        local src="$HOME/.belve/bin/$src_name"
+        [ "$src_name" = "session-bootstrap.sh" ] && src="$HOME/.belve/$src_name"
+        [ -f "$src" ] || { echo "[belve-setup] WARN: source missing: $src" >&2; continue; }
+        if ! docker cp "$src" "$cid:/root/.belve/$dst_path" 2>&1; then
+            echo "[belve-setup] ERROR: docker cp failed for $src_name" >&2
+        fi
+    done
+
+    # belve-persist: compare hash, kill old broker + update if changed.
+    # Use `|| true` so pipefail+set -e don't abort when the remote file is missing.
+    local local_hash=""
+    local remote_hash=""
+    local_hash=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
+    remote_hash=$(docker exec "$cid" md5sum /root/.belve/bin/belve-persist 2>/dev/null | awk '{print $1}' || true)
+    if [ "$local_hash" != "$remote_hash" ]; then
+        docker exec "$cid" pkill -9 -f 'belve-persist.*tcplisten' 2>/dev/null || true
+        sleep 0.5
+        if ! docker cp "$HOME/.belve/bin/belve-persist" "$cid:/root/.belve/bin/belve-persist" 2>&1; then
+            echo "[belve-setup] ERROR: docker cp belve-persist failed" >&2
+        fi
+    fi
+    docker exec "$cid" chmod +x /root/.belve/bin/* /root/.belve/session-bootstrap.sh 2>/dev/null || true
+
+    # Start broker if not already listening
+    if docker exec "$cid" sh -c 'ss -tln 2>/dev/null | grep -q :19222 || netstat -tln 2>/dev/null | grep -q :19222' 2>/dev/null; then
+        return 0
+    fi
+    docker exec -d \
+        -e BELVE_SESSION=1 \
+        -e TERM=xterm-256color \
+        -w "$rws" \
+        "$cid" /root/.belve/bin/belve-persist \
+        -tcplisten 0.0.0.0:19222 \
+        -command /root/.belve/session-bootstrap.sh 2>&1 || \
+        echo "[belve-setup] ERROR: failed to start container broker" >&2
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        bash -c "echo > /dev/tcp/$cip/19222" 2>/dev/null && return 0
+        sleep 0.2
+    done
+    echo "[belve-setup] WARN: container broker did not become ready within ~2s" >&2
+}
+
+if [ "$DEVCONTAINER" != "1" ]; then
+    ensure_vm_broker
+    exit 0
 fi
+
+# --- DevContainer branch ---
+[ -n "$WORKSPACE" ] || { echo "[belve-setup] ERROR: --workspace required for --devcontainer" >&2; exit 1; }
+
+# Resolve ~ in workspace path
+[[ "${WORKSPACE:0:2}" == "~/" ]] && WORKSPACE="$HOME/${WORKSPACE:2}"
+
+mkdir -p "$HOME/.belve/projects"
+cd "$WORKSPACE" || exit 1
+
+# On --rebuild: stop and remove existing container to force fresh build
+if [ "$REBUILD" = "1" ] && [ -n "$PROJ_SHORT" ]; then
+    ENV_FILE="$HOME/.belve/projects/${PROJ_SHORT}.env"
+    if [ -f "$ENV_FILE" ]; then
+        . "$ENV_FILE"
+        if [ -n "${CID:-}" ]; then
+            echo "[belve-setup] stopping and removing container ${CID:0:12}..." >&2
+            docker stop "$CID" 2>&1 || true
+            docker rm -f "$CID" 2>&1 || true
+        fi
+        rm -f "$ENV_FILE"
+    fi
+fi
+
+ENV_FILE="$HOME/.belve/projects/${PROJ_SHORT}.env"
+
+# If .env exists and container still running, just ensure broker is up (fast path).
+if [ -f "$ENV_FILE" ]; then
+    . "$ENV_FILE"
+    if [ -n "${CID:-}" ] && docker inspect -f '{{.State.Running}}' "$CID" 2>/dev/null | grep -q true; then
+        # Refresh CIP in case it changed (container restart may reassign IP)
+        NEW_CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | head -1)
+        if [ -n "$NEW_CIP" ] && [ "$NEW_CIP" != "${CIP:-}" ]; then
+            printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$NEW_CIP" > "$ENV_FILE"
+            CIP="$NEW_CIP"
+        fi
+        ensure_container_broker "$CID" "$RWS" "$CIP"
+        exit 0
+    fi
+    # Container gone; fall through to full bootstrap
+    rm -f "$ENV_FILE"
+fi
+
+# Full bootstrap: devcontainer up + deploy + start broker.
+TMPOUT=$(mktemp)
+TMPERR=$(mktemp)
+
+# Write filter to temp file (avoids shell quoting hell)
+FILTER=$(mktemp)
+cat > "$FILTER" <<'PYFILTER'
+import json, re, sys
+
+def clean_line(s):
+    s = s.split("\r")[-1]
+    s = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", s)
+    return s.rstrip()
+
+def should_skip(text):
+    t = text.strip()
+    if not t: return True
+    if re.match(r"^#\d+\s+\d+\.\d+\s", t): return True
+    if re.match(r"^#\d+\s+DONE", t): return True
+    if t.startswith("> "): return True
+    if t.startswith("[httpOci]"): return True
+    if "credential" in t.lower() and ("helper" in t.lower() or "docker-credential" in t.lower()):
+        return True
+    if t[:1] in ("{", "[", "}", "]"):
+        return True
+    if t.startswith('"'):
+        return True
+    return False
+
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line: continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    text = d.get("text", "")
+    if not text: continue
+    for sub in text.split("\n"):
+        sub = clean_line(sub)
+        if should_skip(sub): continue
+        sys.stdout.write("\x1b[2m" + sub + "\x1b[0m\n")
+        sys.stdout.flush()
+PYFILTER
+
+devcontainer up --workspace-folder . --log-format json 2>"$TMPERR" | tee "$TMPOUT" | python3 -u "$FILTER" || true
+rm -f "$FILTER"
+
+DC_EXIT=${PIPESTATUS[0]}
+if [ "$DC_EXIT" -ne 0 ]; then
+    echo "[belve-setup] ERROR: devcontainer up exit=$DC_EXIT" >&2
+    tail -20 "$TMPERR" >&2
+    rm -f "$TMPERR" "$TMPOUT"
+    exit 1
+fi
+
+INFO=$(tail -1 "$TMPOUT")
+rm -f "$TMPERR" "$TMPOUT"
+
+CID=$(printf '%s' "$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("containerId",""))' 2>/dev/null)
+RWS=$(printf '%s' "$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("remoteWorkspaceFolder",""))' 2>/dev/null)
+if [ -z "$CID" ]; then
+    echo "[belve-setup] ERROR: could not parse containerId from devcontainer output:" >&2
+    echo "$INFO" | head -c 500 >&2
+    exit 1
+fi
+
+CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | head -1)
+printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$CIP" > "$ENV_FILE"
+
+ensure_container_broker "$CID" "$RWS" "$CIP"

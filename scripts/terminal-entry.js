@@ -335,12 +335,22 @@ window.terminalFit = function() {
 	if (!window.term || !window.fitAddon) return null;
 	var dims = fitAddon.proposeDimensions();
 	if (!dims || dims.cols < 2 || dims.rows < 1) return null;
-	// Only scrollToBottom if user was already at the bottom (watching live output)
 	var buf = term.buffer.active;
 	var wasAtBottom = buf.viewportY >= buf.baseY;
+	var oldCols = term.cols;
+	var t0 = performance.now();
 	term.resize(dims.cols, dims.rows);
+	var reflowMs = performance.now() - t0;
 	if (wasAtBottom) term.scrollToBottom();
-	return { cols: dims.cols, rows: dims.rows };
+	return { cols: dims.cols, rows: dims.rows, reflowMs: reflowMs, oldCols: oldCols };
+};
+
+// Hide/reveal terminal screen during resize to prevent visible redraw scroll
+window.terminalSetResizing = function(hide) {
+	var screen = term.element && term.element.querySelector('.xterm-screen');
+	if (!screen) return;
+	screen.style.transition = hide ? 'none' : 'opacity 0.15s';
+	screen.style.opacity = hide ? '0' : '1';
 };
 
 // Bridge: Swift -> JS

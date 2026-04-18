@@ -6,6 +6,8 @@ struct ProjectListView: View {
 	@EnvironmentObject var notificationStore: NotificationStore
 	var onAddProject: (() -> Void)?
 	var onToggleSidebar: (() -> Void)?
+	var onToggleSessionBar: (() -> Void)?
+	var showSessionBar: Bool = true
 	var onRenameProject: ((UUID, String) -> Void)?
 	var onDeleteProject: ((UUID) -> Void)?
 	var onMoveProject: ((IndexSet, Int) -> Void)?
@@ -17,6 +19,8 @@ struct ProjectListView: View {
 	// Drag & drop state
 	@State private var draggingProjectId: UUID?
 	@State private var dropTargetIndex: Int?
+
+	@Namespace private var selectionNamespace
 
 	var body: some View {
 		ZStack {
@@ -42,7 +46,8 @@ struct ProjectListView: View {
 								ProjectRow(
 									project: project,
 									isSelected: selectedProject == project,
-										agentState: notificationStore.agentStatus[project.id]
+										agentState: notificationStore.agentStatus[project.id],
+									selectionNamespace: selectionNamespace
 								)
 								.opacity(draggingProjectId == project.id ? 0.4 : 1.0)
 								.overlay(
@@ -105,6 +110,18 @@ struct ProjectListView: View {
 			.overlay(alignment: .topTrailing) {
 				HStack(spacing: 4) {
 					SidebarIconButton(icon: "plus", action: { onAddProject?() })
+					// Session bar toggle only shown when closed — when open, the toggle
+					// lives inside the AgentSessionBar itself.
+					if let onToggleSessionBar, !showSessionBar {
+						SidebarIconButton(
+							icon: "list.bullet.rectangle",
+							action: { onToggleSessionBar() }
+						)
+						.transition(.asymmetric(
+							insertion: .opacity.animation(.easeOut(duration: 0.25).delay(0.15)),
+							removal: .opacity.animation(.easeOut(duration: 0.1))
+						))
+					}
 					SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 				}
 				.padding(.trailing, 6)
@@ -118,6 +135,7 @@ struct ProjectListView: View {
 			}
 		}
 		.animation(.easeOut(duration: 0.12), value: contextMenuProjectId != nil)
+		.animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18), value: selectedProject)
 	}
 
 	private func dropIndicator() -> some View {
@@ -387,6 +405,7 @@ struct ProjectRow: View {
 	let project: Project
 	let isSelected: Bool
 	var agentState: AgentState?
+	var selectionNamespace: Namespace.ID?
 	@State private var isHovering = false
 
 	private var subtitle: String {
@@ -420,16 +439,36 @@ struct ProjectRow: View {
 		.padding(.horizontal, 10)
 		.padding(.vertical, 7)
 		.background(
-			RoundedRectangle(cornerRadius: Theme.radiusSm)
-				.fill(isSelected ? Theme.surfaceActive : (isHovering ? Theme.surfaceHover : Color.clear))
+			ZStack {
+				if isHovering && !isSelected {
+					RoundedRectangle(cornerRadius: Theme.radiusSm)
+						.fill(Theme.surfaceHover)
+				}
+				if isSelected {
+					if let ns = selectionNamespace {
+						RoundedRectangle(cornerRadius: Theme.radiusSm)
+							.fill(Theme.surfaceActive)
+							.matchedGeometryEffect(id: "selectionBackground", in: ns)
+					} else {
+						RoundedRectangle(cornerRadius: Theme.radiusSm)
+							.fill(Theme.surfaceActive)
+					}
+				}
+			}
 		)
 		.overlay(
 			HStack {
 				if isSelected {
-					RoundedRectangle(cornerRadius: 1)
-						.fill(Theme.accent)
-						.frame(width: 2, height: 16)
-						.transition(.opacity.combined(with: .scale))
+					if let ns = selectionNamespace {
+						RoundedRectangle(cornerRadius: 1)
+							.fill(Theme.accent)
+							.frame(width: 2, height: 16)
+							.matchedGeometryEffect(id: "selectionBar", in: ns)
+					} else {
+						RoundedRectangle(cornerRadius: 1)
+							.fill(Theme.accent)
+							.frame(width: 2, height: 16)
+					}
 				}
 				Spacer()
 			}

@@ -86,6 +86,9 @@ struct MainWindow: View {
 				.onReceive(NotificationCenter.default.publisher(for: .belveToggleSidebar)) { _ in
 					toggleSidebar()
 				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveToggleSessionBar)) { _ in
+					toggleSessionBar()
+				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveToggleFileTree)) { _ in
 					toggleFileTree()
 				}
@@ -183,60 +186,75 @@ struct MainWindow: View {
 				),
 				onAddProject: { let _ = projectStore.addProject() },
 				onToggleSidebar: toggleSidebar,
+				onToggleSessionBar: toggleSessionBar,
+				showSessionBar: layoutState.showSessionBar,
 				onRenameProject: { id, name in projectStore.renameProject(id, name: name) },
 				onDeleteProject: { id in projectStore.deleteProject(id) },
 				onMoveProject: { source, dest in projectStore.moveProject(from: source, to: dest) }
 			)
 			.frame(width: layoutState.sidebarWidth)
 
-			// Divider: project bar ↔ session bar (drags project bar width)
-			Rectangle()
-				.fill(Theme.borderSubtle)
-				.frame(width: 1)
-				.contentShape(Rectangle().inset(by: -3))
-				.onHover { h in if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
-				.gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
-					.onChanged { value in
-						if sidebarWidthAtDragStart == 0 { sidebarWidthAtDragStart = layoutState.sidebarWidth }
-						layoutState.sidebarWidth = max(100, min(300, sidebarWidthAtDragStart + value.translation.width))
-					}
-					.onEnded { _ in sidebarWidthAtDragStart = layoutState.sidebarWidth }
-				)
-
-			AgentSessionBar(
-				projects: projectStore.projects,
-				selectedProject: Binding(
-					get: { projectStore.selectedProject },
-					set: { projectStore.select($0) }
-				),
-				activeCommandState: commandAreaState(for: projectStore.selectedProject?.id ?? UUID()),
-				onFocusPane: { projectId, paneId in
-					if let paneUUID = UUID(uuidString: paneId) {
-						commandAreaState(for: projectId).activePaneId = paneUUID
-						projectStore.refocusTerminal(paneId: paneId)
-					}
-				}
-			)
-			.frame(width: layoutState.sessionBarWidth)
-
-			// Divider: session bar ↔ terminal area (drags session bar width)
-			Rectangle()
-				.fill(Theme.borderSubtle)
-				.frame(width: 1)
-				.contentShape(Rectangle().inset(by: -3))
-				.onHover { h in if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
-				.gesture(
-					DragGesture(minimumDistance: 1, coordinateSpace: .global)
+			if layoutState.showSessionBar {
+				// Divider: project bar ↔ session bar (drags project bar width)
+				Rectangle()
+					.fill(Theme.borderSubtle)
+					.frame(width: 1)
+					.contentShape(Rectangle().inset(by: -3))
+					.onHover { h in if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+					.gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
 						.onChanged { value in
-							if sessionBarWidthAtDragStart == 0 {
+							if sidebarWidthAtDragStart == 0 { sidebarWidthAtDragStart = layoutState.sidebarWidth }
+							layoutState.sidebarWidth = max(100, min(300, sidebarWidthAtDragStart + value.translation.width))
+						}
+						.onEnded { _ in sidebarWidthAtDragStart = layoutState.sidebarWidth }
+					)
+
+				AgentSessionBar(
+					projects: projectStore.projects,
+					selectedProject: Binding(
+						get: { projectStore.selectedProject },
+						set: { projectStore.select($0) }
+					),
+					activeCommandState: commandAreaState(for: projectStore.selectedProject?.id ?? UUID()),
+					onFocusPane: { projectId, paneId in
+						if let paneUUID = UUID(uuidString: paneId) {
+							commandAreaState(for: projectId).activePaneId = paneUUID
+							projectStore.refocusTerminal(paneId: paneId)
+						}
+					},
+					onToggle: toggleSessionBar
+				)
+				.frame(width: layoutState.sessionBarWidth)
+				.transition(.asymmetric(
+					insertion: .modifier(
+						active: SidebarVisibilityModifier(xOffset: -14, opacity: 0),
+						identity: SidebarVisibilityModifier(xOffset: 0, opacity: 1)
+					),
+					removal: .modifier(
+						active: SidebarVisibilityModifier(xOffset: -10, opacity: 0),
+						identity: SidebarVisibilityModifier(xOffset: 0, opacity: 1)
+					)
+				))
+
+				// Divider: session bar ↔ terminal area (drags session bar width)
+				Rectangle()
+					.fill(Theme.borderSubtle)
+					.frame(width: 1)
+					.contentShape(Rectangle().inset(by: -3))
+					.onHover { h in if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+					.gesture(
+						DragGesture(minimumDistance: 1, coordinateSpace: .global)
+							.onChanged { value in
+								if sessionBarWidthAtDragStart == 0 {
+									sessionBarWidthAtDragStart = layoutState.sessionBarWidth
+								}
+								layoutState.sessionBarWidth = max(100, min(300, sessionBarWidthAtDragStart + value.translation.width))
+							}
+							.onEnded { _ in
 								sessionBarWidthAtDragStart = layoutState.sessionBarWidth
 							}
-							layoutState.sessionBarWidth = max(100, min(300, sessionBarWidthAtDragStart + value.translation.width))
-						}
-						.onEnded { _ in
-							sessionBarWidthAtDragStart = layoutState.sessionBarWidth
-						}
-				)
+					)
+			}
 		}
 	}
 
@@ -435,6 +453,13 @@ struct MainWindow: View {
 		let isShowing = !layoutState.showSidebar
 		withAnimation(Self.toggleAnimation(isShowing: isShowing)) {
 			layoutState.showSidebar.toggle()
+		}
+	}
+
+	private func toggleSessionBar() {
+		let isShowing = !layoutState.showSessionBar
+		withAnimation(Self.toggleAnimation(isShowing: isShowing)) {
+			layoutState.showSessionBar.toggle()
 		}
 	}
 
@@ -657,7 +682,11 @@ struct MainWindow: View {
 				cmds.append(PaletteCommand(title: "Reopen without Container (SSH)", icon: "arrow.uturn.backward") {
 					projectStore.closeDevContainer()
 				})
-			} else {
+				cmds.append(PaletteCommand(title: "Rebuild DevContainer", icon: "arrow.triangle.2.circlepath") {
+					projectStore.rebuildDevContainer()
+				})
+			} else if projectStore.showDevContainerBanner {
+				// Only show "Reopen in Container" when .devcontainer/devcontainer.json exists
 				cmds.append(PaletteCommand(title: "Reopen in Container", icon: "shippingbox") {
 					projectStore.openDevContainer()
 				})
@@ -679,6 +708,9 @@ struct MainWindow: View {
 		})
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
 			withAnimation(.easeOut(duration: 0.15)) { layoutState.showSidebar.toggle() }
+		})
+		cmds.append(PaletteCommand(title: "Toggle Session List", icon: "sidebar.squares.left") {
+			withAnimation(.easeOut(duration: 0.15)) { layoutState.showSessionBar.toggle() }
 		})
 		cmds.append(PaletteCommand(title: "New Project", icon: "plus") {
 			let _ = projectStore.addProject()
@@ -1060,5 +1092,6 @@ final class WindowFrameAutosaveView: NSView {
 		guard appliedWindowNumber != windowNumber else { return }
 		appliedWindowNumber = windowNumber
 		window.setFrameAutosaveName(name)
+		window.tabbingMode = .disallowed
 	}
 }

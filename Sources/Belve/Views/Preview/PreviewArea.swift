@@ -172,8 +172,8 @@ struct PreviewArea: View {
 							editedContent = newContent
 							isDirty = newContent != file.content
 						}
-					case .image, .pdf:
-						MediaPreviewView(path: file.path, sshHost: project.sshHost)
+					case .image, .video, .pdf:
+						MediaPreviewView(path: file.path, provider: project.provider)
 					case .code, .unknown:
 						CodeEditorView(
 							projectId: project.id,

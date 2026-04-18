@@ -149,6 +149,9 @@ class ProjectStore: ObservableObject {
 	}
 
 	func deleteProject(_ id: UUID) {
+		if let host = projects.first(where: { $0.id == id })?.sshHost {
+			SSHTunnelManager.shared.teardownTunnel(host: host, projectId: id)
+		}
 		projects.removeAll { $0.id == id }
 		if selectedProject?.id == id {
 			select(projects.first)
@@ -183,6 +186,11 @@ class ProjectStore: ObservableObject {
 	func setProjectFolder(_ path: String) {
 		let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
 		guard let index = indexOfSelected else { return }
+
+		// Teardown existing tunnel — project ID is about to change (withNewId below)
+		if let host = projects[index].sshHost {
+			SSHTunnelManager.shared.teardownTunnel(host: host, projectId: projects[index].id)
+		}
 
 		// Kill old persist sessions and clean sockets
 		let projShort = String(projects[index].id.uuidString.prefix(8))
@@ -317,9 +325,52 @@ class ProjectStore: ObservableObject {
 		NSLog("[Belve] DevContainer enabled for \(newProject.name)")
 	}
 
+	/// Rebuild DevContainer: stop/remove existing container on remote, then reload project.
+	/// Remote belve-setup --rebuild does the actual destroy+up.
+	func rebuildDevContainer() {
+		guard let index = indexOfSelected,
+			  case .devContainer(let sshHost, let workspace) = projects[index].workspace else {
+			NSLog("[Belve] rebuildDevContainer: no DevContainer selected")
+			return
+		}
+		let projId = projects[index].id
+		let projShort = String(projId.uuidString.prefix(8))
+
+		// Teardown existing tunnel: container IP will change after rebuild
+		SSHTunnelManager.shared.teardownTunnel(host: sshHost, projectId: projId)
+
+		// Run belve-setup --rebuild on remote (destroys existing container)
+		DispatchQueue.global().async {
+			let process = Process()
+			process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+			process.arguments = [
+				"-o", "StrictHostKeyChecking=accept-new",
+				"-o", "ConnectTimeout=10",
+				sshHost,
+				"$HOME/.belve/bin/belve-setup --rebuild --devcontainer --workspace \(workspace) --project-short \(projShort)"
+			]
+			process.standardOutput = FileHandle.nullDevice
+			process.standardError = FileHandle.nullDevice
+			do {
+				try process.run()
+				process.waitUntilExit()
+				NSLog("[Belve] rebuildDevContainer: remote exit=\(process.terminationStatus)")
+			} catch {
+				NSLog("[Belve] rebuildDevContainer: failed: \(error)")
+			}
+			DispatchQueue.main.async { [weak self] in
+				self?.reloadProject(projId)
+			}
+		}
+		NSLog("[Belve] rebuildDevContainer: started for \(projects[index].name)")
+	}
+
 	func disconnectSSH() {
 		guard let index = indexOfSelected else { return }
 		let name = projects[index].name
+		if let host = projects[index].sshHost {
+			SSHTunnelManager.shared.teardownTunnel(host: host, projectId: projects[index].id)
+		}
 		let newProject = Project(name: name, workspace: .local(path: nil))
 		projects[index] = newProject
 		saveProjects()
@@ -331,6 +382,7 @@ class ProjectStore: ObservableObject {
 		guard let index = indexOfSelected else { return }
 		let old = projects[index]
 		guard let sshHost = old.sshHost else { return }
+		SSHTunnelManager.shared.teardownTunnel(host: sshHost, projectId: old.id)
 		let newProject = Project(
 			name: old.name,
 			workspace: .ssh(host: sshHost, path: old.path)

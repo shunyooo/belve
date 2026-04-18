@@ -75,6 +75,7 @@ extension Notification.Name {
 	static let belveFocusEditor = Notification.Name("belveFocusEditor")
 	static let belveToggleEditor = Notification.Name("belveToggleEditor")
 	static let belveToggleSidebar = Notification.Name("belveToggleSidebar")
+	static let belveToggleSessionBar = Notification.Name("belveToggleSessionBar")
 	static let belveToggleFileTree = Notification.Name("belveToggleFileTree")
 	static let belveFocusFileTree = Notification.Name("belveFocusFileTree")
 	static let belveRevealFileInTree = Notification.Name("belveRevealFileInTree")
@@ -118,6 +119,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Log build info for verifying correct binary is running
 		let buildDate = binaryModificationDate()
 		NSLog("[Belve] Binary: \(Bundle.main.executableURL?.path ?? "?"), modified: \(buildDate)")
+
+		// Disable macOS window tabbing — reserves Cmd+Shift+\ for "Show Tab Overview"
+		// which conflicts with Belve's session bar toggle shortcut.
+		NSWindow.allowsAutomaticWindowTabbing = false
+
+		// Close duplicate main windows (can appear if restoration brings back tab-group state).
+		DispatchQueue.main.async {
+			let mainWindows = NSApp.windows.filter { $0.contentViewController != nil && $0.isVisible }
+			if mainWindows.count > 1 {
+				for window in mainWindows.dropFirst() {
+					window.close()
+				}
+			}
+		}
+
+		// Clean stale SSH sessions from previous app runs (prevents MaxSessions exhaustion)
+		Self.cleanupStaleBelveProcesses()
+		// Stale port forwards from a previous run point at dead control sockets; drop them.
+		SSHTunnelManager.shared.teardownAll()
 
 		// Generate launcher script for terminal sessions
 		LauncherScriptGenerator.generate()
@@ -178,7 +198,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				}
 				return nil
 			case "\\":
-				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
+				if event.modifierFlags.contains(.shift) {
+					NotificationCenter.default.post(name: .belveToggleSessionBar, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
+				}
 				return nil
 			default:
 				return event
@@ -203,6 +227,81 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		if let localKeyMonitor {
 			NSEvent.removeMonitor(localKeyMonitor)
 		}
+		SSHTunnelManager.shared.teardownAll()
+		Self.cleanupStaleBelveProcesses()
+	}
+
+	/// Kill lingering ssh processes that reference our ControlPath,
+	/// plus belve-connect / belve-setup invocations. Runs on app start/exit.
+	///
+	/// Skipped if another Belve instance is running — those processes belong to it,
+	/// and killing them would break the other instance's terminals.
+	static func cleanupStaleBelveProcesses() {
+		if otherBelveInstancesRunning() {
+			NSLog("[Belve] cleanupStaleBelveProcesses skipped — other Belve instance(s) active")
+			return
+		}
+		// Exit every existing ControlMaster cleanly before pkill, so its port-forward table
+		// is flushed. If we only kill the master, a stale forward entry can linger on the
+		// next run (different pane gets same local port → forward targets the wrong container).
+		// Order matters:
+		// 1. ssh -O exit closes ControlMasters cleanly (flushes their forward tables)
+		// 2. kill any remaining ssh/connect/setup processes (failsafe)
+		// 3. kill tcpbackend persist daemons — these cache the port they were launched
+		//    with, and on restart Swift may reassign that port to a different project;
+		//    if we leave them alive, the launcher's socket-reuse path attaches to a
+		//    daemon pointing at the wrong forward.
+		// 4. remove socket files and spec files so the next launcher run starts fresh.
+		let script = """
+		for sock in /tmp/belve-ssh-ctrl-*; do
+		    [ -S "$sock" ] || continue
+		    host=${sock#/tmp/belve-ssh-ctrl-}
+		    ssh -o ControlPath="$sock" -O exit "$host" >/dev/null 2>&1 || true
+		done
+		pkill -f 'belve-ssh-ctrl' 2>/dev/null
+		pkill -f 'belve-connect' 2>/dev/null
+		pkill -f 'belve-setup' 2>/dev/null
+		pkill -f 'belve-persist-darwin.*tcpbackend' 2>/dev/null
+		pkill -f 'belve-persist-darwin.*-socket' 2>/dev/null
+		rm -f /tmp/belve-ssh-ctrl-* 2>/dev/null
+		rm -rf /tmp/belve-shell/tunnels 2>/dev/null
+		rm -f /tmp/belve-shell/sessions/belve-*.sock 2>/dev/null
+		rm -f /tmp/belve-shell/sessions/belve-*.ver 2>/dev/null
+		rm -f /tmp/belve-shell/sessions/belve-*.sock.pid 2>/dev/null
+		true
+		"""
+		let process = Process()
+		process.executableURL = URL(fileURLWithPath: "/bin/sh")
+		process.arguments = ["-c", script]
+		process.standardOutput = FileHandle.nullDevice
+		process.standardError = FileHandle.nullDevice
+		try? process.run()
+		process.waitUntilExit()
+		NSLog("[Belve] cleanupStaleBelveProcesses done")
+	}
+
+	/// True if at least one Belve executable other than us is currently running.
+	private static func otherBelveInstancesRunning() -> Bool {
+		let mypid = ProcessInfo.processInfo.processIdentifier
+		let pgrep = Process()
+		pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+		pgrep.arguments = ["-f", "MacOS/Belve$"]
+		let pipe = Pipe()
+		pgrep.standardOutput = pipe
+		pgrep.standardError = FileHandle.nullDevice
+		do {
+			try pgrep.run()
+		} catch {
+			return false
+		}
+		let data = pipe.fileHandleForReading.readDataToEndOfFile()
+		pgrep.waitUntilExit()
+		let output = String(data: data, encoding: .utf8) ?? ""
+		let others = output
+			.split(separator: "\n")
+			.compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+			.filter { $0 != mypid }
+		return !others.isEmpty
 	}
 
 	func applicationDidBecomeActive(_ notification: Notification) {

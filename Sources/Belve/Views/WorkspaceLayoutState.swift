@@ -48,6 +48,9 @@ final class WorkspaceLayoutStateManager: ObservableObject {
 	@Published var showSidebar: Bool = true {
 		didSet { saveIfNeeded() }
 	}
+	@Published var showSessionBar: Bool = true {
+		didSet { saveIfNeeded() }
+	}
 	@Published var sidebarWidth: CGFloat = 200 {
 		didSet { saveIfNeeded() }
 	}
@@ -60,6 +63,7 @@ final class WorkspaceLayoutStateManager: ObservableObject {
 
 	private struct PersistedLayoutState: Codable {
 		let showSidebar: Bool
+		var showSessionBar: Bool?
 		let sidebarWidth: CGFloat
 		var sessionBarWidth: CGFloat?
 		let projects: [String: ProjectLayoutState]
@@ -104,6 +108,7 @@ final class WorkspaceLayoutStateManager: ObservableObject {
 	private func save() {
 		let persisted = PersistedLayoutState(
 			showSidebar: showSidebar,
+			showSessionBar: showSessionBar,
 			sidebarWidth: sidebarWidth,
 			sessionBarWidth: sessionBarWidth,
 			projects: projectStates.reduce(into: [:]) { result, pair in
@@ -124,6 +129,7 @@ final class WorkspaceLayoutStateManager: ObservableObject {
 
 		isRestoring = true
 		showSidebar = persisted.showSidebar
+		showSessionBar = persisted.showSessionBar ?? true
 		sidebarWidth = persisted.sidebarWidth
 		sessionBarWidth = persisted.sessionBarWidth ?? 160
 		projectStates = persisted.projects.reduce(into: [:]) { result, pair in

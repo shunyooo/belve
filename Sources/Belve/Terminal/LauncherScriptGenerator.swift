@@ -24,12 +24,11 @@ enum LauncherScriptGenerator {
 		#!/bin/bash
 		export TERM=xterm-256color
 		BELVE_BIN_DIR="\#(embeddedBinDir.path)"
-		BELVE_SSH_CONTROL="/tmp/belve-ssh-ctrl-%r@%h:%p"
-		SETUP_COMMON="-o ControlMaster=auto -o ControlPath=$BELVE_SSH_CONTROL -o ControlPersist=30 -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+		# Literal path (not template) so Swift-side SSHTunnelManager can share the same ControlMaster
+		BELVE_SSH_CONTROL="/tmp/belve-ssh-ctrl-$BELVE_SSH_HOST"
+		SETUP_COMMON="-o ControlMaster=auto -o ControlPath=$BELVE_SSH_CONTROL -o ControlPersist=600 -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 		SCP_OPTS="$SETUP_COMMON"
 		SETUP_SSH="ssh $SETUP_COMMON"
-		# Connect reuses ControlMaster from setup phase for instant connection.
-		# SIGWINCH propagation is handled by belve-persist TCP protocol, not SSH.
 		CONNECT_SSH="ssh $SETUP_COMMON -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes -o SetEnv=TERM=xterm-256color"
 
 		# Deploy all scripts + persist binaries in a single SCP+SSH.
@@ -45,7 +44,6 @@ enum LauncherScriptGenerator {
 		    cp "$BELVE_BIN_DIR/belve" "$staging/bin/"
 		    cp "$BELVE_BIN_DIR/claude" "$staging/bin/"
 		    cp "$BELVE_BIN_DIR/codex" "$staging/bin/"
-		    cp "$BELVE_BIN_DIR/belve-connect" "$staging/bin/"
 		    cp "$BELVE_BIN_DIR/belve-setup" "$staging/bin/"
 		    cp "$BELVE_BIN_DIR/belve-persist-linux-amd64" "$staging/bin/"
 		    cp "$BELVE_BIN_DIR/belve-persist-linux-arm64" "$staging/bin/"
@@ -98,49 +96,117 @@ enum LauncherScriptGenerator {
 
 		    belve_status "Connecting to $BELVE_SSH_HOST..."
 
+		    # Serialize deploy across all projects (mkdir-based lock)
+		    DEPLOY_LOCK="/tmp/belve-deploy.lock"
+		    while ! mkdir "$DEPLOY_LOCK" 2>/dev/null; do sleep 0.2; done
+		    trap "rmdir '$DEPLOY_LOCK' 2>/dev/null" EXIT
+
+		    # Ensure ControlMaster is established (skip if already exists)
+		    if ! ssh -o ControlPath="$BELVE_SSH_CONTROL" -O check "$BELVE_SSH_HOST" 2>/dev/null; then
+		        ssh -o ControlMaster=yes -o ControlPath="$BELVE_SSH_CONTROL" -o ControlPersist=600 \
+		            -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+		            -fN "$BELVE_SSH_HOST" 2>/dev/null || true
+		    fi
+
 		    # Deploy all files in a single tar (1 SCP + 1 SSH)
 		    deploy_bundle "$BELVE_SSH_HOST"
+		    rmdir "$DEPLOY_LOCK" 2>/dev/null
+		    trap - EXIT
 
-		    # Run setup if needed (DevContainer: devcontainer up + container deploy)
-		    NEED_SETUP=1
+		    # Always run belve-setup — it's idempotent. Fast path (container running) just
+		    # ensures the broker is alive; slow path (first connect / rebuilt) runs `devcontainer up`.
 		    if [ -n "$BELVE_DEVCONTAINER" ]; then
-		        $SETUP_SSH "$BELVE_SSH_HOST" "test -f ~/.belve/projects/${PROJ_SHORT}.env" 2>/dev/null && NEED_SETUP=0
+		        belve_status "Preparing DevContainer..."
+		        SETUP_ARGS="--devcontainer --workspace $BELVE_WORKDIR --project-short $PROJ_SHORT"
+		        $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup $SETUP_ARGS" \
+		            || { belve_status "Setup failed"; echo "Setup failed"; exit 1; }
 		    else
-		        NEED_SETUP=0
+		        belve_status "Preparing remote broker..."
+		        $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup" \
+		            || { belve_status "Setup failed"; echo "Setup failed"; exit 1; }
 		    fi
 
-		    if [ "$NEED_SETUP" = "1" ]; then
-		        if [ -n "$BELVE_DEVCONTAINER" ]; then
-		            belve_status "Starting DevContainer..."
-		        else
-		            belve_status "Setting up remote environment..."
-		        fi
-		        SETUP_ARGS=""
-		        if [ -n "$BELVE_DEVCONTAINER" ] && [ -n "$BELVE_WORKDIR" ]; then
-		            SETUP_ARGS="--devcontainer --workspace $BELVE_WORKDIR --project-short $PROJ_SHORT"
-		        fi
-		        $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup $SETUP_ARGS"
-		        [ $? -eq 0 ] || { belve_status "Setup failed"; echo "Setup failed"; exit 1; }
+		    # --- Establish SSH port forward to broker (ssh -O forward on existing ControlMaster) ---
+		    # Swift (SSHTunnelManager.reservePort) pre-allocated BELVE_LOCAL_BROKER_PORT and will
+		    # cancel the forward on project close / app exit.
+		    if [ -z "${BELVE_LOCAL_BROKER_PORT:-}" ]; then
+		        belve_status "Port not reserved"
+		        echo "[belve] ERROR: BELVE_LOCAL_BROKER_PORT not set" >&2
+		        exit 1
 		    fi
 
-		    # --- Connect (interactive SSH, single command) ---
-		    # Ensure ControlMaster is ready before connecting
-		    ssh -o ControlPath="$BELVE_SSH_CONTROL" -O check "$BELVE_SSH_HOST" 2>/dev/null || \
-		        $SETUP_SSH "$BELVE_SSH_HOST" "true" 2>/dev/null
-		    belve_status "Attaching session..."
-		    CONNECT_ARGS="--session $SESSION_NAME --cols ${BELVE_COLS:-80} --rows ${BELVE_ROWS:-24}"
-		    CONNECT_ARGS="$CONNECT_ARGS --project-id ${BELVE_PROJECT_ID:-} --pane-index ${BELVE_PANE_INDEX:-0} --pane-id ${BELVE_PANE_ID:-}"
 		    if [ -n "$BELVE_DEVCONTAINER" ]; then
-		        CONNECT_ARGS="$CONNECT_ARGS --devcontainer --project-short $PROJ_SHORT"
-		    elif [ -n "$BELVE_WORKDIR" ]; then
-		        CONNECT_ARGS="$CONNECT_ARGS --workdir $BELVE_WORKDIR"
+		        # Read container IP from project env file on VM
+		        CIP=$($SETUP_SSH "$BELVE_SSH_HOST" ". ~/.belve/projects/${PROJ_SHORT}.env && echo \"\$CIP\"" 2>/dev/null | tr -d '\r\n')
+		        if [ -z "$CIP" ]; then
+		            belve_status "Container not ready"
+		            echo "[belve] ERROR: container IP not found in ~/.belve/projects/${PROJ_SHORT}.env" >&2
+		            exit 1
+		        fi
+		        FORWARD_TARGET="$CIP:19222"
+		    else
+		        FORWARD_TARGET="127.0.0.1:19222"
 		    fi
-		    $CONNECT_SSH -tt "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-connect $CONNECT_ARGS"
 
-		    echo ""
-		    echo "🔌 SSH disconnected."
-		    echo "Reconnect from Belve when you're ready."
-		    exit 0
+		    # Add port forward. Cancel any forward spec recorded from a previous session
+		    # (SSHTunnelManager writes ${projId}.spec with the last-used target, so we can
+		    # cancel it precisely even if the CIP has changed across restarts/rebuilds).
+		    SPEC_DIR="\#(tmpDir)/tunnels"
+		    mkdir -p "$SPEC_DIR"
+		    SPEC_FILE="$SPEC_DIR/${BELVE_PROJECT_ID}.spec"
+		    if [ -f "$SPEC_FILE" ]; then
+		        STALE_SPEC=$(cat "$SPEC_FILE")
+		        [ -n "$STALE_SPEC" ] && ssh -o ControlPath="$BELVE_SSH_CONTROL" -O cancel -L "$STALE_SPEC" "$BELVE_SSH_HOST" 2>/dev/null || true
+		    fi
+		    # Also try cancel with the new spec (handles the first-forward case where no stale exists)
+		    ssh -o ControlPath="$BELVE_SSH_CONTROL" -O cancel -L "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" "$BELVE_SSH_HOST" 2>/dev/null || true
+		    FORWARD_ERR=$(ssh -o ControlPath="$BELVE_SSH_CONTROL" -O forward -L "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" "$BELVE_SSH_HOST" 2>&1)
+		    if [ $? -ne 0 ]; then
+		        belve_status "Forward failed"
+		        echo "[belve] ERROR: ssh -O forward -L $BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET failed: $FORWARD_ERR" >&2
+		        exit 1
+		    fi
+		    # Record actual forward spec so Swift's teardownTunnel can cancel precisely later
+		    printf '%s' "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" > "$SPEC_FILE"
+
+		    belve_status "Attaching session..."
+		    PERSIST_BIN="$BELVE_BIN_DIR/belve-persist-darwin-arm64"
+		    PERSIST_SOCK="\#(tmpDir)/sessions/${SESSION_NAME}.sock"
+		    VERFILE="\#(tmpDir)/sessions/${SESSION_NAME}.ver"
+		    mkdir -p "\#(tmpDir)/sessions"
+
+		    # Version check: kill stale master if binary was updated
+		    CURRENT_VER=$(md5 -q "$PERSIST_BIN" 2>/dev/null || md5sum "$PERSIST_BIN" 2>/dev/null | cut -d' ' -f1)
+		    if [ -S "$PERSIST_SOCK" ] && [ -f "$VERFILE" ]; then
+		        OLD_VER=$(cat "$VERFILE" 2>/dev/null)
+		        if [ "$CURRENT_VER" != "$OLD_VER" ]; then
+		            pkill -f "belve-persist.*$PERSIST_SOCK" 2>/dev/null || true
+		            rm -f "$PERSIST_SOCK" "$VERFILE"
+		        fi
+		    fi
+
+		    # Attach to existing local master if present, else start one, then attach as client.
+		    # tcpbackend mode is daemon-only; the SAME launcher process has to also be the PTY
+		    # client (via a second `-socket`-only invocation that calls tryAttach).
+		    if [ -S "$PERSIST_SOCK" ]; then
+		        "$PERSIST_BIN" -socket "$PERSIST_SOCK" && exit 0
+		        rm -f "$PERSIST_SOCK"
+		    fi
+		    echo "$CURRENT_VER" > "$VERFILE"
+
+		    # 1) Start tcpbackend daemon in the background (detached, no tty)
+		    nohup "$PERSIST_BIN" -socket "$PERSIST_SOCK" \
+		        -cols "${BELVE_COLS:-80}" -rows "${BELVE_ROWS:-24}" \
+		        -tcpbackend "127.0.0.1:$BELVE_LOCAL_BROKER_PORT" \
+		        -session "$SESSION_NAME" >/dev/null 2>&1 &
+		    disown 2>/dev/null || true
+
+		    # 2) Wait for socket to appear, then attach as client (exec replaces this shell)
+		    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+		        [ -S "$PERSIST_SOCK" ] && break
+		        sleep 0.1
+		    done
+		    exec "$PERSIST_BIN" -socket "$PERSIST_SOCK"
 		fi
 
 		# Local shell setup

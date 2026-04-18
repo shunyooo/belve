@@ -389,6 +389,7 @@ type tcpSession struct {
 	cols, rows uint16
 	command   string
 	args      []string
+	extraEnv  []string // per-session env (BELVE_PANE_ID, BELVE_PROJECT_ID, ...)
 	alive     bool // false after child exits without respawn
 }
 
@@ -450,7 +451,7 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 
 	logf("broker started on %s", listenAddr)
 
-	getOrCreateSession := func(name string, initCols, initRows uint16) *tcpSession {
+	getOrCreateSession := func(name string, initCols, initRows uint16, extraEnv []string) *tcpSession {
 		mu.Lock()
 		defer mu.Unlock()
 		if s, ok := sessions[name]; ok && s.alive {
@@ -466,12 +467,13 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 		}
 		// Create new session
 		s := &tcpSession{
-			name:    name,
-			command: command,
-			args:    extraArgs,
-			cols:    c,
-			rows:    r,
-			alive:   true,
+			name:     name,
+			command:  command,
+			args:     extraArgs,
+			cols:     c,
+			rows:     r,
+			extraEnv: extraEnv,
+			alive:    true,
 		}
 		sessions[name] = s
 		go runSessionPTY(s, logf)
@@ -493,19 +495,29 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 				c.Close()
 				return
 			}
-			// Parse session name and optional initial size
+			// Parse session name, optional initial size, and optional env list.
+			// Format: name \0 cols:2 rows:2 [KEY=VAL \0 KEY=VAL \0 ...]
 			var name string
 			var initCols, initRows uint16
+			var extraEnv []string
 			if idx := bytes.IndexByte(payload, 0); idx >= 0 && len(payload) >= idx+5 {
 				name = string(payload[:idx])
 				initCols = binary.BigEndian.Uint16(payload[idx+1 : idx+3])
 				initRows = binary.BigEndian.Uint16(payload[idx+3 : idx+5])
+				if len(payload) > idx+5 {
+					for _, entry := range bytes.Split(payload[idx+5:], []byte{0}) {
+						if len(entry) > 0 {
+							extraEnv = append(extraEnv, string(entry))
+						}
+					}
+				}
 			} else {
 				name = string(payload)
 			}
-			logf("client connected: session=%s cols=%d rows=%d from=%s", name, initCols, initRows, c.RemoteAddr())
+			logf("client connected: session=%s cols=%d rows=%d env=%d from=%s",
+				name, initCols, initRows, len(extraEnv), c.RemoteAddr())
 
-			sess := getOrCreateSession(name, initCols, initRows)
+			sess := getOrCreateSession(name, initCols, initRows, extraEnv)
 			sess.addClient(c)
 			defer func() {
 				sess.removeClient(c)
@@ -588,7 +600,26 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 		cmd.Stdout = ttyFile
 		cmd.Stderr = ttyFile
 		cmd.SysProcAttr = setSysProcAttr(ttyFile)
-		cmd.Env = os.Environ()
+		// Merge broker env with per-session env from handshake (BELVE_PANE_ID, etc).
+		// Session values override broker-level values.
+		env := os.Environ()
+		if len(s.extraEnv) > 0 {
+			overrides := map[string]bool{}
+			for _, kv := range s.extraEnv {
+				if eq := strings.IndexByte(kv, '='); eq > 0 {
+					overrides[kv[:eq]] = true
+				}
+			}
+			filtered := env[:0]
+			for _, e := range env {
+				if eq := strings.IndexByte(e, '='); eq > 0 && overrides[e[:eq]] {
+					continue
+				}
+				filtered = append(filtered, e)
+			}
+			env = append(filtered, s.extraEnv...)
+		}
+		cmd.Env = env
 		if err := cmd.Start(); err != nil {
 			logf("session %s: exec error: %v", s.name, err)
 			ttyFile.Close()
@@ -608,22 +639,80 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 
 		logf("session %s: child started pid=%d", s.name, pid)
 
-		// PTY reader → broadcast
+		// PTY reader → broadcast (with coalesce: batch small chunks within 5ms)
 		ptyDone := make(chan struct{})
+		readerDone := make(chan struct{})
+		dataCh := make(chan []byte, 64)
+
+		// Goroutine A: read PTY, send chunks to channel
 		go func() {
-			defer close(ptyDone)
+			defer close(readerDone)
 			buf := make([]byte, 32*1024)
 			for {
 				n, err := ptyFile.Read(buf)
 				if n > 0 {
+					logf("session %s: pty-read n=%d", s.name, n)
 					data := make([]byte, n)
 					copy(data, buf[:n])
-					s.broadcast(data)
+					dataCh <- data
 				}
 				if err != nil {
-					break
+					return
 				}
 			}
+		}()
+
+		// Goroutine B: coalesce chunks and broadcast
+		go func() {
+			defer close(ptyDone)
+			const coalesceWindow = 5 * time.Millisecond
+			const maxAccumSize = 32 * 1024
+			var accum []byte
+			flush := func() {
+				if len(accum) > 0 {
+					logf("session %s: broadcast n=%d", s.name, len(accum))
+					s.broadcast(accum)
+					accum = nil
+				}
+			}
+			for {
+				if len(accum) == 0 {
+					// Wait for first chunk (blocking)
+					data, ok := <-dataCh
+					if !ok {
+						flush()
+						return
+					}
+					accum = append(accum, data...)
+				}
+				// Have at least one chunk; try to coalesce more
+				timer := time.NewTimer(coalesceWindow)
+				coalescing := true
+				for coalescing {
+					select {
+					case data, ok := <-dataCh:
+						if !ok {
+							timer.Stop()
+							flush()
+							return
+						}
+						accum = append(accum, data...)
+						if len(accum) >= maxAccumSize {
+							timer.Stop()
+							coalescing = false
+						}
+					case <-timer.C:
+						coalescing = false
+					}
+				}
+				flush()
+			}
+		}()
+
+		// Wait for reader to finish, then close channel to signal coalescer
+		go func() {
+			<-readerDone
+			close(dataCh)
 		}()
 
 		waitErr := cmd.Wait()
@@ -789,13 +878,22 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName string, cols, rows uint16
 			continue
 		}
 
-		// Send session handshake (name + \0 + cols:2 + rows:2)
+		// Send session handshake:
+		//   name \0 cols:2 rows:2 [KEY=VAL \0 ...]
+		// Forward BELVE_* env vars so the broker can apply them to the per-session
+		// shell (needed for claude-hook OSC notifications that reference BELVE_PANE_ID).
 		mu.Lock()
 		sessionPayload := append([]byte(sessName), 0)
 		szBuf := make([]byte, 4)
 		binary.BigEndian.PutUint16(szBuf[0:2], cols)
 		binary.BigEndian.PutUint16(szBuf[2:4], rows)
 		sessionPayload = append(sessionPayload, szBuf...)
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, "BELVE_") {
+				sessionPayload = append(sessionPayload, []byte(kv)...)
+				sessionPayload = append(sessionPayload, 0)
+			}
+		}
 		mu.Unlock()
 		if err := writeMsg(conn, msgSession, sessionPayload); err != nil {
 			logf("session handshake failed: %v", err)

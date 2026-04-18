@@ -6,18 +6,24 @@ struct AgentSessionBar: View {
 	@Binding var selectedProject: Project?
 	@ObservedObject var activeCommandState: CommandAreaState
 	var onFocusPane: ((UUID, String) -> Void)?
+	var onToggle: (() -> Void)?
 	@EnvironmentObject var notificationStore: NotificationStore
+	@Namespace private var focusNamespace
 
 	private func projectName(for id: UUID) -> String? {
 		projects.first { $0.id == id }?.name
 	}
 
 	private var activeSessions: [AgentSession] {
-		notificationStore.sessions.filter { !$0.isArchived }
+		notificationStore.sessions
+			.filter { !$0.isArchived }
+			.sorted { $0.updatedAt > $1.updatedAt }
 	}
 
 	private var archivedSessions: [AgentSession] {
-		notificationStore.sessions.filter { $0.isArchived }
+		notificationStore.sessions
+			.filter { $0.isArchived }
+			.sorted { $0.updatedAt > $1.updatedAt }
 	}
 
 	var body: some View {
@@ -51,6 +57,14 @@ struct AgentSessionBar: View {
 				.padding(.top, 4)
 			}
 		}
+		.overlay(alignment: .topLeading) {
+			if let onToggle {
+				SidebarIconButton(icon: "list.bullet.rectangle.fill", action: onToggle)
+					.padding(.leading, 6)
+					.padding(.top, 4)
+			}
+		}
+		.animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18), value: activeCommandState.activePaneId)
 		.onReceive(NotificationCenter.default.publisher(for: .belvePaneClosed)) { notif in
 			if let paneId = notif.userInfo?["paneId"] as? String {
 				notificationStore.archiveSessionsForPane(paneId)
@@ -62,7 +76,8 @@ struct AgentSessionBar: View {
 		SessionRow(
 			session: session,
 			projectName: projectName(for: session.projectId),
-			isFocused: !session.isArchived && session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId
+			isFocused: !session.isArchived && session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId,
+			focusNamespace: focusNamespace
 		)
 		.onTapGesture {
 			if let project = projects.first(where: { $0.id == session.projectId }) {
@@ -81,6 +96,7 @@ private struct SessionRow: View {
 	let session: AgentSession
 	let projectName: String?
 	var isFocused: Bool = false
+	var focusNamespace: Namespace.ID?
 	@State private var isHovering = false
 
 	private var statusColor: Color {
@@ -188,15 +204,39 @@ private struct SessionRow: View {
 		.padding(.horizontal, 10)
 		.padding(.vertical, 7)
 		.background(
-			RoundedRectangle(cornerRadius: 4)
-				.fill(isFocused ? Theme.surfaceActive : (isVisible ? Theme.surfaceActive.opacity(0.3) : (isHovering ? Theme.surfaceHover : Color.clear)))
+			ZStack {
+				if !isFocused && isVisible {
+					RoundedRectangle(cornerRadius: 4)
+						.fill(Theme.surfaceActive.opacity(0.3))
+				} else if !isFocused && isHovering {
+					RoundedRectangle(cornerRadius: 4)
+						.fill(Theme.surfaceHover)
+				}
+				if isFocused {
+					if let ns = focusNamespace {
+						RoundedRectangle(cornerRadius: 4)
+							.fill(Theme.surfaceActive)
+							.matchedGeometryEffect(id: "sessionFocusBackground", in: ns)
+					} else {
+						RoundedRectangle(cornerRadius: 4)
+							.fill(Theme.surfaceActive)
+					}
+				}
+			}
 		)
 		.overlay(
 			HStack {
 				if isFocused {
-					RoundedRectangle(cornerRadius: 1)
-						.fill(Theme.accent)
-						.frame(width: 2, height: 14)
+					if let ns = focusNamespace {
+						RoundedRectangle(cornerRadius: 1)
+							.fill(Theme.accent)
+							.frame(width: 2, height: 14)
+							.matchedGeometryEffect(id: "sessionFocusBar", in: ns)
+					} else {
+						RoundedRectangle(cornerRadius: 1)
+							.fill(Theme.accent)
+							.frame(width: 2, height: 14)
+					}
 				}
 				Spacer()
 			}
