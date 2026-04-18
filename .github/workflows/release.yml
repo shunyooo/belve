@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name (e.g. v2.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Install npm deps
+        run: npm install
+
+      - name: Build Belve.app
+        run: ./scripts/build-app.sh
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Package .dmg
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+          DMG="Belve-${TAG}.dmg"
+          mkdir -p dmg-staging
+          cp -R Belve.app dmg-staging/
+          create-dmg \
+            --volname "Belve ${TAG}" \
+            --window-pos 200 120 \
+            --window-size 640 360 \
+            --icon-size 120 \
+            --icon "Belve.app" 160 180 \
+            --app-drop-link 480 180 \
+            --hide-extension "Belve.app" \
+            --no-internet-enable \
+            "$DMG" \
+            dmg-staging/
+          shasum -a 256 "$DMG" > "$DMG.sha256"
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Belve-${{ steps.tag.outputs.name }}
+          path: |
+            ${{ env.DMG }}
+            ${{ env.DMG }}.sha256
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          files: |
+            ${{ env.DMG }}
+            ${{ env.DMG }}.sha256
+          body: |
+            ## Install
+
+            1. Download `Belve-${{ steps.tag.outputs.name }}.dmg` below.
+            2. Open the DMG and drag `Belve.app` into `Applications`.
+            3. First launch: right-click `Belve.app` → **Open** (ad-hoc signed, so macOS Gatekeeper asks for confirmation once).
+               Alternative: `xattr -cr /Applications/Belve.app`
+
+            Requires macOS 14 or later.

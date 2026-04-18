@@ -41,14 +41,25 @@ Coding agents and remote dev make you juggle terminals across hosts, containers,
 
 ## Install
 
-> Belve is not yet distributed as a prebuilt `.app`. Build from source below.
+Download the latest `Belve-vX.Y.Z.dmg` from the [Releases](https://github.com/shunyooo/belve/releases) page, open it, and drag `Belve.app` into `Applications`.
+
+Because Belve is ad-hoc signed (no paid Apple Developer ID yet), the first launch needs a one-time Gatekeeper confirmation:
 
 ```bash
-# Prerequisites: Xcode 15+, Node 18+, Go 1.21+
+# Option A — right-click Belve.app → Open → "Open" in the warning dialog
+# Option B — strip the quarantine attribute
+xattr -cr /Applications/Belve.app
+```
+
+Subsequent launches open normally. Requires macOS 14+.
+
+### Build from source
+
+```bash
+# Prerequisites: Xcode 15+, Node 20+, Go 1.21+
 git clone https://github.com/shunyooo/belve.git
 cd belve
 npm install
-
 ./scripts/build-app.sh
 open Belve.app
 ```
