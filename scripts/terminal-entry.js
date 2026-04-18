@@ -1,5 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
 // WebLinksAddon replaced by custom link provider (supports multi-line URLs)
 
 const fitAddon = new FitAddon();
@@ -190,6 +191,36 @@ term.attachCustomKeyEventHandler(function(e) {
 });
 
 term.open(terminalContainer);
+
+// GPU-accelerated renderer via WebGL. On context loss, retry before giving up —
+// GPU can be reclaimed transiently (sleep/wake, another app taking the GPU), and
+// a fresh addon instance usually recovers. Permanent fallback to DOM only if
+// reinitialization keeps failing.
+(function attachWebgl() {
+	var retries = 0;
+	var maxRetries = 3;
+	var retryDelayMs = 800;
+
+	function load() {
+		try {
+			var webgl = new WebglAddon();
+			webgl.onContextLoss(function() {
+				webgl.dispose();
+				if (retries < maxRetries) {
+					retries++;
+					setTimeout(load, retryDelayMs);
+				}
+				// else: give up, xterm.js stays on DOM renderer.
+			});
+			term.loadAddon(webgl);
+			retries = 0;  // successful (re)load resets the counter
+		} catch (e) {
+			// WebGL unavailable — stay on the DOM renderer.
+		}
+	}
+	load();
+})();
+
 window.term = term;
 window.fitAddon = fitAddon;
 
