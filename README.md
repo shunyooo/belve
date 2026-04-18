@@ -17,17 +17,6 @@
 
 Belve is a single-window, native macOS app that brings **terminal, code editor, file tree, and Markdown WYSIWYG** together — across local, SSH, and DevContainer targets. Built in Swift / SwiftUI from the ground up. No Electron. One process.
 
-## Why Belve?
-
-Coding agents and remote dev make you juggle terminals across hosts, containers, and local dirs. Existing tools either lock you into one workflow (IDE + SSH plugin) or force Electron bloat. Belve sits in between: **one window, many projects, native speed**, and first-class support for agent session tracking.
-
-### Pain points it removes
-
-- **SSH `MaxSessions` exhaustion** — Belve multiplexes every pane over a single ControlMaster connection with dynamic port forwards.
-- **Lost terminal state on disconnect** — `belve-persist` (Go) keeps the PTY alive on the remote so reconnects resume instantly.
-- **Context-switching chaos** — Every project keeps its own terminals, editor, and file tree in isolated state.
-- **Agent blindness** — Claude Code and Codex hooks are captured session-wide and surfaced in real time.
-
 ## Features
 
 - 🧱 **Multi-project sidebar** — Independent state per project, smooth cross-project switching (`Cmd+[` / `Cmd+]`).
