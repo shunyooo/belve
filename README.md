@@ -77,9 +77,9 @@ swift package clean && ./scripts/build-app.sh
 
 - [CLAUDE.md](CLAUDE.md) — project guide (build, test, conventions)
 - [docs/architecture.md](docs/architecture.md) — architecture overview
-- [docs/DESIGN.md](docs/DESIGN.md) — design principles
 - [docs/development-guide.md](docs/development-guide.md) — developer workflow
-- [docs/TODO.md](docs/TODO.md) — roadmap
+- [docs/todo.md](docs/todo.md) — roadmap
+- [docs/notes/](docs/notes/) — dated notes and design memos
 
 ## Versioning
 
