@@ -9,7 +9,7 @@
     <img src="https://img.shields.io/badge/License-ISC-blue.svg" alt="License: ISC">
   </p>
   <p align="center">
-    <a href="#features">Features</a> · <a href="#install">Install</a> · <a href="#quick-start">Quick Start</a> · <a href="#architecture">Architecture</a> · <a href="#docs">Docs</a>
+    <a href="#features">Features</a> · <a href="#install">Install</a> · <a href="#stack">Stack</a> · <a href="#docs">Docs</a>
   </p>
 </p>
 
@@ -60,40 +60,6 @@ Clean build if SPM caches get stuck:
 ```bash
 swift package clean && ./scripts/build-app.sh
 ```
-
-## Quick Start
-
-1. Launch Belve and create a project from the sidebar (or `Cmd+N`).
-2. Point it at a local folder, an SSH host from your `~/.ssh/config`, or open in a DevContainer.
-3. Split panes (`Cmd+D` vertical, `Cmd+Shift+D` horizontal). Run your agents, shells, or dev servers.
-4. Open files from the file tree to drop them in the CodeMirror editor. `.md` opens in WYSIWYG mode.
-5. Toggle the session bar with `Cmd+Shift+\` to watch live Claude Code / Codex activity across projects.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    subgraph Mac["macOS (Belve.app)"]
-        UI[SwiftUI UI]
-        WK[WKWebView<br/>xterm.js / CodeMirror / Milkdown]
-        LP[belve-persist<br/>local broker]
-        SSH[ssh ControlMaster<br/>single session]
-    end
-
-    subgraph Remote["VM / DevContainer"]
-        BR[belve-persist<br/>remote broker]
-        PTY[PTY + shell]
-    end
-
-    UI --> WK
-    UI --> LP
-    LP -- tcp multiplex --> SSH
-    SSH -- port forward --> BR
-    BR --> PTY
-```
-
-- **One SSH session per host** — every terminal pane rides the same port-forwarded TCP connection, multiplexed by `belve-persist`.
-- **One process** — no renderer subprocesses, no Node runtime. Just Swift + WebKit + a Go sidecar for PTY persistence.
 
 ## Stack
 
