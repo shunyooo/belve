@@ -679,6 +679,18 @@ struct XTermTerminalView: NSViewRepresentable {
 			let parts = splitPathAndLocation(rawPath)
 			let resolved = resolveTerminalPath(parts.path, in: project)
 			guard let resolved else { return }
+
+			// Check if it's a directory — reveal in file tree instead of opening as file
+			let isDir = project.provider.run("test -d \(shellQuote(resolved)) && echo yes || echo no")?.trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
+			if isDir {
+				NotificationCenter.default.post(
+					name: .belveRevealFileInTree,
+					object: nil,
+					userInfo: ["projectId": project.id, "path": resolved]
+				)
+				return
+			}
+
 			NotificationCenter.default.post(
 				name: .belveOpenFileFromTerminal,
 				object: nil,
@@ -689,6 +701,10 @@ struct XTermTerminalView: NSViewRepresentable {
 					"column": parts.column as Any
 				]
 			)
+		}
+
+		private func shellQuote(_ s: String) -> String {
+			"'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
 		}
 
 		private func resolveTerminalPath(_ rawPath: String, in project: Project) -> String? {
@@ -716,6 +732,11 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			for path in candidates {
 				if provider.fileExists(path) {
+					return path
+				}
+				// Also check directories (fileExists only checks files)
+				let isDirCheck = provider.run("test -d \(shellQuote(path)) && echo yes || echo no")?.trimmingCharacters(in: .whitespacesAndNewlines)
+				if isDirCheck == "yes" {
 					return path
 				}
 			}
