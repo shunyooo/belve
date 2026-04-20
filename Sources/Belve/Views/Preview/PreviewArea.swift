@@ -23,6 +23,9 @@ struct PreviewArea: View {
 	@EnvironmentObject var projectStore: ProjectStore
 	@StateObject private var fileTreeState = FileTreeState()
 	@State private var isDirty = false
+	/// The on-disk content (updated on successful save). Used as the reference for
+	/// dirty-check without re-assigning openFile (which would re-init the editor).
+	@State private var savedContentReference: String = ""
 	@State private var editedContent: String = ""
 	@State private var loadingPath: String?
 	@State private var isFileSearchPresented = false
@@ -33,6 +36,7 @@ struct PreviewArea: View {
 	@State private var searchRevision = 0
 	@State private var searchWorkItem: DispatchWorkItem?
 	@FocusState private var isFileSearchFocused: Bool
+	@State private var isEditorFocused: Bool = false
 
 	private var rootPath: String {
 		project.effectivePath
@@ -90,6 +94,7 @@ struct PreviewArea: View {
 		.onChange(of: openFile) {
 			isDirty = false
 			editedContent = openFile?.content ?? ""
+			savedContentReference = openFile?.content ?? ""
 			guard let file = openFile else { return }
 			NotificationCenter.default.post(
 				name: .belveRevealFileInTree,
@@ -130,8 +135,28 @@ struct PreviewArea: View {
 		}
 	}
 
-	@ViewBuilder
 	private var editorContent: some View {
+		editorContentBody
+			.overlay(FocusBorderOverlay(isActive: isEditorFocused))
+			.onReceive(NotificationCenter.default.publisher(for: .belveEditorWebViewDidFocus)) { _ in
+				withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+					isEditorFocused = true
+				}
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .belveTerminalFocused)) { _ in
+				withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+					isEditorFocused = false
+				}
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .belveFileTreeFocused)) { _ in
+				withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+					isEditorFocused = false
+				}
+			}
+	}
+
+	@ViewBuilder
+	private var editorContentBody: some View {
 		if let file = openFile {
 			VStack(spacing: 0) {
 				HStack(spacing: 6) {
@@ -170,7 +195,7 @@ struct PreviewArea: View {
 					case .markdown:
 						MarkdownEditorView(projectId: project.id, content: file.content) { newContent in
 							editedContent = newContent
-							isDirty = newContent != file.content
+							isDirty = newContent != savedContentReference
 						}
 					case .image, .video, .pdf:
 						MediaPreviewView(path: file.path, provider: project.provider)
@@ -186,7 +211,7 @@ struct PreviewArea: View {
 							onDefinitionHoverRequest: handleDefinitionHoverRequest
 						) { newContent in
 							editedContent = newContent
-							isDirty = newContent != file.content
+							isDirty = newContent != savedContentReference
 						}
 					}
 				}
@@ -456,17 +481,16 @@ struct PreviewArea: View {
 	func saveCurrentFile() {
 		guard let file = openFile, isDirty else { return }
 		let provider = project.provider
+		let contentToSave = editedContent
 		DispatchQueue.global().async {
-			let success = provider.writeFile(file.path, content: editedContent)
+			let success = provider.writeFile(file.path, content: contentToSave)
 			DispatchQueue.main.async {
 				if success {
-					openFile = OpenFile(
-						path: file.path,
-						content: editedContent,
-						line: file.line,
-						column: file.column
-					)
+					// Don't re-assign openFile — that triggers updateNSView in the editor
+					// and re-initializes CodeMirror, losing focus + caret. Just mark clean.
 					isDirty = false
+					// Update the "reference" content so the dirty check works next edit.
+					savedContentReference = contentToSave
 				}
 			}
 		}

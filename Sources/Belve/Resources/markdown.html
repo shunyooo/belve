@@ -28,6 +28,74 @@ html, body {
 .milkdown .ProseMirror p { font-size: 14px !important; line-height: 1.6 !important; }
 </style>
 <style>/* MARKDOWN_CSS */</style>
+<style>
+/* Dark theme overrides for Milkdown Crepe (defaults ship light). */
+:root, .milkdown {
+	--crepe-color-background: #1a1a1f;
+	--crepe-color-on-background: #e0e3eb;
+	--crepe-color-surface: #242431;
+	--crepe-color-surface-low: #1f1f29;
+	--crepe-color-on-surface: #e0e3eb;
+	--crepe-color-on-surface-variant: #b8bccb;
+	/* Outline drives bullet markers + checkbox borders — keep visible on dark */
+	--crepe-color-outline: #9aa0b4;
+	--crepe-color-primary: #89b4fa;
+	--crepe-color-secondary: #2d3050;
+	--crepe-color-on-secondary: #cdd6f4;
+	--crepe-color-inverse: #e0e3eb;
+	--crepe-color-on-inverse: #1a1a1f;
+	--crepe-color-hover: #2e2e3e;
+	--crepe-color-selected: #3a3d5f;
+	--crepe-color-inline-code: #f38ba8;
+	--crepe-color-inline-area: #2a2a38;
+	--crepe-color-error: #f38ba8;
+	--crepe-shadow-1: 0 1px 2px rgba(0,0,0,0.5), 0 1px 3px 1px rgba(0,0,0,0.3);
+	--crepe-shadow-2: 0 1px 2px rgba(0,0,0,0.6), 0 2px 6px 2px rgba(0,0,0,0.4);
+}
+/* Checkbox/task-list visibility on dark background */
+.milkdown input[type="checkbox"] {
+	background: #2a2a38 !important;
+	border-color: #9aa0b4 !important;
+}
+.milkdown input[type="checkbox"]:checked {
+	background: #89b4fa !important;
+	border-color: #89b4fa !important;
+}
+.milkdown input[type="checkbox"]:checked::before {
+	box-shadow: inset 1em 1em #1a1a1f !important;
+}
+/* Bullet / ordered list markers — rendered by Crepe via SVG + label color */
+.milkdown .milkdown-list-item-block li .label-wrapper {
+	color: #9aa0b4 !important;
+}
+.milkdown .milkdown-list-item-block li .label-wrapper svg {
+	fill: #9aa0b4 !important;
+}
+/* Code blocks readable on dark background */
+.milkdown pre,
+.milkdown code {
+	color: #e0e3eb !important;
+}
+.milkdown pre code.hljs,
+.milkdown pre {
+	background: #242431 !important;
+}
+/* Syntax highlight tokens — minimal dark adjustments */
+.milkdown .hljs-keyword,
+.milkdown .hljs-selector-tag { color: #cba6f7 !important; }
+.milkdown .hljs-string,
+.milkdown .hljs-attr { color: #a6e3a1 !important; }
+.milkdown .hljs-number,
+.milkdown .hljs-literal { color: #fab387 !important; }
+.milkdown .hljs-comment { color: #6c7086 !important; font-style: italic; }
+.milkdown .hljs-function,
+.milkdown .hljs-title { color: #89b4fa !important; }
+.milkdown blockquote {
+	border-left: 3px solid var(--crepe-color-outline) !important;
+	color: var(--crepe-color-on-surface-variant) !important;
+	background: rgba(255,255,255,0.02) !important;
+}
+</style>
 </head>
 <body>
 <div id="editor"></div>
@@ -36,6 +104,25 @@ html, body {
 window.markdownFocus = function() {
 	document.querySelector(".ProseMirror")?.focus();
 };
+
+// Milkdown serializes bullet lists with '*'. Normalize to '-' on copy so pasted
+// markdown matches Belve's preferred style.
+document.addEventListener('copy', function(e) {
+	const data = e.clipboardData;
+	if (!data) return;
+	const current = data.getData('text/plain');
+	if (!current) return;
+	// Only touch lines that start with optional indent + '* ' (bullet list marker).
+	// Emphasis like *foo* or **bold** is inline so it won't match this pattern.
+	let transformed = current.replace(/^(\s*)\*(\s)/gm, '$1-$2');
+	// Collapse the blank lines Milkdown inserts between list items (loose-list
+	// behavior) so pasted markdown reads as a tight list.
+	transformed = transformed.replace(/\n\n(?=\s*- )/g, '\n');
+	if (transformed !== current) {
+		data.setData('text/plain', transformed);
+		e.preventDefault();
+	}
+});
 </script>
 </body>
 </html>

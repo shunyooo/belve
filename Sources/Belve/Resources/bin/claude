@@ -6,6 +6,25 @@
 
 set -euo pipefail
 
+# Workaround for Claude Code v2.1.x SessionStart bug: it mkdirs
+# ~/.claude/session-env/<id> with plain mkdir (not mkdir -p), so if the parent
+# dir doesn't exist yet the hook errors out. Pre-create the parent unconditionally.
+# Also handle the common devcontainer case where ~/.claude is a symlink to a
+# path inside the workspace whose target doesn't exist yet (the symlink looks
+# valid but mkdir -p refuses with "File exists" for a broken symlink).
+if [ -L "$HOME/.claude" ] && [ ! -e "$HOME/.claude" ]; then
+    _belve_link_target=$(readlink "$HOME/.claude" 2>/dev/null || true)
+    if [ -n "$_belve_link_target" ]; then
+        case "$_belve_link_target" in
+            /*) ;;
+            *)  _belve_link_target="$(dirname "$HOME/.claude")/$_belve_link_target" ;;
+        esac
+        mkdir -p "$_belve_link_target/session-env" 2>/dev/null || true
+    fi
+    unset _belve_link_target
+fi
+mkdir -p "$HOME/.claude/session-env" 2>/dev/null || true
+
 find_real_claude() {
     local self_dir
     self_dir="$(cd "$(dirname "$0")" && pwd)"

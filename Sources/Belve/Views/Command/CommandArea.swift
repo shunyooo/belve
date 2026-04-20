@@ -228,6 +228,10 @@ class CommandAreaState: ObservableObject {
 		activePaneId = paneIds[nextIndex]
 	}
 
+	func orderedPaneIds() -> [UUID] {
+		orderedPaneIds(in: root)
+	}
+
 	private func orderedPaneIds(in node: PaneNode) -> [UUID] {
 		if let paneId = node.paneId, node.isLeaf {
 			return [paneId]
@@ -488,6 +492,7 @@ struct CommandArea: View {
 	@State private var connectionLoadingPanes: Set<UUID> = []
 	@State private var connectionStatusMessages: [UUID: String] = [:]
 	@State private var disconnectedPanes: Set<UUID> = []
+	@State private var commandFocused: Bool = true
 	private let paneHeaderHeight: CGFloat = 24
 
 	private struct PaneDragState {
@@ -549,7 +554,8 @@ struct CommandArea: View {
 								width: max(1, pane.rect.width),
 								height: max(1, pane.rect.height - paneHeaderHeight)
 							)
-							.opacity(isDraggingSource ? 0.38 : 1)
+							.opacity(isDraggingSource ? 0.38 : (state.activePaneId == pane.paneId ? 1 : 0.72))
+							.animation(.easeOut(duration: 0.15), value: state.activePaneId)
 							.overlay(alignment: .top) {
 								if connectionLoadingPanes.contains(pane.paneId) {
 									TerminalLoadingOverlay(
@@ -566,6 +572,7 @@ struct CommandArea: View {
 								}
 							}
 					}
+						.overlay(FocusBorderOverlay(isActive: state.activePaneId == pane.paneId && commandFocused))
 						.overlay {
 							if let dropTarget = dropTarget(in: layout), dropTarget.paneId == pane.paneId {
 								PaneDropOverlay(position: dropTarget.position)
@@ -601,6 +608,21 @@ struct CommandArea: View {
 		}
 		.clipped()
 		.background(Theme.bg)
+		.onReceive(NotificationCenter.default.publisher(for: .belveTerminalFocused)) { _ in
+			withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+				commandFocused = true
+			}
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveEditorWebViewDidFocus)) { _ in
+			withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+				commandFocused = false
+			}
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveFileTreeFocused)) { _ in
+			withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+				commandFocused = false
+			}
+		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveTerminalConnectionState)) { notif in
 			guard let projectId = notif.userInfo?["projectId"] as? UUID,
 				  projectId == project.id,

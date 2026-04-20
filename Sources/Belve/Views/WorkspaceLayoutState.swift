@@ -13,18 +13,24 @@ final class ProjectLayoutState: ObservableObject, Codable {
 	@Published var fileTreeWidth: CGFloat = 200 {
 		didSet { onChanged?() }
 	}
+	/// Absolute path of the file last opened in the editor for this project.
+	/// Restored automatically on project selection.
+	@Published var lastOpenedFile: String? = nil {
+		didSet { onChanged?() }
+	}
 
 	var onChanged: (() -> Void)?
 
-	init(commandAreaFraction: CGFloat = 0.65, showEditor: Bool = true, showFileTree: Bool = true, fileTreeWidth: CGFloat = 200) {
+	init(commandAreaFraction: CGFloat = 0.65, showEditor: Bool = true, showFileTree: Bool = true, fileTreeWidth: CGFloat = 200, lastOpenedFile: String? = nil) {
 		self.commandAreaFraction = commandAreaFraction
 		self.showEditor = showEditor
 		self.showFileTree = showFileTree
 		self.fileTreeWidth = fileTreeWidth
+		self.lastOpenedFile = lastOpenedFile
 	}
 
 	enum CodingKeys: String, CodingKey {
-		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth
+		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile
 	}
 
 	required init(from decoder: Decoder) throws {
@@ -33,6 +39,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		showEditor = try container.decodeIfPresent(Bool.self, forKey: .showEditor) ?? true
 		showFileTree = try container.decodeIfPresent(Bool.self, forKey: .showFileTree) ?? true
 		fileTreeWidth = try container.decodeIfPresent(CGFloat.self, forKey: .fileTreeWidth) ?? 200
+		lastOpenedFile = try container.decodeIfPresent(String.self, forKey: .lastOpenedFile)
 	}
 
 	func encode(to encoder: Encoder) throws {
@@ -41,6 +48,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		try container.encode(showEditor, forKey: .showEditor)
 		try container.encode(showFileTree, forKey: .showFileTree)
 		try container.encode(fileTreeWidth, forKey: .fileTreeWidth)
+		try container.encodeIfPresent(lastOpenedFile, forKey: .lastOpenedFile)
 	}
 }
 

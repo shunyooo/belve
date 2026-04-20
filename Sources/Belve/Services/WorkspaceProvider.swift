@@ -42,6 +42,9 @@ protocol WorkspaceProvider {
 	// MARK: File download (binary-safe, for media preview)
 	func downloadFile(remotePath: String, to localURL: URL) -> Bool
 
+	// MARK: File upload (binary-safe, for drag-drop from Finder)
+	func uploadFile(localURL: URL, to remotePath: String) -> Bool
+
 	// MARK: Launcher
 	func launcherEnvironment(projectId: String, paneId: String, paneIndex: Int) -> [String: String]
 }
@@ -453,14 +456,32 @@ struct LocalProvider: WorkspaceProvider {
 		}
 	}
 
+	func uploadFile(localURL: URL, to remotePath: String) -> Bool {
+		let absDest: String
+		if remotePath.hasPrefix("/") {
+			absDest = remotePath
+		} else {
+			absDest = (effectivePath as NSString).appendingPathComponent(remotePath)
+		}
+		do {
+			try? FileManager.default.removeItem(atPath: absDest)
+			try FileManager.default.copyItem(atPath: localURL.path, toPath: absDest)
+			return true
+		} catch {
+			NSLog("[Belve] uploadFile local failed: \(error)")
+			return false
+		}
+	}
+
 	func launcherEnvironment(projectId: String, paneId: String, paneIndex: Int) -> [String: String] {
-		var env: [String: String] = [
+		[
 			"BELVE_PROJECT_ID": projectId,
 			"BELVE_PANE_ID": paneId,
 			"BELVE_PANE_INDEX": String(paneIndex),
+			// Default to the user's home directory when the project has no path
+			// set (e.g. a freshly created project) so the shell doesn't land in "/".
+			"BELVE_WORKDIR": path ?? NSHomeDirectory(),
 		]
-		if let p = path { env["BELVE_WORKDIR"] = p }
-		return env
 	}
 }
 
@@ -509,6 +530,26 @@ struct SSHProvider: WorkspaceProvider {
 			return process.terminationStatus == 0
 		} catch {
 			NSLog("[Belve] downloadFile scp failed: \(error)")
+			return false
+		}
+	}
+
+	func uploadFile(localURL: URL, to remotePath: String) -> Bool {
+		let process = Process()
+		process.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
+		let cp = sshControlPath(for: host)
+		process.arguments = [
+			"-o", "ControlMaster=auto", "-o", "ControlPath=\(cp)", "-o", "ControlPersist=600",
+			"-o", "StrictHostKeyChecking=accept-new", "-q", "-r",
+			localURL.path, "\(host):\(remotePath)"
+		]
+		process.standardError = FileHandle.nullDevice
+		do {
+			try process.run()
+			process.waitUntilExit()
+			return process.terminationStatus == 0
+		} catch {
+			NSLog("[Belve] uploadFile scp failed: \(error)")
 			return false
 		}
 	}
@@ -600,6 +641,63 @@ struct DevContainerProvider: WorkspaceProvider {
 			return true
 		} catch {
 			NSLog("[Belve] downloadFile write failed: \(error)")
+			return false
+		}
+	}
+
+	func uploadFile(localURL: URL, to remotePath: String) -> Bool {
+		guard let info = resolveContainerInfo(host: host, workspace: workspace) else {
+			NSLog("[Belve] uploadFile: cannot resolve container info")
+			return false
+		}
+		let cid = info.cid
+		let tmpRemote = "/tmp/belve-upload-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(8))"
+		let containerPath: String
+		if remotePath.hasPrefix("/") {
+			containerPath = remotePath
+		} else {
+			containerPath = (info.rws as NSString).appendingPathComponent(remotePath)
+		}
+
+		// Step 1: scp local file → VM /tmp
+		let scp = Process()
+		scp.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
+		let cp = sshControlPath(for: host)
+		scp.arguments = [
+			"-o", "ControlMaster=auto", "-o", "ControlPath=\(cp)", "-o", "ControlPersist=600",
+			"-o", "StrictHostKeyChecking=accept-new", "-q", "-r",
+			localURL.path, "\(host):\(tmpRemote)"
+		]
+		scp.standardError = FileHandle.nullDevice
+		do {
+			try scp.run()
+			scp.waitUntilExit()
+			guard scp.terminationStatus == 0 else {
+				NSLog("[Belve] uploadFile devcontainer scp failed: exit=\(scp.terminationStatus)")
+				return false
+			}
+		} catch {
+			NSLog("[Belve] uploadFile devcontainer scp failed: \(error)")
+			return false
+		}
+
+		// Step 2: ssh to VM, docker cp → container, rm tmp
+		let ssh = Process()
+		ssh.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+		ssh.arguments = [
+			"-o", "ControlMaster=auto", "-o", "ControlPath=\(cp)", "-o", "ControlPersist=600",
+			"-o", "StrictHostKeyChecking=accept-new",
+			host,
+			"docker cp \(tmpRemote) \(cid):\(shellQuote(containerPath)); rm -rf \(tmpRemote)"
+		]
+		ssh.standardError = FileHandle.nullDevice
+		ssh.standardOutput = FileHandle.nullDevice
+		do {
+			try ssh.run()
+			ssh.waitUntilExit()
+			return ssh.terminationStatus == 0
+		} catch {
+			NSLog("[Belve] uploadFile devcontainer docker cp failed: \(error)")
 			return false
 		}
 	}
@@ -697,6 +795,21 @@ private func deleteItemRemote(_ path: String, run: (String) -> String?) -> (succ
 extension SSHProvider {
 	fileprivate func deleteItemRemote(_ path: String) -> (success: Bool, trashedURL: URL?) {
 		Belve.deleteItemRemote(path, run: run)
+	}
+
+	/// For each given absolute path, test whether `<path>/.devcontainer/devcontainer.json`
+	/// exists. Single SSH round-trip regardless of the number of paths.
+	func findDevContainerDirs(in paths: [String]) -> Set<String> {
+		guard !paths.isEmpty else { return [] }
+		let quoted = paths.map { shellQuote("\($0)/.devcontainer/devcontainer.json") }.joined(separator: " ")
+		let script = "for f in \(quoted); do [ -f \"$f\" ] && echo \"$f\"; done"
+		guard let output = run(script), !output.isEmpty else { return [] }
+		let suffix = "/.devcontainer/devcontainer.json"
+		let results = output.split(separator: "\n").compactMap { line -> String? in
+			let s = String(line)
+			return s.hasSuffix(suffix) ? String(s.dropLast(suffix.count)) : nil
+		}
+		return Set(results)
 	}
 }
 

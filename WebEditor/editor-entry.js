@@ -1,6 +1,8 @@
 import { basicSetup } from "codemirror";
 import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/state";
-import { Decoration, EditorView } from "@codemirror/view";
+import { Decoration, EditorView, keymap } from "@codemirror/view";
+import { StreamLanguage } from "@codemirror/language";
+import { toggleComment } from "@codemirror/commands";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { javascript } from "@codemirror/lang-javascript";
 import { python } from "@codemirror/lang-python";
@@ -17,6 +19,10 @@ import { sql } from "@codemirror/lang-sql";
 import { php } from "@codemirror/lang-php";
 import { yaml } from "@codemirror/lang-yaml";
 import { sass } from "@codemirror/lang-sass";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
+import { ruby } from "@codemirror/legacy-modes/mode/ruby";
+import { swift } from "@codemirror/legacy-modes/mode/swift";
+import { toml } from "@codemirror/legacy-modes/mode/toml";
 
 const languageCompartment = new Compartment();
 const editorContainer = document.getElementById("editor");
@@ -133,6 +139,8 @@ function detectLanguage(filename) {
 
 	if (name === "dockerfile") return "shell";
 	if (name === "makefile") return "shell";
+	// .env, .env.local, .env.production, etc.
+	if (name === ".env" || name.startsWith(".env.")) return "shell";
 
 	return {
 		js: "javascript",
@@ -169,7 +177,7 @@ function detectLanguage(filename) {
 		sh: "shell",
 		bash: "shell",
 		zsh: "shell",
-		toml: "yaml",
+		toml: "toml",
 		rb: "ruby",
 		kt: "java",
 		swift: "swift"
@@ -215,6 +223,14 @@ function languageExtensionFor(language) {
 		return yaml();
 	case "sass":
 		return sass();
+	case "shell":
+		return StreamLanguage.define(shell);
+	case "ruby":
+		return StreamLanguage.define(ruby);
+	case "swift":
+		return StreamLanguage.define(swift);
+	case "toml":
+		return StreamLanguage.define(toml);
 	default:
 		return [];
 	}
@@ -352,6 +368,23 @@ function createEditorState(content, filename) {
 		doc: content,
 		extensions: [
 			basicSetup,
+			keymap.of([
+				{ key: "Mod-/", run: toggleComment },
+				{
+					key: "Mod-'",
+					run: () => {
+						postMessage({ type: "focusCycle", step: 1 });
+						return true;
+					}
+				},
+				{
+					key: "Mod-;",
+					run: () => {
+						postMessage({ type: "focusCycle", step: -1 });
+						return true;
+					}
+				}
+			]),
 			oneDark,
 			customTheme,
 			jumpHoverField,
@@ -458,6 +491,10 @@ window.editorRevealLocation = function(lineNumber, columnNumber = null) {
 
 window.editorGetContent = function() {
 	return editorView?.state.doc.toString() || "";
+};
+
+window.editorFocus = function() {
+	editorView?.focus();
 };
 
 window.editorSetMetaPressed = function(isPressed) {

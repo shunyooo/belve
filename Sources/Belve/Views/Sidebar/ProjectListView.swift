@@ -406,6 +406,7 @@ struct ProjectRow: View {
 	let isSelected: Bool
 	var agentState: AgentState?
 	var selectionNamespace: Namespace.ID?
+	@EnvironmentObject var projectStore: ProjectStore
 	@State private var isHovering = false
 
 	private var subtitle: String {
@@ -419,6 +420,10 @@ struct ProjectRow: View {
 		return ""
 	}
 
+	private var loadingStatus: String? {
+		projectStore.projectLoadingStatus[project.id]
+	}
+
 	var body: some View {
 		HStack(spacing: 10) {
 
@@ -428,10 +433,23 @@ struct ProjectRow: View {
 					.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
 					.lineLimit(1)
 
-				Text(subtitle)
-					.font(.system(size: 10))
-					.foregroundStyle(Theme.textTertiary)
-					.lineLimit(1)
+				if let status = loadingStatus {
+					HStack(spacing: 4) {
+						ProgressView()
+							.controlSize(.mini)
+							.scaleEffect(0.6)
+							.frame(width: 10, height: 10)
+						Text(status)
+							.font(.system(size: 10))
+							.foregroundStyle(Theme.accent)
+							.lineLimit(1)
+					}
+				} else {
+					Text(subtitle)
+						.font(.system(size: 10))
+						.foregroundStyle(Theme.textTertiary)
+						.lineLimit(1)
+				}
 			}
 
 			Spacer()

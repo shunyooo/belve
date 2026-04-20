@@ -185,9 +185,9 @@ def clean_line(s):
 def should_skip(text):
     t = text.strip()
     if not t: return True
-    if re.match(r"^#\d+\s+\d+\.\d+\s", t): return True
-    if re.match(r"^#\d+\s+DONE", t): return True
-    if t.startswith("> "): return True
+    # Strip only JSON scaffolding and credential-helper noise.
+    # Keep everything else (Docker build steps, "Running ...", etc.) so the user
+    # can see devcontainer-up progress as it happens.
     if t.startswith("[httpOci]"): return True
     if "credential" in t.lower() and ("helper" in t.lower() or "docker-credential" in t.lower()):
         return True
@@ -209,7 +209,7 @@ for line in sys.stdin:
     for sub in text.split("\n"):
         sub = clean_line(sub)
         if should_skip(sub): continue
-        sys.stdout.write("\x1b[2m" + sub + "\x1b[0m\n")
+        sys.stdout.write(sub + "\n")
         sys.stdout.flush()
 PYFILTER
 

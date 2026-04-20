@@ -10,6 +10,11 @@ final class TerminalWebView: WKWebView {
 
 	override var acceptsFirstResponder: Bool { true }
 
+	override func becomeFirstResponder() -> Bool {
+		NotificationCenter.default.post(name: .belveTerminalFocused, object: self)
+		return super.becomeFirstResponder()
+	}
+
 	override func performKeyEquivalent(with event: NSEvent) -> Bool {
 		// Only handle Cmd+C/V if this webview (or a child) is the first responder
 		guard let firstResponder = window?.firstResponder as? NSView,

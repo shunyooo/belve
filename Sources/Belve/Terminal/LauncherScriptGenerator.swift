@@ -148,26 +148,59 @@ enum LauncherScriptGenerator {
 		        FORWARD_TARGET="127.0.0.1:19222"
 		    fi
 
-		    # Add port forward. Cancel any forward spec recorded from a previous session
-		    # (SSHTunnelManager writes ${projId}.spec with the last-used target, so we can
-		    # cancel it precisely even if the CIP has changed across restarts/rebuilds).
+		    # Add port forward. Serialize across concurrent panes of the same project
+		    # (second pane's forward would race with the first and fail otherwise) and
+		    # skip entirely if a forward is already listening on the chosen local port.
 		    SPEC_DIR="\#(tmpDir)/tunnels"
 		    mkdir -p "$SPEC_DIR"
 		    SPEC_FILE="$SPEC_DIR/${BELVE_PROJECT_ID}.spec"
-		    if [ -f "$SPEC_FILE" ]; then
-		        STALE_SPEC=$(cat "$SPEC_FILE")
-		        [ -n "$STALE_SPEC" ] && ssh -o ControlPath="$BELVE_SSH_CONTROL" -O cancel -L "$STALE_SPEC" "$BELVE_SSH_HOST" 2>/dev/null || true
+		    FORWARD_LOCK="$SPEC_DIR/${BELVE_PROJECT_ID}.lock"
+
+		    # Simple mkdir-based mutex with timeout.
+		    LOCK_WAITED=0
+		    while ! mkdir "$FORWARD_LOCK" 2>/dev/null; do
+		        LOCK_WAITED=$((LOCK_WAITED + 1))
+		        if [ "$LOCK_WAITED" -gt 100 ]; then
+		            # Stale lock (>10s) — take it anyway.
+		            rm -rf "$FORWARD_LOCK"
+		            mkdir "$FORWARD_LOCK" 2>/dev/null || true
+		            break
+		        fi
+		        sleep 0.1
+		    done
+		    trap "rmdir '$FORWARD_LOCK' 2>/dev/null" EXIT
+
+		    # Fast path: forward already up for the same target.
+		    EXISTING_SPEC=""
+		    [ -f "$SPEC_FILE" ] && EXISTING_SPEC=$(cat "$SPEC_FILE")
+		    FORWARD_ALREADY_UP=0
+		    if [ "$EXISTING_SPEC" = "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" ]; then
+		        # Verify the local port is actually listening before trusting the spec.
+		        if (exec 3<>/dev/tcp/127.0.0.1/$BELVE_LOCAL_BROKER_PORT) 2>/dev/null; then
+		            exec 3>&- 2>/dev/null || true
+		            FORWARD_ALREADY_UP=1
+		        fi
 		    fi
-		    # Also try cancel with the new spec (handles the first-forward case where no stale exists)
-		    ssh -o ControlPath="$BELVE_SSH_CONTROL" -O cancel -L "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" "$BELVE_SSH_HOST" 2>/dev/null || true
-		    FORWARD_ERR=$(ssh -o ControlPath="$BELVE_SSH_CONTROL" -O forward -L "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" "$BELVE_SSH_HOST" 2>&1)
-		    if [ $? -ne 0 ]; then
-		        belve_status "Forward failed"
-		        echo "[belve] ERROR: ssh -O forward -L $BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET failed: $FORWARD_ERR" >&2
-		        exit 1
+
+		    if [ "$FORWARD_ALREADY_UP" != "1" ]; then
+		        # Cancel any stale / mismatched forward before setting up a fresh one.
+		        if [ -n "$EXISTING_SPEC" ] && [ "$EXISTING_SPEC" != "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" ]; then
+		            ssh -o ControlPath="$BELVE_SSH_CONTROL" -O cancel -L "$EXISTING_SPEC" "$BELVE_SSH_HOST" 2>/dev/null || true
+		        fi
+		        ssh -o ControlPath="$BELVE_SSH_CONTROL" -O cancel -L "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" "$BELVE_SSH_HOST" 2>/dev/null || true
+
+		        FORWARD_ERR=$(ssh -o ControlPath="$BELVE_SSH_CONTROL" -O forward -L "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" "$BELVE_SSH_HOST" 2>&1)
+		        if [ $? -ne 0 ]; then
+		            belve_status "Forward failed"
+		            echo "[belve] ERROR: ssh -O forward -L $BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET failed: $FORWARD_ERR" >&2
+		            rmdir "$FORWARD_LOCK" 2>/dev/null
+		            exit 1
+		        fi
+		        printf '%s' "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" > "$SPEC_FILE"
 		    fi
-		    # Record actual forward spec so Swift's teardownTunnel can cancel precisely later
-		    printf '%s' "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" > "$SPEC_FILE"
+
+		    rmdir "$FORWARD_LOCK" 2>/dev/null
+		    trap - EXIT
 
 		    belve_status "Attaching session..."
 		    PERSIST_BIN="$BELVE_BIN_DIR/belve-persist-darwin-arm64"
@@ -233,6 +266,24 @@ enum LauncherScriptGenerator {
 		export -f claude
 		codex() { "\#(belveBin)/codex" "\$@"; }
 		export -f codex
+		# Belve: auto-source .env on cd or when .env is edited (unsets prev keys on reload)
+		_belve_load_env() {
+		    local _m=""
+		    [ -f ./.env ] && _m=\$(stat -f %m ./.env 2>/dev/null || stat -c %Y ./.env 2>/dev/null)
+		    local _k="\$PWD:\$_m"
+		    [ "\$_k" = "\${_BELVE_LAST_ENV_KEY:-}" ] && return
+		    _BELVE_LAST_ENV_KEY="\$_k"
+		    if [ -n "\${_BELVE_ENV_KEYS:-}" ]; then
+		        for _ek in \$_BELVE_ENV_KEYS; do unset "\$_ek"; done
+		    fi
+		    _BELVE_ENV_KEYS=""
+		    if [ -f ./.env ]; then
+		        set -a; . ./.env; set +a
+		        _BELVE_ENV_KEYS=\$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\\2/p' ./.env | tr '\\n' ' ')
+		    fi
+		}
+		PROMPT_COMMAND="_belve_load_env\${PROMPT_COMMAND:+; \$PROMPT_COMMAND}"
+		_belve_load_env
 		BASHRC
 		    BELVE_SHELL="\#(shell) --rcfile \#(tmpDir)/belve-bashrc -i" ;;
 		  zsh)
@@ -249,6 +300,25 @@ enum LauncherScriptGenerator {
 		export BELVE_TTY=\$(tty)
 		claude() { "\#(belveBin)/claude" "\$@"; }
 		codex() { "\#(belveBin)/codex" "\$@"; }
+		# Belve: auto-source .env on cd or when .env is edited (unsets prev keys on reload)
+		_belve_load_env() {
+		    local _m=""
+		    [ -f ./.env ] && _m=\$(stat -f %m ./.env 2>/dev/null || stat -c %Y ./.env 2>/dev/null)
+		    local _k="\$PWD:\$_m"
+		    [ "\$_k" = "\${_BELVE_LAST_ENV_KEY:-}" ] && return
+		    _BELVE_LAST_ENV_KEY="\$_k"
+		    if [ -n "\${_BELVE_ENV_KEYS:-}" ]; then
+		        for _ek in \${=_BELVE_ENV_KEYS}; do unset "\$_ek"; done
+		    fi
+		    _BELVE_ENV_KEYS=""
+		    if [ -f ./.env ]; then
+		        set -a; . ./.env; set +a
+		        _BELVE_ENV_KEYS=\$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\\2/p' ./.env | tr '\\n' ' ')
+		    fi
+		}
+		autoload -U add-zsh-hook
+		add-zsh-hook precmd _belve_load_env
+		_belve_load_env
 		ZSHRC
 		    BELVE_SHELL="ZDOTDIR=\#(tmpDir)/zdotdir \#(shell) -l -i" ;;
 		  fish)

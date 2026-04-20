@@ -307,11 +307,48 @@ function mapStringIndexToCell(line, targetIndex) {
 	return line.length;
 }
 
+// Join continuation of a path that spills onto subsequent lines.
+// Handles both soft-wrapped lines (term width exceeded) and manually-broken
+// output where the next line is indented and starts with path characters.
+function buildFullPath(buf, startY, pathStart) {
+	var path = pathStart;
+	var continuations = [];
+	var line = buf.getLine(startY);
+	if (!line) return { path: path, continuations: continuations };
+	var text = line.translateToString(true);
+	var pathEndPos = text.lastIndexOf(pathStart) + pathStart.length;
+	var nextLineObj = buf.getLine(startY + 1);
+	var isNextWrapped = nextLineObj && nextLineObj.isWrapped;
+	// Only bother extending if the path ends at / near the end of the line
+	// or the next line is a soft-wrap continuation.
+	if (pathEndPos < text.length - 2 && !isNextWrapped) return { path: path, continuations: continuations };
+
+	var nextY = startY + 1;
+	while (nextY < buf.length) {
+		var nextLine = buf.getLine(nextY);
+		if (!nextLine) break;
+		var nextText = nextLine.translateToString(true);
+		var trimmed = nextLine.isWrapped ? nextText : nextText.replace(/^\s+/, '');
+		var indent = nextText.length - trimmed.length;
+		// Continuation must start with an alphanumeric / _ / ~ / '/' — never '-' or '.'
+		// alone (those appear as list markers / ellipses on a fresh line).
+		var cont = trimmed.match(/^([A-Za-z0-9_~\/][A-Za-z0-9_\-\.\/~:]*)/);
+		if (cont) {
+			path += cont[1];
+			continuations.push({ y: nextY + 1, startX: indent + 1, endX: indent + cont[1].length });
+			if (cont[1].length < trimmed.length) break;
+			nextY++;
+		} else break;
+	}
+	return { path: path, continuations: continuations };
+}
+
 function ensurePathLinkProvider() {
 	if (pathLinkProviderDisposable) return;
 	pathLinkProviderDisposable = term.registerLinkProvider({
 		provideLinks(y, callback) {
-			const line = term.buffer.active.getLine(y - 1);
+			const buf = term.buffer.active;
+			const line = buf.getLine(y - 1);
 			if (!line) {
 				callback([]);
 				return;
@@ -319,6 +356,54 @@ function ensurePathLinkProvider() {
 
 			const text = line.translateToString(true);
 			const links = [];
+
+			// If this line is a continuation of a path started on the previous line,
+			// only surface the continuation link — don't re-match a standalone path
+			// on this line (which would create a duplicate, shorter link).
+			if (y > 1) {
+				const prevLine = buf.getLine(y - 2);
+				const isSoftWrapped = line.isWrapped;
+				if (prevLine) {
+					const prevText = prevLine.translateToString(true);
+					terminalPathRegex.lastIndex = 0;
+					let prevMatch;
+					let lastMatch = null;
+					while ((prevMatch = terminalPathRegex.exec(prevText)) !== null) {
+						lastMatch = prevMatch;
+					}
+					if (lastMatch && lastMatch[1]) {
+						const prevPath = lastMatch[1];
+						const prevStart = lastMatch.index + lastMatch[0].lastIndexOf(prevPath);
+						const prevEnd = prevStart + prevPath.length;
+						const endsAtEdge = prevEnd >= prevText.length - 1;
+						if (endsAtEdge || isSoftWrapped) {
+							const trimmed = isSoftWrapped ? text : text.replace(/^\s+/, '');
+							const indent = text.length - trimmed.length;
+							const cont = trimmed.match(/^([A-Za-z0-9_~\/][A-Za-z0-9_\-\.\/~:]*)/);
+							if (cont) {
+								const joined = buildFullPath(buf, y - 2, prevPath);
+								const peerSx = mapStringIndexToCell(prevLine, prevStart) + 1;
+								const peerEx = mapStringIndexToCell(prevLine, prevEnd);
+								const peerRange = { y: y - 1, startX: peerSx, endX: peerEx };
+								const selfRange = { y: y, startX: indent + 1, endX: indent + cont[1].length };
+								const allR = [peerRange, selfRange].concat(joined.continuations.filter(c => c.y !== y));
+								const link = {
+									range: { start: { x: indent + 1, y: y }, end: { x: indent + cont[1].length, y: y } },
+									text: joined.path,
+									decorations: { pointerCursor: true },
+									hover: () => { showPeerUnderlines(allR); },
+									leave: () => { hidePeerUnderlines(); },
+									activate: () => { postMessage({ type: 'openPath', path: joined.path }); }
+								};
+								links.push(link);
+								callback(links);
+								return;
+							}
+						}
+					}
+				}
+			}
+
 			terminalPathRegex.lastIndex = 0;
 			let match;
 
@@ -330,24 +415,31 @@ function ensurePathLinkProvider() {
 				const startCell = mapStringIndexToCell(line, startIndex);
 				const endCell = mapStringIndexToCell(line, endIndex);
 
+				// Extend across wrapped / indented continuation lines so a long path
+				// broken onto multiple rows resolves to a single clickable link.
+				const joined = buildFullPath(buf, y - 1, rawPath);
+				const selfRange = { y: y, startX: startCell + 1, endX: endCell };
+				const allRanges = [selfRange].concat(joined.continuations);
+
 				const link = {
 					range: {
 						start: { x: startCell + 1, y },
 						end: { x: Math.max(startCell + 1, endCell), y }
 					},
-					text: rawPath,
+					text: joined.path,
 					decorations: {
-						underline: true,
 						pointerCursor: true
 					},
 					hover: () => {
 						hoveredPathLink = link;
+						showPeerUnderlines(allRanges);
 					},
 					leave: () => {
 						hoveredPathLink = null;
+						hidePeerUnderlines();
 					},
 					activate: () => {
-						postMessage({ type: 'openPath', path: rawPath });
+						postMessage({ type: 'openPath', path: joined.path });
 					}
 				};
 				links.push(link);
@@ -454,10 +546,9 @@ term.onTitleChange(function(title) {
 	postMessage({ type: 'title', title: title });
 });
 
-// Bell
-term.onBell(function() {
-	postMessage({ type: 'bell' });
-});
+// Bell — intentionally not forwarded. Terminal output often contains \x07 (bell)
+// from prior sessions' replay buffer, which would make the app beep multiple
+// times on attach. Modern terminal UX keeps this off by default.
 
 // Selection UX: show text cursor only while dragging, default cursor otherwise.
 var _isDragging = false;

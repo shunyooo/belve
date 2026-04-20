@@ -20,15 +20,27 @@ struct MainWindow: View {
 	@StateObject private var stateManager = CommandAreaStateManager()
 	@StateObject private var layoutState = WorkspaceLayoutStateManager()
 	@State private var browserPath: String = ""
+	@State private var devContainerFlowHost: String? = nil
+	@State private var focusZone: FocusZone = .pane
+	@Namespace private var focusNamespace
+
+	enum FocusZone {
+		case pane
+		case editor
+		case fileTree
+	}
 
 	enum PaletteMode {
 		case commands
 		case sshHosts
+		case sshHostsForDevContainer
 		case folderBrowser
+		case remoteDevContainerBrowser
 	}
 
 	var body: some View {
 		configuredContent
+			.environment(\.focusBorderNamespace, focusNamespace)
 			.sheet(isPresented: $showSettings) {
 				SettingsView()
 			}
@@ -44,6 +56,19 @@ struct MainWindow: View {
 				.background(WindowFrameAutosave(name: "BelveMainWindow"))
 				.onAppear {
 					sidebarWidthAtDragStart = layoutState.sidebarWidth
+					// Restore the last-opened file for the currently selected project
+					// on first launch (onChange of selectedProject doesn't fire for the
+					// initial value, so we trigger it explicitly here).
+					if let project = projectStore.selectedProject,
+					   let path = layoutState.state(for: project.id).lastOpenedFile {
+						DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+							NotificationCenter.default.post(
+								name: .belveOpenFileFromTerminal,
+								object: nil,
+								userInfo: ["projectId": project.id, "path": path]
+							)
+						}
+					}
 				}
 		)
 
@@ -61,18 +86,19 @@ struct MainWindow: View {
 					projectStore.selectPreviousProject()
 				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveFocusNextPane)) { _ in
-					if let id = projectStore.selectedProject?.id {
-						let state = commandAreaState(for: id)
-						state.focusNextPane()
-						projectStore.refocusTerminal(paneId: state.activePaneId?.uuidString)
-					}
+					cycleFocus(step: 1)
 				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveFocusPreviousPane)) { _ in
-					if let id = projectStore.selectedProject?.id {
-						let state = commandAreaState(for: id)
-						state.focusPreviousPane()
-						projectStore.refocusTerminal(paneId: state.activePaneId?.uuidString)
-					}
+					cycleFocus(step: -1)
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveEditorWebViewDidFocus)) { _ in
+					focusZone = .editor
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveTerminalFocused)) { _ in
+					focusZone = .pane
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveFileTreeFocused)) { _ in
+					focusZone = .fileTree
 				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveFocusEditor)) { _ in
 					projectStore.focusEditor()
@@ -98,8 +124,25 @@ struct MainWindow: View {
 			projectShortcuts
 				.onChange(of: projectStore.selectedProject) {
 					openFile = nil
+					// Restore the per-project last-opened file (if any) once the
+					// PreviewArea for the new project is mounted.
+					if let project = projectStore.selectedProject,
+					   let path = layoutState.state(for: project.id).lastOpenedFile {
+						DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+							NotificationCenter.default.post(
+								name: .belveOpenFileFromTerminal,
+								object: nil,
+								userInfo: ["projectId": project.id, "path": path]
+							)
+						}
+					}
 					DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
 						projectStore.refocusTerminal()
+					}
+				}
+				.onChange(of: openFile?.path) {
+					if let project = projectStore.selectedProject {
+						layoutState.state(for: project.id).lastOpenedFile = openFile?.path
 					}
 				}
 				.onChange(of: commandPaletteState.isPresented) {
@@ -356,6 +399,7 @@ struct MainWindow: View {
 		}
 		.opacity(isSelected ? 1 : 0)
 		.allowsHitTesting(isSelected)
+		.environment(\.projectActive, isSelected)
 		.onChange(of: isSelected) { _, nowSelected in
 			if nowSelected {
 				// Force re-fit terminals after becoming visible
@@ -385,7 +429,8 @@ struct MainWindow: View {
 				}
 
 			VStack {
-				if paletteMode == .folderBrowser {
+				switch paletteMode {
+				case .folderBrowser:
 					FolderBrowserView(
 						isPresented: $commandPaletteState.isPresented,
 						initialPath: browserPath,
@@ -394,7 +439,20 @@ struct MainWindow: View {
 						projectStore.setProjectFolder(path)
 					}
 					.padding(.top, 80)
-				} else {
+				case .remoteDevContainerBrowser:
+					if let host = devContainerFlowHost {
+						FolderBrowserView(
+							isPresented: $commandPaletteState.isPresented,
+							initialPath: browserPath,
+							provider: SSHProvider(host: host, path: nil),
+							highlightDevContainers: true
+						) { path in
+							projectStore.openRemoteDevContainerOnCurrent(host: host, workspacePath: path)
+							devContainerFlowHost = nil
+						}
+						.padding(.top, 80)
+					}
+				default:
 					CommandPaletteView(
 						isPresented: $commandPaletteState.isPresented,
 						commands: buildPaletteCommands()
@@ -446,6 +504,71 @@ struct MainWindow: View {
 				}
 				.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 			}
+		}
+	}
+
+	private func cycleFocus(step: Int) {
+		guard let project = projectStore.selectedProject else { return }
+		let projectLayout = layoutState.state(for: project.id)
+		let state = commandAreaState(for: project.id)
+
+		// Build a flat cycle: each terminal pane counts individually,
+		// followed by file tree (if shown) and editor (if shown).
+		enum Stop: Equatable {
+			case pane(UUID)
+			case editor
+			case fileTree
+		}
+
+		var stops: [Stop] = state.orderedPaneIds().map { .pane($0) }
+		if projectLayout.showEditor {
+			if projectLayout.showFileTree { stops.append(.fileTree) }
+			// Editor is only a cycle stop when a file is actually open; otherwise
+			// there's nothing to focus and the placeholder is just a blank area.
+			if openFile != nil { stops.append(.editor) }
+		}
+		guard !stops.isEmpty else { return }
+
+		let currentStop: Stop = {
+			switch focusZone {
+			case .editor: return .editor
+			case .fileTree: return .fileTree
+			case .pane:
+				if let active = state.activePaneId, stops.contains(.pane(active)) {
+					return .pane(active)
+				}
+				return stops.first!
+			}
+		}()
+
+		let currentIndex = stops.firstIndex(of: currentStop) ?? 0
+		let nextIndex = (currentIndex + step + stops.count) % stops.count
+		let nextStop = stops[nextIndex]
+
+		withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+			switch nextStop {
+			case .pane(let paneId):
+				focusZone = .pane
+				state.activePaneId = paneId
+			case .editor:
+				focusZone = .editor
+			case .fileTree:
+				focusZone = .fileTree
+			}
+		}
+
+		// Side effects (making AppKit first responder) happen outside animation.
+		switch nextStop {
+		case .pane(let paneId):
+			projectStore.refocusTerminal(paneId: paneId.uuidString)
+		case .editor:
+			projectStore.focusEditor()
+		case .fileTree:
+			NotificationCenter.default.post(
+				name: .belveFocusFileTree,
+				object: nil,
+				userInfo: ["projectId": project.id]
+			)
 		}
 	}
 
@@ -654,7 +777,9 @@ struct MainWindow: View {
 			return buildMainCommands()
 		case .sshHosts:
 			return buildSSHHostCommands()
-		case .folderBrowser:
+		case .sshHostsForDevContainer:
+			return buildSSHHostCommandsForDevContainer()
+		case .folderBrowser, .remoteDevContainerBrowser:
 			return []
 		}
 	}
@@ -675,6 +800,10 @@ struct MainWindow: View {
 		cmds.append(PaletteCommand(title: "SSH Connect", icon: "link") {
 			paletteMode = .sshHosts
 			commandPaletteState.isPresented = true
+		})
+
+		cmds.append(PaletteCommand(title: "Open Remote DevContainer", icon: "shippingbox", keepOpen: true) {
+			paletteMode = .sshHostsForDevContainer
 		})
 
 		if let project = projectStore.selectedProject, project.sshHost != nil {
@@ -732,6 +861,16 @@ struct MainWindow: View {
 		}
 	}
 
+	private func buildSSHHostCommandsForDevContainer() -> [PaletteCommand] {
+		SSHConfigParser.parse().map { host in
+			PaletteCommand(title: host.name, icon: "network", keepOpen: true) {
+				devContainerFlowHost = host.name
+				browserPath = "~"
+				paletteMode = .remoteDevContainerBrowser
+			}
+		}
+	}
+
 	// MARK: - Folder Browser
 
 	private static func connectionInfo(for project: Project) -> String? {
@@ -744,9 +883,54 @@ struct MainWindow: View {
 	}
 
 	private func openFolder() {
-		browserPath = projectStore.selectedProject?.effectivePath ?? NSHomeDirectory()
+		// Always start at the home directory (local = NSHomeDirectory, remote = "~").
+		// Don't carry over the project's current workspace path — the browser is
+		// used to pick a new folder, not to confirm the existing one.
+		if projectStore.selectedProject?.sshHost != nil {
+			browserPath = "~"
+		} else {
+			browserPath = NSHomeDirectory()
+		}
 		paletteMode = .folderBrowser
 		commandPaletteState.isPresented = true
+	}
+}
+
+// MARK: - Focus border namespace (shared across Command panes, file tree, editor)
+
+private struct FocusNamespaceKey: EnvironmentKey {
+	static let defaultValue: Namespace.ID? = nil
+}
+
+private struct ProjectActiveKey: EnvironmentKey {
+	static let defaultValue: Bool = true
+}
+
+extension EnvironmentValues {
+	var focusBorderNamespace: Namespace.ID? {
+		get { self[FocusNamespaceKey.self] }
+		set { self[FocusNamespaceKey.self] = newValue }
+	}
+	var projectActive: Bool {
+		get { self[ProjectActiveKey.self] }
+		set { self[ProjectActiveKey.self] = newValue }
+	}
+}
+
+struct FocusBorderOverlay: View {
+	let isActive: Bool
+	@Environment(\.focusBorderNamespace) private var namespace
+	@Environment(\.projectActive) private var projectActive
+
+	var body: some View {
+		ZStack {
+			if isActive && projectActive, let ns = namespace {
+				RoundedRectangle(cornerRadius: 4)
+					.strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1.2)
+					.matchedGeometryEffect(id: "belveFocusBorder", in: ns, properties: .frame, isSource: true)
+					.allowsHitTesting(false)
+			}
+		}
 	}
 }
 

@@ -78,6 +78,9 @@ extension Notification.Name {
 	static let belveToggleSessionBar = Notification.Name("belveToggleSessionBar")
 	static let belveToggleFileTree = Notification.Name("belveToggleFileTree")
 	static let belveFocusFileTree = Notification.Name("belveFocusFileTree")
+	static let belveEditorWebViewDidFocus = Notification.Name("belveEditorWebViewDidFocus")
+	static let belveTerminalFocused = Notification.Name("belveTerminalFocused")
+	static let belveFileTreeFocused = Notification.Name("belveFileTreeFocused")
 	static let belveRevealFileInTree = Notification.Name("belveRevealFileInTree")
 	static let belveFileLoadingState = Notification.Name("belveFileLoadingState")
 	static let belveOpenFileFromTerminal = Notification.Name("belveOpenFileFromTerminal")
@@ -173,36 +176,67 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Cmd+1-9 handled via .onKeyPress in MainWindow (SwiftUI native)
 		localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
 			let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-			guard flags == [.command],
+			// Accept Cmd or Cmd+Shift (reject Cmd+Option/Ctrl which aren't our shortcuts).
+			guard flags.contains(.command),
+				  flags.subtracting([.command, .shift]).isEmpty,
 				  let key = event.charactersIgnoringModifiers?.lowercased() else {
 				return event
 			}
+			let shift = flags.contains(.shift)
 			switch key {
-			case "p":
-				NotificationCenter.default.post(name: .belveOpenFileSearch, object: nil)
-				return nil
-			case ",":
-				NotificationCenter.default.post(name: .belveOpenSettings, object: nil)
-				return nil
-			case "o":
-				NotificationCenter.default.post(name: .belveOpenFolder, object: nil)
-				return nil
-			case "r":
-				NotificationCenter.default.post(name: .belveReloadProject, object: nil)
-				return nil
+			// Keys that accept both Cmd and Cmd+Shift variants
 			case "e":
-				if event.modifierFlags.contains(.shift) {
+				if shift {
 					NotificationCenter.default.post(name: .belveToggleFileTree, object: nil)
 				} else {
 					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
 				}
 				return nil
 			case "\\":
-				if event.modifierFlags.contains(.shift) {
+				if shift {
 					NotificationCenter.default.post(name: .belveToggleSessionBar, object: nil)
 				} else {
 					NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
 				}
+				return nil
+			case "p":
+				if shift {
+					NotificationCenter.default.post(name: .belveCommandPalette, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveOpenFileSearch, object: nil)
+				}
+				return nil
+			// Cmd-only keys — pass through if Shift is held
+			case "'" where !shift:
+				NotificationCenter.default.post(name: .belveFocusNextPane, object: nil)
+				return nil
+			case ";" where !shift:
+				NotificationCenter.default.post(name: .belveFocusPreviousPane, object: nil)
+				return nil
+			case "]" where !shift:
+				NotificationCenter.default.post(name: .belveSelectNextProject, object: nil)
+				return nil
+			case "[" where !shift:
+				NotificationCenter.default.post(name: .belveSelectPreviousProject, object: nil)
+				return nil
+			case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+				if shift { return event }
+				if let digit = Int(key) {
+					NotificationCenter.default.post(
+						name: .belveSwitchProject,
+						object: nil,
+						userInfo: ["index": digit - 1]
+					)
+				}
+				return nil
+			case "," where !shift:
+				NotificationCenter.default.post(name: .belveOpenSettings, object: nil)
+				return nil
+			case "o" where !shift:
+				NotificationCenter.default.post(name: .belveOpenFolder, object: nil)
+				return nil
+			case "r" where !shift:
+				NotificationCenter.default.post(name: .belveReloadProject, object: nil)
 				return nil
 			default:
 				return event

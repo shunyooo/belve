@@ -1,0 +1,36 @@
+{
+  "name": "belve-editor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CodeMirror 6 bundle for Belve editor",
+  "scripts": {
+    "build": "esbuild editor-entry.js --bundle --format=iife --outfile=../Sources/Belve/Resources/editor-bundle.js --minify"
+  },
+  "dependencies": {
+    "codemirror": "^6.0.1",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.28.0",
+    "@codemirror/commands": "^6.6.0",
+    "@codemirror/language": "^6.10.2",
+    "@codemirror/theme-one-dark": "^6.1.2",
+    "@codemirror/legacy-modes": "^6.5.2",
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/lang-python": "^6.1.6",
+    "@codemirror/lang-html": "^6.4.9",
+    "@codemirror/lang-css": "^6.2.1",
+    "@codemirror/lang-json": "^6.0.1",
+    "@codemirror/lang-markdown": "^6.2.5",
+    "@codemirror/lang-rust": "^6.0.1",
+    "@codemirror/lang-go": "^6.0.1",
+    "@codemirror/lang-java": "^6.0.1",
+    "@codemirror/lang-cpp": "^6.0.2",
+    "@codemirror/lang-xml": "^6.1.0",
+    "@codemirror/lang-sql": "^6.7.1",
+    "@codemirror/lang-php": "^6.0.1",
+    "@codemirror/lang-yaml": "^6.1.1",
+    "@codemirror/lang-sass": "^6.0.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
+}

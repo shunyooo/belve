@@ -14,16 +14,45 @@ struct AgentSessionBar: View {
 		projects.first { $0.id == id }?.name
 	}
 
+	// Terminal statuses (session is effectively over) — show in Archive section.
+	// - sessionEnd: Claude/Codex SessionEnd hook fired
+	// - idle: app restart marked previously-running sessions as stale
+	private static let terminalStatuses: Set<AgentStatus> = [.sessionEnd, .idle]
+
 	private var activeSessions: [AgentSession] {
 		notificationStore.sessions
-			.filter { !$0.isArchived }
+			.filter { !$0.isArchived && !Self.terminalStatuses.contains($0.status) }
 			.sorted { $0.updatedAt > $1.updatedAt }
 	}
 
 	private var archivedSessions: [AgentSession] {
 		notificationStore.sessions
-			.filter { $0.isArchived }
+			.filter { $0.isArchived || Self.terminalStatuses.contains($0.status) }
 			.sorted { $0.updatedAt > $1.updatedAt }
+	}
+
+	private struct ProjectGroup: Identifiable {
+		let id: UUID
+		let name: String
+		let sessions: [AgentSession]
+	}
+
+	private func grouped(_ sessions: [AgentSession]) -> [ProjectGroup] {
+		let byProject = Dictionary(grouping: sessions) { $0.projectId }
+		// Preserve sidebar order; for project IDs not in `projects` (e.g. deleted projects
+		// with lingering archive entries), append at the end.
+		var groups: [ProjectGroup] = []
+		var seen: Set<UUID> = []
+		for project in projects {
+			if let list = byProject[project.id], !list.isEmpty {
+				groups.append(ProjectGroup(id: project.id, name: project.name, sessions: list))
+				seen.insert(project.id)
+			}
+		}
+		for (pid, list) in byProject where !seen.contains(pid) {
+			groups.append(ProjectGroup(id: pid, name: projectName(for: pid) ?? "Unknown", sessions: list))
+		}
+		return groups
 	}
 
 	var body: some View {
@@ -32,8 +61,11 @@ struct AgentSessionBar: View {
 
 			ScrollView {
 				LazyVStack(spacing: 2) {
-					ForEach(activeSessions) { session in
-						sessionRow(session)
+					ForEach(grouped(activeSessions)) { group in
+						projectHeader(name: group.name)
+						ForEach(group.sessions) { session in
+							sessionRow(session)
+						}
 					}
 
 					if !archivedSessions.isEmpty {
@@ -47,9 +79,13 @@ struct AgentSessionBar: View {
 						.padding(.horizontal, 8)
 						.padding(.vertical, 6)
 
-						ForEach(archivedSessions) { session in
-							sessionRow(session)
-								.opacity(0.5)
+						ForEach(grouped(archivedSessions)) { group in
+							projectHeader(name: group.name)
+								.opacity(0.6)
+							ForEach(group.sessions) { session in
+								sessionRow(session)
+									.opacity(0.5)
+							}
 						}
 					}
 				}
@@ -72,10 +108,25 @@ struct AgentSessionBar: View {
 		}
 	}
 
+	private func projectHeader(name: String) -> some View {
+		HStack(spacing: 6) {
+			Image(systemName: "folder.fill")
+				.font(.system(size: 9))
+				.foregroundStyle(Theme.accent.opacity(0.8))
+			Text(name)
+				.font(.system(size: 11, weight: .semibold))
+				.foregroundStyle(Theme.textPrimary)
+			Spacer(minLength: 0)
+		}
+		.padding(.horizontal, 12)
+		.padding(.top, 8)
+		.padding(.bottom, 4)
+	}
+
 	private func sessionRow(_ session: AgentSession) -> some View {
 		SessionRow(
 			session: session,
-			projectName: projectName(for: session.projectId),
+			projectName: nil,  // shown in the group header now
 			isFocused: !session.isArchived && session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId,
 			focusNamespace: focusNamespace
 		)

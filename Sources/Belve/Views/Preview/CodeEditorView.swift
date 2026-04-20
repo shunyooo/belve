@@ -12,6 +12,13 @@ struct EditorDefinitionRequest {
 final class EditorWebView: WKWebView {
 	override var acceptsFirstResponder: Bool { true }
 
+	override func becomeFirstResponder() -> Bool {
+		// Notify SwiftUI to clear any stale focus state (e.g. file tree) so it
+		// stops intercepting keys while the editor is active.
+		NotificationCenter.default.post(name: .belveEditorWebViewDidFocus, object: self)
+		return super.becomeFirstResponder()
+	}
+
 	override func performKeyEquivalent(with event: NSEvent) -> Bool {
 		guard let firstResponder = window?.firstResponder as? NSView,
 			  firstResponder === self || firstResponder.isDescendant(of: self) || isAncestor(of: firstResponder)
@@ -132,6 +139,10 @@ struct CodeEditorView: NSViewRepresentable {
 					openFile(filename: file.filename, content: file.content, line: file.line, column: file.column)
 					pendingFile = nil
 				}
+			case "focusCycle":
+				let step = body["step"] as? Int ?? 1
+				let name: Notification.Name = step > 0 ? .belveFocusNextPane : .belveFocusPreviousPane
+				NotificationCenter.default.post(name: name, object: nil)
 			case "contentChanged":
 				if let content = body["content"] as? String {
 					onContentChanged(content)

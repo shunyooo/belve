@@ -11,6 +11,11 @@ class ProjectStore: ObservableObject {
 	@Published private var terminalReloadTokens: [UUID: Int] = [:]
 	@Published var gitBranch: String?
 	@Published var gitFileStatus: [String: String] = [:]  // relativePath → status (M, A, D, ??, etc.)
+
+	// Per-project loading state, aggregated from pane-level terminal-connection
+	// notifications. Used by the sidebar to show a "Preparing DevContainer..." hint.
+	@Published var projectLoadingStatus: [UUID: String] = [:]
+	private var projectLoadingPanes: [UUID: Set<UUID>] = [:]
 	private var lastGitRefresh: Date = .distantPast
 
 	private var gitPollTimer: Timer?
@@ -23,6 +28,42 @@ class ProjectStore: ObservableObject {
 			self?.gitPollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
 				self?.refreshGitStatus()
 				NotificationCenter.default.post(name: .belveRefreshFileTree, object: nil)
+			}
+		}
+
+		// Aggregate pane-level connection loading state into per-project loading state
+		// so the project sidebar can show "Preparing DevContainer..." etc.
+		NotificationCenter.default.addObserver(
+			forName: .belveTerminalConnectionState, object: nil, queue: .main
+		) { [weak self] notif in
+			guard let self,
+				  let projectId = notif.userInfo?["projectId"] as? UUID,
+				  let paneIdString = notif.userInfo?["paneId"] as? String,
+				  let paneId = UUID(uuidString: paneIdString),
+				  let isLoading = notif.userInfo?["isLoading"] as? Bool else { return }
+			var set = self.projectLoadingPanes[projectId] ?? []
+			if isLoading {
+				set.insert(paneId)
+			} else {
+				set.remove(paneId)
+			}
+			if set.isEmpty {
+				self.projectLoadingPanes.removeValue(forKey: projectId)
+				self.projectLoadingStatus.removeValue(forKey: projectId)
+			} else {
+				self.projectLoadingPanes[projectId] = set
+			}
+		}
+
+		NotificationCenter.default.addObserver(
+			forName: .belveTerminalConnectionStatus, object: nil, queue: .main
+		) { [weak self] notif in
+			guard let self,
+				  let projectId = notif.userInfo?["projectId"] as? UUID else { return }
+			if let message = notif.userInfo?["message"] as? String {
+				self.projectLoadingStatus[projectId] = message
+			} else {
+				self.projectLoadingStatus.removeValue(forKey: projectId)
 			}
 		}
 	}
@@ -240,10 +281,26 @@ class ProjectStore: ObservableObject {
 
 	/// Refocus the terminal view after palette/dialog closes
 	func refocusTerminal(paneId: String? = nil) {
-		if let webView = findTerminalWebView(paneId: paneId) {
+		guard let webView = findTerminalWebView(paneId: paneId) else {
+			NSLog("[Belve] refocusTerminal: webview not found for paneId=\(paneId ?? "nil")")
+			return
+		}
+		// Proactively tell SwiftUI-focused siblings (file tree / editor) to release focus
+		// before we take AppKit first responder. Otherwise @FocusState can race and keep
+		// the caret trapped there, so typing doesn't reach the terminal webview.
+		NotificationCenter.default.post(name: .belveTerminalFocused, object: webView)
+
+		// @FocusState can re-assert focus to its bound view on later runloop ticks
+		// (SwiftUI batches focus updates). Claim aggressively on multiple ticks so
+		// the terminal wins even if a sibling tries to reclaim.
+		let claim = {
+			webView.window?.makeFirstResponder(nil)
 			webView.window?.makeFirstResponder(webView)
 			webView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
 		}
+		claim()
+		DispatchQueue.main.async { claim() }
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { claim() }
 	}
 
 	private func findTerminalWebView(paneId: String? = nil) -> WKWebView? {
@@ -306,6 +363,41 @@ class ProjectStore: ObservableObject {
 	}
 
 	// MARK: - DevContainer
+
+	/// Reconfigure the currently selected project as a remote DevContainer in one step.
+	/// Combines "SSH Connect + Open Folder + Reopen in Container".
+	///
+	/// Callers must have already verified that `.devcontainer/devcontainer.json`
+	/// exists at workspacePath (the folder browser does this for the Open Remote
+	/// DevContainer command). No SSH fallback — if the dir isn't a devcontainer,
+	/// this method shouldn't be called.
+	func openRemoteDevContainerOnCurrent(host: String, workspacePath: String) {
+		let baseName = (workspacePath as NSString).lastPathComponent
+		let workspace: Workspace = .devContainer(host: host, workspace: workspacePath)
+
+		if let index = indexOfSelected {
+			if let oldHost = projects[index].sshHost {
+				SSHTunnelManager.shared.teardownTunnel(host: oldHost, projectId: projects[index].id)
+			}
+			let replacement = Project(
+				name: baseName.isEmpty ? projects[index].name : baseName,
+				workspace: workspace
+			).withNewId()
+			projects[index] = replacement
+			saveProjects()
+			select(replacement)
+			fetchContainerImageName(sshHost: host, remotePath: workspacePath)
+			NSLog("[Belve] Reconfigured project \(replacement.name) @ \(host):\(workspacePath) as DevContainer")
+		} else {
+			let finalName = uniqueName(baseName.isEmpty ? host : baseName)
+			let project = Project(name: finalName, workspace: workspace)
+			projects.append(project)
+			saveProjects()
+			select(project)
+			fetchContainerImageName(sshHost: host, remotePath: workspacePath)
+			NSLog("[Belve] Added project \(finalName) @ \(host):\(workspacePath) as DevContainer")
+		}
+	}
 
 	func openDevContainer() {
 		guard let index = indexOfSelected,

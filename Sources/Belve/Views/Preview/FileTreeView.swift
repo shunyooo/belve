@@ -599,6 +599,10 @@ struct FileTreeView: View {
 	@ObservedObject var state: FileTreeState
 	var gitFileStatus: [String: String] = [:]
 	@FocusState private var isTreeFocused: Bool
+	// Mirror of isTreeFocused that we mutate inside withAnimation so matchedGeometryEffect
+	// can observe the change through normal @State observation (SwiftUI @FocusState bool
+	// changes are not reliably treated as animatable state).
+	@State private var treeBorderActive: Bool = false
 
 	private var isEditing: Bool {
 		state.renamingPath != nil || state.creatingInPath != nil
@@ -627,13 +631,32 @@ struct FileTreeView: View {
 				.padding(.vertical, 4)
 			}
 			.background(Theme.surface)
+			.overlay(FocusBorderOverlay(isActive: treeBorderActive))
+			// Drag-and-drop upload from Finder — drops land in the project root.
+			.onDrop(of: [.fileURL], isTargeted: nil) { providers in
+				handleFileDrop(providers: providers, destination: rootPath)
+				return true
+			}
+			// `.focusable()` (default — [.activate, .edit]) is required for onKeyPress
+			// handlers to fire while focused. Stale focus from the editor/terminal
+			// side is cleared by the belveEditorWebViewDidFocus / belveTerminalFocused
+			// observers below.
 			.focusable()
+			.focusEffectDisabled()
 			.focused($isTreeFocused)
 			.onChange(of: state.focusedPath) {
 				if let path = state.focusedPath {
 					withAnimation(.easeInOut(duration: 0.15)) {
 						proxy.scrollTo(path, anchor: nil)
 					}
+				}
+			}
+			.onChange(of: isTreeFocused) { _, nowFocused in
+				if nowFocused {
+					NotificationCenter.default.post(name: .belveFileTreeFocused, object: nil)
+				}
+				withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+					treeBorderActive = nowFocused
 				}
 			}
 			.onKeyPress(.upArrow) {
@@ -706,6 +729,16 @@ struct FileTreeView: View {
 				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
 				return .handled
 			}
+			.onKeyPress(characters: CharacterSet(charactersIn: "'"), phases: .down) { press in
+				guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
+				NotificationCenter.default.post(name: .belveFocusNextPane, object: nil)
+				return .handled
+			}
+			.onKeyPress(characters: CharacterSet(charactersIn: ";"), phases: .down) { press in
+				guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
+				NotificationCenter.default.post(name: .belveFocusPreviousPane, object: nil)
+				return .handled
+			}
 			.onKeyPress(KeyEquivalent(Character(UnicodeScalar(0xF705)!))) {
 				guard !isEditing else { return .ignored }
 				state.startRename()
@@ -723,6 +756,12 @@ struct FileTreeView: View {
 				if state.focusedPath == nil {
 					state.focusedPath = state.visibleItems().first?.path
 				}
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .belveEditorWebViewDidFocus)) { _ in
+				if isTreeFocused { isTreeFocused = false }
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .belveTerminalFocused)) { _ in
+				if isTreeFocused { isTreeFocused = false }
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .belveRevealFileInTree)) { notif in
 				guard let projectId = notif.userInfo?["projectId"] as? UUID,
@@ -753,6 +792,26 @@ struct FileTreeView: View {
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveRefreshFileTree)) { _ in
 			state.refreshVisible(project: project, rootPath: rootPath)
+		}
+	}
+
+	private func handleFileDrop(providers: [NSItemProvider], destination: String) {
+		let provider = project.provider
+		for item in providers {
+			_ = item.loadObject(ofClass: URL.self) { url, _ in
+				guard let url else { return }
+				let destPath = (destination as NSString).appendingPathComponent(url.lastPathComponent)
+				DispatchQueue.global(qos: .userInitiated).async {
+					let ok = provider.uploadFile(localURL: url, to: destPath)
+					DispatchQueue.main.async {
+						if ok {
+							state.refreshVisible(project: project, rootPath: rootPath)
+						} else {
+							NSLog("[Belve] upload failed: \(url.lastPathComponent) -> \(destPath)")
+						}
+					}
+				}
+			}
 		}
 	}
 }
