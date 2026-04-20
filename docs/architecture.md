@@ -38,8 +38,7 @@ belve/
 │   │   ├── SettingsView.swift
 │   │   ├── WorkspaceLayoutState.swift
 │   │   ├── Sidebar/
-│   │   │   ├── ProjectListView.swift
-│   │   │   └── AgentSessionBar.swift
+│   │   │   └── ProjectListView.swift   # projects + nested agent sessions
 │   │   ├── Command/
 │   │   │   ├── CommandArea.swift     # ターミナルペインレイアウト
 │   │   │   └── DevContainerBanner.swift
@@ -97,23 +96,22 @@ belve/
 ### レイアウト — Sidebar / Command / Preview
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ ┌────┐ ┌────┐ ┌──────────────────┬────────────────┐ │
-│ │    │ │    │ │  Command         │  Preview       │ │
-│ │ P  │ │ S  │ │ ┌──────┬───────┐ │ ┌──┐ file-tree │ │
-│ │ r  │ │ e  │ │ │Term 1│Term 2 │ │ ├──┘           │ │
-│ │ o  │ │ s  │ │ │      │       │ │ │ [main.swift] │ │
-│ │ j  │ │ s  │ │ ├──────┴───────┤ │ │ ┌──────────┐ │ │
-│ │ e  │ │ i  │ │ │ Terminal 3   │ │ │ │ Editor   │ │ │
-│ │ c  │ │ o  │ │ │              │ │ │ └──────────┘ │ │
-│ │ t  │ │ n  │ │ │              │ │ │              │ │
-│ │ s  │ │    │ │ │              │ │ │              │ │
-│ └────┘ └────┘ │ └──────────────┘ │ └──────────────┘ │
-└─────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│ ┌────┐ ┌──────────────────┬────────────────┐       │
+│ │    │ │  Command         │  Preview       │       │
+│ │ P  │ │ ┌──────┬───────┐ │ ┌──┐ file-tree │       │
+│ │ r  │ │ │Term 1│Term 2 │ │ ├──┘           │       │
+│ │ o  │ │ │      │       │ │ │ [main.swift] │       │
+│ │ j  │ │ ├──────┴───────┤ │ │ ┌──────────┐ │       │
+│ │ e  │ │ │ Terminal 3   │ │ │ │ Editor   │ │       │
+│ │ c  │ │ │              │ │ │ └──────────┘ │       │
+│ │ t  │ │ │              │ │ │              │       │
+│ │ s  │ │ │              │ │ │              │       │
+│ └────┘ └──────────────────┴────────────────┘       │
+└────────────────────────────────────────────────────┘
 ```
 
-- **Project Sidebar**: プロジェクト一覧。サイドバー切替 Cmd+Shift+\ (デフォルト開)、プロジェクト切替 Cmd+[ / Cmd+]、Cmd+1〜9
-- **Session Sidebar**: アクティブなエージェントセッション一覧。更新順に並び、フォーカス状態を matchedGeometryEffect でスムーズに移動
+- **Sidebar (ProjectListView)**: プロジェクト一覧 + 各プロジェクトの下にネストされた Agent セッション。サイドバー切替 Cmd+\、プロジェクト切替 Cmd+[ / Cmd+]、Cmd+1〜9
 - **Command エリア**: ターミナルペイン。縦横自由なグリッド分割 (Cmd+D / Cmd+Shift+D)
 - **Preview エリア**: ファイルツリー + コードエディタ / Markdown WYSIWYG / メディアプレビュー
 
