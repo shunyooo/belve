@@ -589,7 +589,11 @@ struct MainWindow: View {
 	private func toggleFileTree() {
 		guard let project = projectStore.selectedProject else { return }
 		let projectLayout = layoutState.state(for: project.id)
-		guard projectLayout.showEditor else { return }
+		if !projectLayout.showEditor {
+			withAnimation(Self.toggleAnimation(isShowing: true)) {
+				projectLayout.showEditor = true
+			}
+		}
 		let isShowing = !projectLayout.showFileTree
 		withAnimation(Self.toggleAnimation(isShowing: isShowing)) {
 			projectLayout.showFileTree.toggle()
