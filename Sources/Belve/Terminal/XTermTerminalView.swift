@@ -868,9 +868,7 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "l":
 				NotificationCenter.default.post(name: .belveFocusEditor, object: nil)
 			case "\\":
-				if shift {
-					NotificationCenter.default.post(name: .belveToggleSessionBar, object: nil)
-				} else {
+				if !shift {
 					NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
 				}
 			case "e":

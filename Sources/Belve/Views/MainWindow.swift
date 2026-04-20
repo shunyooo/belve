@@ -5,7 +5,6 @@ struct MainWindow: View {
 	@EnvironmentObject var commandPaletteState: CommandPaletteState
 	@EnvironmentObject var projectStore: ProjectStore
 	@State private var sidebarWidthAtDragStart: CGFloat = 0
-	// sessionBarWidthAtDragStart removed — session bar merged into project list
 	@State private var openFile: OpenFile?
 	@State private var showSettings = false
 	@State private var isFileSearchPresented = false
@@ -56,19 +55,7 @@ struct MainWindow: View {
 				.background(WindowFrameAutosave(name: "BelveMainWindow"))
 				.onAppear {
 					sidebarWidthAtDragStart = layoutState.sidebarWidth
-					// Restore the last-opened file for the currently selected project
-					// on first launch (onChange of selectedProject doesn't fire for the
-					// initial value, so we trigger it explicitly here).
-					if let project = projectStore.selectedProject,
-					   let path = layoutState.state(for: project.id).lastOpenedFile {
-						DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-							NotificationCenter.default.post(
-								name: .belveOpenFileFromTerminal,
-								object: nil,
-								userInfo: ["projectId": project.id, "path": path]
-							)
-						}
-					}
+					// Last-opened file restore is handled by PreviewArea.onAppear.
 				}
 		)
 
@@ -120,26 +107,11 @@ struct MainWindow: View {
 		let paletteHandlers = AnyView(
 			projectShortcuts
 				.onChange(of: projectStore.selectedProject) {
+					// Clear openFile on project switch — PreviewArea for the new
+					// project will restore its own `lastOpenedFile` in onAppear.
 					openFile = nil
-					// Restore the per-project last-opened file (if any) once the
-					// PreviewArea for the new project is mounted.
-					if let project = projectStore.selectedProject,
-					   let path = layoutState.state(for: project.id).lastOpenedFile {
-						DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-							NotificationCenter.default.post(
-								name: .belveOpenFileFromTerminal,
-								object: nil,
-								userInfo: ["projectId": project.id, "path": path]
-							)
-						}
-					}
 					DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
 						projectStore.refocusTerminal()
-					}
-				}
-				.onChange(of: openFile?.path) {
-					if let project = projectStore.selectedProject {
-						layoutState.state(for: project.id).lastOpenedFile = openFile?.path
 					}
 				}
 				.onChange(of: commandPaletteState.isPresented) {
@@ -531,8 +503,6 @@ struct MainWindow: View {
 			layoutState.showSidebar.toggle()
 		}
 	}
-
-	// toggleSessionBar removed — session bar merged into project list
 
 	private func toggleFileTree() {
 		guard let project = projectStore.selectedProject else { return }

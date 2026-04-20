@@ -75,7 +75,6 @@ extension Notification.Name {
 	static let belveFocusEditor = Notification.Name("belveFocusEditor")
 	static let belveToggleEditor = Notification.Name("belveToggleEditor")
 	static let belveToggleSidebar = Notification.Name("belveToggleSidebar")
-	static let belveToggleSessionBar = Notification.Name("belveToggleSessionBar")
 	static let belveToggleFileTree = Notification.Name("belveToggleFileTree")
 	static let belveFocusFileTree = Notification.Name("belveFocusFileTree")
 	static let belveEditorWebViewDidFocus = Notification.Name("belveEditorWebViewDidFocus")
@@ -192,12 +191,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
 				}
 				return nil
-			case "\\":
-				if shift {
-					NotificationCenter.default.post(name: .belveToggleSessionBar, object: nil)
-				} else {
-					NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
-				}
+			case "\\" where !shift:
+				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
 				return nil
 			case "p":
 				if shift {
