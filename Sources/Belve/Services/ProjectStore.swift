@@ -349,14 +349,13 @@ class ProjectStore: ObservableObject {
 	func connectSSH(host: String) {
 		if let index = indexOfSelected {
 			let oldProject = projects[index]
-			// Only set name to host if no folder name is set yet
 			let name = oldProject.path == nil ? (host.components(separatedBy: ".").first ?? host) : oldProject.name
 			let newProject = Project(name: name, workspace: .ssh(host: host, path: oldProject.path))
 			projects[index] = newProject
 			saveProjects()
 			select(newProject)
-			// Connect via existing terminal
-			sendToActiveTerminal("ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -t \(host)\n")
+			// Reload terminal to connect via LauncherScriptGenerator
+			reloadCurrentProject()
 		} else {
 			let _ = addProject(name: host.components(separatedBy: ".").first, sshHost: host)
 		}
