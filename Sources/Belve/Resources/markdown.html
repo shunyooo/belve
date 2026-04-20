@@ -9,7 +9,7 @@ html, body {
 	width: 100%;
 	height: 100%;
 	overflow: hidden;
-	background: #1a1a1f;
+	background: #24242e;
 	color: #e0e3eb;
 }
 #editor {
@@ -26,6 +26,52 @@ html, body {
 .milkdown .ProseMirror h2 { font-size: 1.35em !important; font-weight: 600 !important; }
 .milkdown .ProseMirror h3 { font-size: 1.15em !important; font-weight: 600 !important; }
 .milkdown .ProseMirror p { font-size: 14px !important; line-height: 1.6 !important; }
+
+/* Force dark theme */
+.milkdown, .milkdown .ProseMirror {
+	background: #1a1a1f !important;
+	color: #e0e3eb !important;
+	caret-color: #e0e3eb !important;
+}
+.milkdown .ProseMirror h1,
+.milkdown .ProseMirror h2,
+.milkdown .ProseMirror h3,
+.milkdown .ProseMirror h4 {
+	color: #e0e3eb !important;
+}
+.milkdown .ProseMirror a { color: #89b4fa !important; }
+.milkdown .ProseMirror code {
+	background: #2a2a35 !important;
+	color: #f38ba8 !important;
+}
+.milkdown .ProseMirror pre {
+	background: #1e1e2e !important;
+	color: #cdd6f4 !important;
+}
+.milkdown .ProseMirror blockquote {
+	border-left-color: #585b70 !important;
+	color: #a6adc8 !important;
+}
+.milkdown .ProseMirror hr {
+	border-color: #313244 !important;
+}
+.milkdown .ProseMirror table th,
+.milkdown .ProseMirror table td {
+	border-color: #45475a !important;
+}
+.milkdown .ProseMirror table th {
+	background: #2a2a35 !important;
+}
+.milkdown .ProseMirror ::selection {
+	background: #585b70 !important;
+}
+.milkdown .ProseMirror img {
+	border-radius: 6px;
+}
+.milkdown .ProseMirror ul li::marker,
+.milkdown .ProseMirror ol li::marker {
+	color: #585b70 !important;
+}
 </style>
 <style>/* MARKDOWN_CSS */</style>
 <style>

@@ -98,6 +98,8 @@ struct PreviewArea: View {
 			editedContent = openFile?.content ?? ""
 			savedContentReference = openFile?.content ?? ""
 			startFileWatch()
+			// Persist open file path
+			layoutState.lastOpenedFile = openFile?.path
 			guard let file = openFile else { return }
 			NotificationCenter.default.post(
 				name: .belveRevealFileInTree,
@@ -107,6 +109,12 @@ struct PreviewArea: View {
 		}
 		.onDisappear {
 			stopFileWatch()
+		}
+		.onAppear {
+			// Restore previously open file
+			if openFile == nil, let savedPath = layoutState.lastOpenedFile {
+				loadFile(at: savedPath)
+			}
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileSave)) { _ in
 			saveCurrentFile()
