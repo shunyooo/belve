@@ -6,17 +6,15 @@ struct ProjectListView: View {
 	@EnvironmentObject var notificationStore: NotificationStore
 	var onAddProject: (() -> Void)?
 	var onToggleSidebar: (() -> Void)?
-	var onToggleSessionBar: (() -> Void)?
-	var showSessionBar: Bool = true
 	var onRenameProject: ((UUID, String) -> Void)?
 	var onDeleteProject: ((UUID) -> Void)?
 	var onMoveProject: ((IndexSet, Int) -> Void)?
+	var onFocusPane: ((UUID, String) -> Void)?
+	@ObservedObject var activeCommandState: CommandAreaState
 
 	@State private var renamingProjectId: UUID?
 	@State private var renameText = ""
 	@State private var contextMenuProjectId: UUID?
-
-	// Drag & drop state
 	@State private var draggingProjectId: UUID?
 	@State private var dropTargetIndex: Int?
 
@@ -38,62 +36,18 @@ struct ProjectListView: View {
 								}
 								.padding(.horizontal, 8)
 							} else {
-								// Drop indicator above this row
 								if dropTargetIndex == index && draggingProjectId != project.id {
 									dropIndicator()
 								}
 
-								ProjectRow(
-									project: project,
-									isSelected: selectedProject == project,
-										agentState: notificationStore.agentStatus[project.id],
-									selectionNamespace: selectionNamespace
-								)
-								.opacity(draggingProjectId == project.id ? 0.4 : 1.0)
-								.overlay(
-									DragSourceView(
-										projectId: project.id,
-										onDragStarted: { draggingProjectId = project.id },
-										onClick: { selectedProject = project },
-										onRightClick: { _ in
-											contextMenuProjectId = project.id
-										}
-									)
-								)
-								.overlay(alignment: .topTrailing) {
-									if contextMenuProjectId == project.id {
-										ProjectContextMenu(
-											onRename: {
-												renameText = project.name
-												renamingProjectId = project.id
-												contextMenuProjectId = nil
-											},
-											onDelete: {
-												onDeleteProject?(project.id)
-												contextMenuProjectId = nil
-											}
-										)
-										.offset(x: 20, y: 30)
-										.transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .topLeading)))
-									}
-								}
-								.zIndex(contextMenuProjectId == project.id ? 100 : 0)
-								.onDrop(of: [.text], delegate: ProjectDropDelegate(
-									targetIndex: index,
-									projects: projects,
-									draggingProjectId: $draggingProjectId,
-									dropTargetIndex: $dropTargetIndex,
-									onMoveProject: onMoveProject
-								))
+								projectSection(project: project, index: index)
 							}
 						}
 
-						// Drop indicator at the end
 						if dropTargetIndex == projects.count {
 							dropIndicator()
 						}
 
-						// Drop target for the empty area below the list
 						Color.clear
 							.frame(height: 20)
 							.onDrop(of: [.text], delegate: ProjectDropDelegate(
@@ -110,24 +64,11 @@ struct ProjectListView: View {
 			.overlay(alignment: .topTrailing) {
 				HStack(spacing: 4) {
 					SidebarIconButton(icon: "plus", action: { onAddProject?() })
-					// Session bar toggle only shown when closed — when open, the toggle
-					// lives inside the AgentSessionBar itself.
-					if let onToggleSessionBar, !showSessionBar {
-						SidebarIconButton(
-							icon: "list.bullet.rectangle",
-							action: { onToggleSessionBar() }
-						)
-						.transition(.asymmetric(
-							insertion: .opacity.animation(.easeOut(duration: 0.25).delay(0.15)),
-							removal: .opacity.animation(.easeOut(duration: 0.1))
-						))
-					}
 					SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 				}
 				.padding(.trailing, 6)
 				.padding(.top, 4)
 			}
-
 		}
 		.onTapGesture {
 			if contextMenuProjectId != nil {
@@ -136,6 +77,87 @@ struct ProjectListView: View {
 		}
 		.animation(.easeOut(duration: 0.12), value: contextMenuProjectId != nil)
 		.animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18), value: selectedProject)
+		.onReceive(NotificationCenter.default.publisher(for: .belvePaneClosed)) { notif in
+			if let paneId = notif.userInfo?["paneId"] as? String {
+				notificationStore.archiveSessionsForPane(paneId)
+			}
+		}
+	}
+
+	// MARK: - Project Section (project row + nested sessions)
+
+	private func projectSection(project: Project, index: Int) -> some View {
+		VStack(spacing: 0) {
+			ProjectRow(
+				project: project,
+				isSelected: selectedProject == project,
+				agentState: notificationStore.agentStatus[project.id],
+				selectionNamespace: selectionNamespace
+			)
+			.opacity(draggingProjectId == project.id ? 0.4 : 1.0)
+			.overlay(
+				DragSourceView(
+					projectId: project.id,
+					onDragStarted: { draggingProjectId = project.id },
+					onClick: { selectedProject = project },
+					onRightClick: { _ in contextMenuProjectId = project.id }
+				)
+			)
+			.overlay(alignment: .topTrailing) {
+				if contextMenuProjectId == project.id {
+					ProjectContextMenu(
+						onRename: {
+							renameText = project.name
+							renamingProjectId = project.id
+							contextMenuProjectId = nil
+						},
+						onDelete: {
+							onDeleteProject?(project.id)
+							contextMenuProjectId = nil
+						}
+					)
+					.offset(x: 20, y: 30)
+					.transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .topLeading)))
+				}
+			}
+			.zIndex(contextMenuProjectId == project.id ? 100 : 0)
+			.onDrop(of: [.text], delegate: ProjectDropDelegate(
+				targetIndex: index,
+				projects: projects,
+				draggingProjectId: $draggingProjectId,
+				dropTargetIndex: $dropTargetIndex,
+				onMoveProject: onMoveProject
+			))
+
+			// Nested agent sessions for this project
+			let sessions = sessionsForProject(project.id)
+			if !sessions.isEmpty {
+				VStack(spacing: 1) {
+					ForEach(sessions) { session in
+						SessionRow(
+							session: session,
+							isFocused: session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId
+								&& selectedProject == project
+						)
+						.onTapGesture {
+							selectedProject = project
+							if let paneId = session.paneId {
+								onFocusPane?(project.id, paneId)
+							}
+						}
+					}
+				}
+				.padding(.leading, 16)
+				.padding(.trailing, 4)
+				.padding(.bottom, 4)
+			}
+		}
+	}
+
+	private func sessionsForProject(_ projectId: UUID) -> [AgentSession] {
+		notificationStore.sessions
+			.filter { $0.projectId == projectId && !$0.isArchived }
+			.sorted { $0.updatedAt > $1.updatedAt }
 	}
 
 	private func dropIndicator() -> some View {
@@ -149,6 +171,141 @@ struct ProjectListView: View {
 	}
 }
 
+// MARK: - Session Row (nested under project)
+
+private struct SessionRow: View {
+	let session: AgentSession
+	var isFocused: Bool = false
+	@State private var isHovering = false
+
+	private var statusColor: Color {
+		switch session.status {
+		case .running: return Theme.accent
+		case .waiting: return Theme.yellow
+		case .completed, .sessionEnd: return Theme.green
+		case .sessionStart: return Theme.accent
+		case .idle: return Theme.textTertiary
+		}
+	}
+
+	private var isActive: Bool {
+		session.status == .running || session.status == .waiting || session.status == .sessionStart
+	}
+
+	var body: some View {
+		HStack(alignment: .top, spacing: 6) {
+			VStack {
+				Spacer().frame(height: 3)
+				if isActive {
+					PulsingDot(color: statusColor)
+				} else {
+					Circle()
+						.fill(statusColor.opacity(session.status == .completed ? 1 : 0.3))
+						.frame(width: 6, height: 6)
+						.frame(width: 10, height: 10)
+				}
+			}
+
+			VStack(alignment: .leading, spacing: 2) {
+				Text(session.lastUserPrompt ?? session.label ?? session.message)
+					.font(.system(size: 11, weight: isActive ? .medium : .regular))
+					.foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
+					.lineLimit(2)
+
+				if isActive || session.status == .completed {
+					VStack(alignment: .leading, spacing: 1) {
+						if let tool = session.currentTool {
+							HStack(spacing: 3) {
+								Image(systemName: "wrench.and.screwdriver")
+									.font(.system(size: 8))
+								Text(tool)
+									.lineLimit(1)
+							}
+							.font(.system(size: 9))
+							.foregroundStyle(Theme.accent)
+
+							if let detail = session.lastAgentActivity, !detail.isEmpty {
+								Text(detail)
+									.font(.system(size: 9))
+									.foregroundStyle(Theme.textTertiary)
+									.lineLimit(3)
+							}
+						} else if session.status == .waiting {
+							Text(session.message)
+								.font(.system(size: 9))
+								.foregroundStyle(Theme.yellow)
+								.lineLimit(3)
+						} else if session.status == .completed {
+							if let activity = session.lastAgentActivity {
+								Text(activity)
+									.font(.system(size: 9))
+									.foregroundStyle(Theme.textTertiary)
+									.lineLimit(3)
+							}
+						} else {
+							Text("Thinking...")
+								.font(.system(size: 9))
+								.foregroundStyle(Theme.textTertiary)
+						}
+					}
+				}
+
+				Text(session.updatedAt.relativeString)
+					.font(.system(size: 9))
+					.foregroundStyle(Theme.textTertiary.opacity(0.6))
+			}
+
+			Spacer(minLength: 0)
+		}
+		.padding(.horizontal, 8)
+		.padding(.vertical, 5)
+		.background(
+			RoundedRectangle(cornerRadius: 4)
+				.fill(isFocused ? Theme.surfaceActive : (isHovering ? Theme.surfaceHover : Color.clear))
+		)
+		.contentShape(Rectangle())
+		.onHover { isHovering = $0 }
+	}
+}
+
+// MARK: - Pulsing Dot
+
+private struct PulsingDot: View {
+	let color: Color
+	@State private var isPulsing = false
+
+	var body: some View {
+		Circle()
+			.fill(color)
+			.frame(width: 6, height: 6)
+			.overlay(
+				Circle()
+					.stroke(color.opacity(0.4), lineWidth: 1.5)
+					.frame(width: 10, height: 10)
+					.scaleEffect(isPulsing ? 1.3 : 1.0)
+					.opacity(isPulsing ? 0 : 0.6)
+			)
+			.frame(width: 10, height: 10)
+			.onAppear {
+				withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) {
+					isPulsing = true
+				}
+			}
+	}
+}
+
+// MARK: - Date Extension
+
+private extension Date {
+	var relativeString: String {
+		let interval = -timeIntervalSinceNow
+		if interval < 60 { return "now" }
+		if interval < 3600 { return "\(Int(interval / 60))m" }
+		if interval < 86400 { return "\(Int(interval / 3600))h" }
+		return "\(Int(interval / 86400))d"
+	}
+}
+
 // MARK: - Drop Delegate
 
 struct ProjectDropDelegate: DropDelegate {
@@ -159,36 +316,25 @@ struct ProjectDropDelegate: DropDelegate {
 	var onMoveProject: ((IndexSet, Int) -> Void)?
 
 	func dropEntered(info: DropInfo) {
-		withAnimation(.easeOut(duration: 0.15)) {
-			dropTargetIndex = targetIndex
-		}
+		withAnimation(.easeOut(duration: 0.15)) { dropTargetIndex = targetIndex }
 	}
 
-	func dropUpdated(info: DropInfo) -> DropProposal? {
-		DropProposal(operation: .move)
-	}
+	func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
 
 	func performDrop(info: DropInfo) -> Bool {
 		guard let dragId = draggingProjectId,
 			  let sourceIndex = projects.firstIndex(where: { $0.id == dragId }) else {
-			reset()
-			return false
+			reset(); return false
 		}
-		let dest = targetIndex > sourceIndex ? targetIndex : targetIndex
+		let dest = targetIndex
 		if sourceIndex != dest && sourceIndex + 1 != dest {
 			onMoveProject?(IndexSet(integer: sourceIndex), dest)
 		}
-		reset()
-		return true
+		reset(); return true
 	}
 
-	func dropExited(info: DropInfo) {
-		// Only clear if we're leaving this specific target
-	}
-
-	func validateDrop(info: DropInfo) -> Bool {
-		draggingProjectId != nil
-	}
+	func dropExited(info: DropInfo) {}
+	func validateDrop(info: DropInfo) -> Bool { draggingProjectId != nil }
 
 	private func reset() {
 		withAnimation(.easeOut(duration: 0.15)) {
@@ -198,7 +344,7 @@ struct ProjectDropDelegate: DropDelegate {
 	}
 }
 
-// MARK: - Custom Context Menu
+// MARK: - Context Menu
 
 struct ProjectContextMenu: View {
 	let onRename: () -> Void
@@ -252,9 +398,7 @@ struct ContextMenuItem: View {
 			.padding(.horizontal, 4)
 		}
 		.buttonStyle(.plain)
-		.onHover { hovering in
-			isHovering = hovering
-		}
+		.onHover { isHovering = $0 }
 	}
 }
 
@@ -267,7 +411,7 @@ struct ContextMenuDivider: View {
 	}
 }
 
-// MARK: - Drag Source (NSView-based, doesn't block clicks)
+// MARK: - Drag Source
 
 struct DragSourceView: NSViewRepresentable {
 	let projectId: UUID
@@ -311,19 +455,15 @@ struct DragSourceView: NSViewRepresentable {
 			let dx = current.x - startLocation.x
 			let dy = current.y - startLocation.y
 			guard sqrt(dx * dx + dy * dy) > dragThreshold else { return }
-
 			didDrag = true
 			onDragStarted?()
-
 			let item = NSDraggingItem(pasteboardWriter: projectId.uuidString as NSString)
 			item.setDraggingFrame(bounds, contents: snapshot())
 			beginDraggingSession(with: [item], event: event, source: self)
 		}
 
 		override func mouseUp(with event: NSEvent) {
-			if !didDrag {
-				onClick?()
-			}
+			if !didDrag { onClick?() }
 			mouseDownLocation = nil
 			didDrag = false
 		}
@@ -338,9 +478,7 @@ struct DragSourceView: NSViewRepresentable {
 		private func snapshot() -> NSImage {
 			let image = NSImage(size: bounds.size)
 			image.lockFocus()
-			if let ctx = NSGraphicsContext.current?.cgContext {
-				layer?.render(in: ctx)
-			}
+			if let ctx = NSGraphicsContext.current?.cgContext { layer?.render(in: ctx) }
 			image.unlockFocus()
 			return image
 		}
@@ -348,9 +486,7 @@ struct DragSourceView: NSViewRepresentable {
 }
 
 extension DragSourceView.DragSourceNSView: NSDraggingSource {
-	func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-		.move
-	}
+	func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .move }
 }
 
 // MARK: - Rename Field
@@ -367,10 +503,7 @@ struct RenameField: View {
 			.foregroundStyle(Theme.textPrimary)
 			.padding(.horizontal, 10)
 			.padding(.vertical, 7)
-			.background(
-				RoundedRectangle(cornerRadius: Theme.radiusSm)
-					.fill(Theme.surfaceActive)
-			)
+			.background(RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.surfaceActive))
 			.focused($isFocused)
 			.onAppear { isFocused = true }
 			.onSubmit { onCommit() }
@@ -393,9 +526,7 @@ struct SidebarIconButton: View {
 				.frame(width: 28, height: 28)
 		}
 		.buttonStyle(.plain)
-		.onHover { hovering in
-			isHovering = hovering
-		}
+		.onHover { isHovering = $0 }
 	}
 }
 
@@ -411,9 +542,7 @@ struct ProjectRow: View {
 
 	private var subtitle: String {
 		let label = project.provider.displayLabel
-		if !label.isEmpty {
-			return label
-		}
+		if !label.isEmpty { return label }
 		if let path = project.path {
 			return "~/\((path as NSString).lastPathComponent)"
 		}
@@ -426,7 +555,6 @@ struct ProjectRow: View {
 
 	var body: some View {
 		HStack(spacing: 10) {
-
 			VStack(alignment: .leading, spacing: 1) {
 				Text(project.name)
 					.font(Theme.fontBody)
@@ -451,7 +579,6 @@ struct ProjectRow: View {
 						.lineLimit(1)
 				}
 			}
-
 			Spacer()
 		}
 		.padding(.horizontal, 10)
@@ -459,8 +586,7 @@ struct ProjectRow: View {
 		.background(
 			ZStack {
 				if isHovering && !isSelected {
-					RoundedRectangle(cornerRadius: Theme.radiusSm)
-						.fill(Theme.surfaceHover)
+					RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.surfaceHover)
 				}
 				if isSelected {
 					if let ns = selectionNamespace {
@@ -468,8 +594,7 @@ struct ProjectRow: View {
 							.fill(Theme.surfaceActive)
 							.matchedGeometryEffect(id: "selectionBackground", in: ns)
 					} else {
-						RoundedRectangle(cornerRadius: Theme.radiusSm)
-							.fill(Theme.surfaceActive)
+						RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.surfaceActive)
 					}
 				}
 			}
@@ -492,8 +617,6 @@ struct ProjectRow: View {
 			}
 		)
 		.contentShape(Rectangle())
-		.onHover { hovering in
-			isHovering = hovering
-		}
+		.onHover { isHovering = $0 }
 	}
 }
