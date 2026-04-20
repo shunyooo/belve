@@ -158,6 +158,8 @@ class NotificationStore: ObservableObject {
 				session.currentTool = nil
 			}
 			activeSessionIndex.removeValue(forKey: paneId)
+			// Clear project-level agent status so sidebar dot resets
+			self.agentStatus[projectId] = AgentState(status: .idle, message: "")
 
 		case .idle:
 			break
