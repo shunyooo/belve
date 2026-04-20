@@ -28,6 +28,8 @@ struct PreviewArea: View {
 	@State private var savedContentReference: String = ""
 	@State private var editedContent: String = ""
 	@State private var loadingPath: String?
+	@State private var fileWatchTimer: Timer?
+	@State private var lastKnownModTime: Date?
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
 	@State private var fileSearchResults: [FileSearchResult] = []
@@ -95,12 +97,16 @@ struct PreviewArea: View {
 			isDirty = false
 			editedContent = openFile?.content ?? ""
 			savedContentReference = openFile?.content ?? ""
+			startFileWatch()
 			guard let file = openFile else { return }
 			NotificationCenter.default.post(
 				name: .belveRevealFileInTree,
 				object: nil,
 				userInfo: ["projectId": project.id, "path": file.path]
 			)
+		}
+		.onDisappear {
+			stopFileWatch()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileSave)) { _ in
 			saveCurrentFile()
@@ -512,6 +518,44 @@ struct PreviewArea: View {
 				loadFile(at: match.path, line: match.lineNumber, column: match.column)
 			}
 		}
+	}
+
+	// MARK: - File Watch (auto-reload on external changes)
+
+	private func startFileWatch() {
+		stopFileWatch()
+		guard let file = openFile else { return }
+		lastKnownModTime = project.provider.modificationDate(file.path)
+		let path = file.path
+		fileWatchTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [self] _ in
+			guard let current = openFile, current.path == path, !isDirty else { return }
+			let provider = project.provider
+			DispatchQueue.global(qos: .utility).async {
+				guard let newModTime = provider.modificationDate(path) else { return }
+				DispatchQueue.main.async {
+					guard let lastMod = lastKnownModTime, newModTime > lastMod else { return }
+					guard let currentFile = openFile, currentFile.path == path, !isDirty else { return }
+					// File changed externally — reload
+					lastKnownModTime = newModTime
+					if let newContent = provider.readFile(path) {
+						if newContent != currentFile.content {
+							openFile = OpenFile(
+								path: path,
+								content: newContent,
+								line: currentFile.line,
+								column: currentFile.column
+							)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	private func stopFileWatch() {
+		fileWatchTimer?.invalidate()
+		fileWatchTimer = nil
+		lastKnownModTime = nil
 	}
 
 	private func handleDefinitionHoverRequest(_ request: EditorDefinitionRequest, completion: @escaping (Bool) -> Void) {

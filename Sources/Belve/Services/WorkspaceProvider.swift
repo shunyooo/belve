@@ -25,6 +25,7 @@ protocol WorkspaceProvider {
 	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?)
 	func moveItem(from: String, to: String) -> Bool
 	func createFile(_ path: String) -> Bool
+	func modificationDate(_ path: String) -> Date?
 
 	// MARK: Git operations
 	func gitBranch(_ path: String) -> String?
@@ -438,6 +439,10 @@ struct LocalProvider: WorkspaceProvider {
 		FileManager.default.createFile(atPath: path, contents: nil)
 	}
 
+	func modificationDate(_ path: String) -> Date? {
+		try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date
+	}
+
 	func downloadFile(remotePath: String, to localURL: URL) -> Bool {
 		// Local: just copy
 		let absPath: String
@@ -512,6 +517,11 @@ struct SSHProvider: WorkspaceProvider {
 	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) { deleteItemRemote(path) }
 	func moveItem(from: String, to: String) -> Bool { run("mv \(shellQuote(from)) \(shellQuote(to))") != nil }
 	func createFile(_ path: String) -> Bool { run("touch \(shellQuote(path))") != nil }
+	func modificationDate(_ path: String) -> Date? {
+		guard let epoch = run("stat -c %Y \(shellQuote(path)) 2>/dev/null || stat -f %m \(shellQuote(path)) 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines),
+			  let ts = TimeInterval(epoch) else { return nil }
+		return Date(timeIntervalSince1970: ts)
+	}
 
 	func downloadFile(remotePath: String, to localURL: URL) -> Bool {
 		// SCP directly
@@ -593,6 +603,11 @@ struct DevContainerProvider: WorkspaceProvider {
 	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) { deleteItemRemote(path) }
 	func moveItem(from: String, to: String) -> Bool { run("mv \(shellQuote(from)) \(shellQuote(to))") != nil }
 	func createFile(_ path: String) -> Bool { run("touch \(shellQuote(path))") != nil }
+	func modificationDate(_ path: String) -> Date? {
+		guard let epoch = run("stat -c %Y \(shellQuote(path)) 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines),
+			  let ts = TimeInterval(epoch) else { return nil }
+		return Date(timeIntervalSince1970: ts)
+	}
 
 	func downloadFile(remotePath: String, to localURL: URL) -> Bool {
 		// Get container ID and RWS (container workspace path) from env file
