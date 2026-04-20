@@ -250,7 +250,7 @@ window.debugDimensions = function() {
 // Don't call fitAddon.fit() here — WKWebView frame isn't set yet.
 // The correct size will be applied by Swift via updateNSView → terminalFit().
 
-const terminalPathRegex = /(?:^|[\s("'`\[])(\.{1,2}\/[^\s"'`)\]]+|\/[^\s"'`)\]]+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)(?::\d+)?(?::\d+)?/g;
+const terminalPathRegex = /(?:^|[\s("'`\[。、，．：；])(\.{1,2}\/[^\s"'`)\]]+|\/[^\s"'`)\]]+|(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)(?::\d+)?(?::\d+)?/g;
 let isMetaPressed = false;
 let hoveredPathLink = null;
 let pathLinkProviderDisposable = null;
