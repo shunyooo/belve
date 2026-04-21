@@ -11,6 +11,9 @@ class ProjectStore: ObservableObject {
 	@Published private var terminalReloadTokens: [UUID: Int] = [:]
 	@Published var gitBranch: String?
 	@Published var gitFileStatus: [String: String] = [:]  // relativePath → status (M, A, D, ??, etc.)
+	/// Group header names the user has collapsed. Pinned section has its own
+	/// implicit key `"__pinned__"` so it can also be folded.
+	@Published var collapsedGroups: Set<String> = []
 
 	// Per-project loading state, aggregated from pane-level terminal-connection
 	// notifications. Used by the sidebar to show a "Preparing DevContainer..." hint.
@@ -22,6 +25,8 @@ class ProjectStore: ObservableObject {
 
 	init() {
 		loadProjects()
+		loadCollapsedGroups()
+		observePortDetections()
 		// Start git status polling
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
 			self?.refreshGitStatus(force: true)
@@ -106,6 +111,14 @@ class ProjectStore: ObservableObject {
 			checkForDevContainer()
 		}
 		refreshGitStatus()
+		if let p = project, let host = p.sshHost {
+			let rh = remoteHostForForward(p)
+			let isDev = p.isDevContainer
+			Task { @MainActor in
+				PortForwardManager.shared.sync(project: p, host: host, remoteHost: rh)
+				PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
+			}
+		}
 	}
 
 	func refreshGitStatus(force: Bool = false) {
@@ -159,18 +172,209 @@ class ProjectStore: ObservableObject {
 		select(projects[index])
 	}
 
+	/// If any projects are pinned, cycle only through the pinned set. Otherwise
+	/// cycle through every project (falls back to the full list).
+	private var cycleScope: [Project] {
+		let pinned = projects.filter { $0.isPinned }
+		return pinned.isEmpty ? projects : pinned
+	}
+
 	func selectNextProject() {
-		guard !projects.isEmpty else { return }
-		let currentIndex = indexOfSelected ?? 0
-		let nextIndex = (currentIndex + 1) % projects.count
-		select(projects[nextIndex])
+		let scope = cycleScope
+		guard !scope.isEmpty else { return }
+		let currentIndex = scope.firstIndex(where: { $0.id == selectedProject?.id }) ?? -1
+		let nextIndex = (currentIndex + 1) % scope.count
+		select(scope[nextIndex])
 	}
 
 	func selectPreviousProject() {
-		guard !projects.isEmpty else { return }
-		let currentIndex = indexOfSelected ?? 0
-		let previousIndex = (currentIndex - 1 + projects.count) % projects.count
-		select(projects[previousIndex])
+		let scope = cycleScope
+		guard !scope.isEmpty else { return }
+		let currentIndex = scope.firstIndex(where: { $0.id == selectedProject?.id }) ?? 0
+		let previousIndex = (currentIndex - 1 + scope.count) % scope.count
+		select(scope[previousIndex])
+	}
+
+	func togglePin(_ id: UUID) {
+		guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
+		projects[index].isPinned.toggle()
+		saveProjects()
+	}
+
+	// MARK: - Groups
+
+	/// Distinct non-nil, non-empty group names in first-appearance order.
+	var groupNames: [String] {
+		var seen = Set<String>()
+		var result: [String] = []
+		for p in projects {
+			if let g = p.groupName, !g.isEmpty, !seen.contains(g) {
+				seen.insert(g)
+				result.append(g)
+			}
+		}
+		return result
+	}
+
+	func setProjectGroup(_ id: UUID, groupName: String?) {
+		guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
+		let trimmed = groupName?.trimmingCharacters(in: .whitespacesAndNewlines)
+		projects[index].groupName = (trimmed?.isEmpty == false) ? trimmed : nil
+		saveProjects()
+	}
+
+	/// Rename a group by rewriting every member's `groupName`. Preserves
+	/// collapse state under the new name.
+	func renameGroup(from oldName: String, to newName: String) {
+		let newTrimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !newTrimmed.isEmpty, oldName != newTrimmed else { return }
+		// If a group with `newTrimmed` already exists, the projects will simply
+		// merge into it — that's an acceptable behavior for duplicate names.
+		for i in projects.indices where projects[i].groupName == oldName {
+			projects[i].groupName = newTrimmed
+		}
+		if collapsedGroups.contains(oldName) {
+			collapsedGroups.remove(oldName)
+			collapsedGroups.insert(newTrimmed)
+			saveCollapsedGroups()
+		}
+		saveProjects()
+	}
+
+	/// Move a project to the sidebar section identified by `sectionKey`.
+	/// The same mechanism powers both the context-menu actions and drag-and-drop
+	/// onto a section header. Keys:
+	/// - `"__pinned__"` → pin the project (leaves its `groupName` alone so unpin
+	///   returns it to its original group)
+	/// - `""` → ungroup + unpin (drop into the tail empty area)
+	/// - any other string → treat as a group name; unpin since pinned projects
+	///   render in the Pinned section regardless of group.
+	func moveProjectToSection(_ id: UUID, sectionKey: String) {
+		guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
+		if sectionKey == "__pinned__" {
+			projects[index].isPinned = true
+		} else if sectionKey.isEmpty {
+			projects[index].isPinned = false
+			projects[index].groupName = nil
+		} else {
+			projects[index].isPinned = false
+			projects[index].groupName = sectionKey
+		}
+		saveProjects()
+	}
+
+	// MARK: - Port Forwards
+
+	func updateProjectForwards(_ id: UUID, forwards: [PortForward]) {
+		guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
+		projects[index].portForwards = forwards
+		if selectedProject?.id == id { selectedProject = projects[index] }
+		saveProjects()
+		if let host = projects[index].sshHost {
+			let project = projects[index]
+			let remoteHost = remoteHostForForward(project)
+			Task { @MainActor in
+				PortForwardManager.shared.sync(project: project, host: host, remoteHost: remoteHost)
+			}
+		}
+	}
+
+	private func remoteHostForForward(_ project: Project) -> String {
+		// For DevContainer, forwards currently target the VM host's 127.0.0.1.
+		// Container-IP targeting can be added later once the `.env` is readable
+		// via the existing SSH ControlMaster.
+		"127.0.0.1"
+	}
+
+	// MARK: - Auto-detected port forwards
+
+	private func observePortDetections() {
+		NotificationCenter.default.addObserver(
+			forName: .belvePortDetected, object: nil, queue: .main
+		) { [weak self] notif in
+			guard let self,
+				  let projectId = notif.userInfo?["projectId"] as? UUID,
+				  let port = notif.userInfo?["port"] as? Int else { return }
+			self.handleDetectedPort(projectId: projectId, port: port)
+		}
+	}
+
+	private func handleDetectedPort(projectId: UUID, port: Int) {
+		guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
+		let project = projects[index]
+		NSLog("[Belve][scan] handleDetectedPort project=%@ port=%d existingForwards=%d blocked=%@ allowed=%@",
+			project.name, port,
+			project.portForwards.count,
+			project.portForwardBlocklist.contains(port) ? "Y" : "N",
+			project.portForwardAllowlist.contains(port) ? "Y" : "N")
+
+		// Already configured as a forward — nothing to do
+		if project.portForwards.contains(where: { $0.remotePort == port }) { return }
+		// Blocked by user — silently ignore
+		if project.portForwardBlocklist.contains(port) { return }
+		// Allowlisted → auto-forward (no toast)
+		if project.portForwardAllowlist.contains(port) {
+			var updated = project.portForwards
+			updated.append(PortForward(localPort: port, remotePort: port, enabled: true, autoDetected: true))
+			updateProjectForwards(projectId, forwards: updated)
+			return
+		}
+		// Otherwise ask the user via toast
+		Task { @MainActor in
+			PortForwardManager.shared.surfaceDetection(projectId: projectId, port: port)
+			NSLog("[Belve][scan] surfaced toast port=%d pending=%d",
+				port, PortForwardManager.shared.pendingDetections[projectId]?.count ?? 0)
+		}
+	}
+
+	/// Respond to the user's choice on a detection toast.
+	func resolvePortDetection(projectId: UUID, port: Int, action: PortForwardManager.DetectionAction) {
+		guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
+		var project = projects[index]
+		switch action {
+		case .forwardOnce:
+			project.portForwards.append(PortForward(localPort: port, remotePort: port, enabled: true, autoDetected: true))
+		case .always:
+			project.portForwardAllowlist.insert(port)
+			project.portForwards.append(PortForward(localPort: port, remotePort: port, enabled: true, autoDetected: true))
+		case .never:
+			project.portForwardBlocklist.insert(port)
+		case .dismissOnce:
+			break
+		}
+		projects[index] = project
+		if selectedProject?.id == projectId { selectedProject = project }
+		saveProjects()
+		Task { @MainActor in
+			PortForwardManager.shared.resolveDetection(projectId: projectId, remotePort: port, action: action)
+			if let host = project.sshHost {
+				let rh = self.remoteHostForForward(project)
+				PortForwardManager.shared.sync(project: project, host: host, remoteHost: rh)
+			}
+		}
+	}
+
+	/// Produce a group name not yet used. Used when the user asks to create a
+	/// new group — the caller then edits it in-place.
+	func uniqueGroupName(base: String = "New Group") -> String {
+		let existing = Set(groupNames)
+		if !existing.contains(base) { return base }
+		var i = 2
+		while existing.contains("\(base) \(i)") { i += 1 }
+		return "\(base) \(i)"
+	}
+
+	func toggleGroupCollapse(_ name: String) {
+		if collapsedGroups.contains(name) {
+			collapsedGroups.remove(name)
+		} else {
+			collapsedGroups.insert(name)
+		}
+		saveCollapsedGroups()
+	}
+
+	func isGroupCollapsed(_ name: String) -> Bool {
+		collapsedGroups.contains(name)
 	}
 
 	// MARK: - CRUD
@@ -530,6 +734,25 @@ class ProjectStore: ObservableObject {
 		return belveDir.appendingPathComponent("projects.json")
 	}
 
+	private static var collapsedGroupsFileURL: URL {
+		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+		let belveDir = appSupport.appendingPathComponent("Belve")
+		try? FileManager.default.createDirectory(at: belveDir, withIntermediateDirectories: true)
+		return belveDir.appendingPathComponent("collapsed-groups.json")
+	}
+
+	private func loadCollapsedGroups() {
+		guard let data = try? Data(contentsOf: Self.collapsedGroupsFileURL),
+			  let decoded = try? JSONDecoder().decode([String].self, from: data) else { return }
+		collapsedGroups = Set(decoded)
+	}
+
+	private func saveCollapsedGroups() {
+		if let data = try? JSONEncoder().encode(Array(collapsedGroups)) {
+			try? data.write(to: Self.collapsedGroupsFileURL)
+		}
+	}
+
 	private func loadProjects() {
 		guard let data = try? Data(contentsOf: Self.projectsFileURL),
 			  let decoded = try? JSONDecoder().decode([Project].self, from: data),
@@ -539,6 +762,16 @@ class ProjectStore: ObservableObject {
 		}
 		projects = decoded
 		selectedProject = decoded.first
+		// `selectedProject = ...` bypasses `select()`, so register the scanner
+		// explicitly for the initial project so auto-detect kicks in without
+		// requiring the user to switch projects first.
+		if let p = selectedProject, let host = p.sshHost {
+			let isDev = p.isDevContainer
+			Task { @MainActor in
+				PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
+				PortForwardManager.shared.sync(project: p, host: host, remoteHost: "127.0.0.1")
+			}
+		}
 	}
 
 	func saveProjects() {
