@@ -42,30 +42,25 @@ term.loadAddon(fitAddon);
 // Build full URL by joining continuation lines. Returns {url, continuations: [{y, startX, endX}]}
 function buildFullUrl(buf, startY, urlStart) {
 	var url = urlStart;
-	var line = buf.getLine(startY);
-	var text = line.translateToString(true);
-	var urlEndPos = text.indexOf(urlStart) + urlStart.length;
 	var continuations = [];
-	// Check if URL ends near end of line OR next line is wrapped
+	// Only extend the URL across lines when xterm.js marked the next line as
+	// a soft-wrap continuation of this one. An explicit newline in the
+	// upstream output ends the URL — otherwise adjacent "Image: …" style
+	// key/value rows get glued onto the end.
 	var nextLineObj = buf.getLine(startY + 1);
-	var isNextWrapped = nextLineObj && nextLineObj.isWrapped;
-	if (urlEndPos < text.length - 2 && !isNextWrapped) return { url: url, continuations: continuations };
+	if (!nextLineObj || !nextLineObj.isWrapped) return { url: url, continuations: continuations };
 
 	var nextY = startY + 1;
 	while (nextY < buf.length) {
 		var nextLine = buf.getLine(nextY);
-		if (!nextLine) break;
+		if (!nextLine || !nextLine.isWrapped) break;
 		var nextText = nextLine.translateToString(true);
-		var trimmed = nextLine.isWrapped ? nextText : nextText.replace(/^\s+/, '');
-		var indent = nextText.length - trimmed.length;
-		var cont = trimmed.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
-		if (cont && !trimmed.match(/^https?:\/\//)) {
-			url += cont[1];
-			continuations.push({ y: nextY + 1, startX: indent + 1, endX: indent + cont[1].length });
-			// Continue if the match consumed the full line (more may follow)
-			if (cont[1].length < trimmed.length) break;
-			nextY++;
-		} else { break; }
+		var cont = nextText.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
+		if (!cont || nextText.match(/^https?:\/\//)) break;
+		url += cont[1];
+		continuations.push({ y: nextY + 1, startX: 1, endX: cont[1].length });
+		if (cont[1].length < nextText.length) break;
+		nextY++;
 	}
 	return { url: url, continuations: continuations };
 }
@@ -141,26 +136,25 @@ term.registerLinkProvider({
 			})(result.url, selfRange, result.continuations);
 		}
 
-		// Continuation of URL from previous line (indented or soft-wrapped)
-		if (links.length === 0 && y > 1) {
+		// Continuation of URL from previous line — only valid when xterm.js
+		// marked this line as soft-wrapped from the previous one. Indent-based
+		// heuristics falsely matched unrelated key/value rows.
+		if (links.length === 0 && y > 1 && line.isWrapped) {
 			var prevLine = buf.getLine(y - 2);
-			var isSoftWrapped = line.isWrapped;
 			if (prevLine) {
 				var prevText = prevLine.translateToString(true);
 				var prevMatch = prevText.match(/(https?:\/\/[^\s<>"'`)\]]+)$/);
-				if (prevMatch && (prevMatch.index + prevMatch[1].length >= prevText.length - 2 || isSoftWrapped)) {
-					var trimmed = isSoftWrapped ? text : text.replace(/^\s+/, '');
-					var indent = text.length - trimmed.length;
-					var cont = trimmed.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
-					if (cont && !trimmed.match(/^https?:\/\//)) {
+				if (prevMatch) {
+					var cont = text.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
+					if (cont && !text.match(/^https?:\/\//)) {
 						var result = buildFullUrl(buf, y - 2, prevMatch[1]);
 						var peerSx = mapStringIndexToCell(prevLine, prevMatch.index) + 1;
 						var peerEx = mapStringIndexToCell(prevLine, prevMatch.index + prevMatch[1].length);
 						var peerRange = { y: y - 1, startX: peerSx, endX: peerEx };
-						var selfRange = { y: y, startX: indent + 1, endX: indent + cont[1].length };
+						var selfRange = { y: y, startX: 1, endX: cont[1].length };
 						(function(u, allR) {
 							links.push({
-								range: { start: { x: indent + 1, y: y }, end: { x: indent + cont[1].length, y: y } },
+								range: { start: { x: 1, y: y }, end: { x: cont[1].length, y: y } },
 								text: u, decorations: { pointerCursor: true },
 								activate: function() { postMessage({ type: 'openUrl', url: u }); },
 								hover: function() { showPeerUnderlines(allR); },

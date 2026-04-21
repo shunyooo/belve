@@ -110,9 +110,7 @@ ensure_container_broker() {
         -e BELVE_SESSION=1 \
         -e TERM=xterm-256color \
         -w "$rws" \
-        "$cid" /root/.belve/bin/belve-persist \
-        -tcplisten 0.0.0.0:19222 \
-        -command /root/.belve/session-bootstrap.sh 2>&1 || \
+        "$cid" sh -c '/root/.belve/bin/belve-persist -tcplisten 0.0.0.0:19222 -command /root/.belve/session-bootstrap.sh 2>>/root/.belve/broker.log' 2>&1 || \
         echo "[belve-setup] ERROR: failed to start container broker" >&2
     for i in 1 2 3 4 5 6 7 8 9 10; do
         bash -c "echo > /dev/tcp/$cip/19222" 2>/dev/null && return 0

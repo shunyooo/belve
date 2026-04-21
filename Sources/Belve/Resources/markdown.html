@@ -21,7 +21,26 @@ html, body {
 .milkdown { padding: 0 !important; margin: 0 !important; }
 .milkdown .ProseMirror { padding: 8px 16px !important; }
 .milkdown * { font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }
-.milkdown code, .milkdown pre { font-family: 'SF Mono', Menlo, monospace !important; }
+/* Code — inline + fenced block (CodeMirror) + plain pre. Crepe uses
+   `.cm-editor` for code blocks, which the wildcard above forces to
+   sans-serif unless we override it here with a monospace stack. */
+.milkdown code,
+.milkdown pre,
+.milkdown .cm-editor,
+.milkdown .cm-editor .cm-scroller,
+.milkdown .cm-editor .cm-content,
+.milkdown .cm-editor .cm-line,
+.milkdown .cm-editor .cm-gutters {
+	font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace !important;
+}
+.milkdown .cm-editor,
+.milkdown .cm-content,
+.milkdown .cm-line,
+.milkdown .ProseMirror pre,
+.milkdown .ProseMirror pre code {
+	font-size: 12px !important;
+	line-height: 1.45 !important;
+}
 .milkdown .ProseMirror h1 { font-size: 1.6em !important; font-weight: 600 !important; }
 .milkdown .ProseMirror h2 { font-size: 1.35em !important; font-weight: 600 !important; }
 .milkdown .ProseMirror h3 { font-size: 1.15em !important; font-weight: 600 !important; }
@@ -140,6 +159,28 @@ html, body {
 	border-left: 3px solid var(--crepe-color-outline) !important;
 	color: var(--crepe-color-on-surface-variant) !important;
 	background: rgba(255,255,255,0.02) !important;
+}
+/* Table columns size to content, not a fixed equal share. Milkdown Crepe
+   ships `table-layout: fixed; width: 100%;` which stretches every column
+   equally even when most values are short — a single long cell still pushes
+   short columns wide. Override both: auto layout + `max-content` width lets
+   each column size to its content, and `max-width: 100%` keeps the table
+   from overflowing the editor. `.milkdown-table-block` targets Crepe; the
+   bare `table` inside ProseMirror covers the fallback path. */
+.milkdown .milkdown-table-block table,
+.milkdown .ProseMirror table {
+	table-layout: auto !important;
+	width: auto !important;
+	max-width: 100% !important;
+}
+.milkdown .milkdown-table-block th,
+.milkdown .milkdown-table-block td,
+.milkdown .ProseMirror th,
+.milkdown .ProseMirror td {
+	width: auto !important;
+	min-width: 0 !important;
+	white-space: normal;
+	word-break: break-word;
 }
 </style>
 </head>

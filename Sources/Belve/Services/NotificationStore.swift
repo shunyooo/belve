@@ -92,8 +92,15 @@ class NotificationStore: ObservableObject {
 
 		case .running:
 			updateActiveSession(paneId: paneId) { session in
-				session.status = .running
-				session.message = message
+				// Subagent events describe child-agent lifecycle. They must not
+				// drive the parent session's status — otherwise a stray
+				// SubagentStop can flip a .waiting / .completed pane back to
+				// .running and leave it stuck (no follow-up Stop hook arrives).
+				let isSubagentEvent = message.hasPrefix("subagent:") || message.hasPrefix("subagent-done:")
+				if !isSubagentEvent {
+					session.status = .running
+					session.message = message
+				}
 				// Capture first prompt as label
 				if session.label == nil && !message.hasPrefix("tool:") && !message.hasPrefix("result:") && !message.hasPrefix("subagent") && message != "Generating" {
 					session.label = message
@@ -113,7 +120,11 @@ class NotificationStore: ObservableObject {
 					session.currentTool = "Agent"
 					session.lastAgentActivity = String(message.dropFirst(9))
 				} else if message.hasPrefix("subagent-done:") {
-					session.currentTool = nil
+					// Only clear tool if the parent session is actively running.
+					// Otherwise leave prior terminal state intact.
+					if session.status == .running || session.status == .sessionStart {
+						session.currentTool = nil
+					}
 				} else if message != "Generating" {
 					session.lastUserPrompt = message
 					session.currentTool = nil
@@ -187,10 +198,13 @@ class NotificationStore: ObservableObject {
 	func loadSessions() {
 		guard let data = try? Data(contentsOf: Self.saveURL),
 			  var decoded = try? JSONDecoder().decode([AgentSession].self, from: data) else { return }
-		// Reset active states — they're stale after restart
+		// On restart we don't know whether the agent process is still alive
+		// (the container broker often is). Fall back to `.sessionStart` so the
+		// row renders as "Ready" — visually distinct from the terminal
+		// `.completed`/`.sessionEnd` states while we wait for the next hook.
 		for i in decoded.indices {
 			if decoded[i].status == .running || decoded[i].status == .waiting || decoded[i].status == .sessionStart {
-				decoded[i].status = .idle
+				decoded[i].status = .sessionStart
 				decoded[i].currentTool = nil
 			}
 		}
@@ -211,6 +225,17 @@ class NotificationStore: ObservableObject {
 			sessions[i].isArchived = true
 		}
 		activeSessionIndex.removeValue(forKey: paneId)
+		saveSessions()
+	}
+
+	/// Archive a single session by id — used for manual dismissal from the sidebar.
+	func archiveSession(_ id: UUID) {
+		guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+		sessions[idx].isArchived = true
+		if let paneId = sessions[idx].paneId,
+		   activeSessionIndex[paneId] == idx {
+			activeSessionIndex.removeValue(forKey: paneId)
+		}
 		saveSessions()
 	}
 

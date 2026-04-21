@@ -1,9 +1,36 @@
 import { basicSetup } from "codemirror";
 import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap } from "@codemirror/view";
-import { StreamLanguage } from "@codemirror/language";
+import { StreamLanguage, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { toggleComment } from "@codemirror/commands";
-import { oneDark } from "@codemirror/theme-one-dark";
+import { oneDarkTheme } from "@codemirror/theme-one-dark";
+import { tags as t } from "@lezer/highlight";
+
+// VS Code Dark+ inspired highlight style. Replaces the default oneDark syntax
+// highlighter which painted Python built-ins / decorators in red.
+const vscodeHighlightStyle = HighlightStyle.define([
+	{ tag: t.keyword, color: "#C586C0" },
+	{ tag: t.controlKeyword, color: "#C586C0" },
+	{ tag: t.moduleKeyword, color: "#C586C0" },
+	{ tag: t.definitionKeyword, color: "#569CD6" },
+	{ tag: [t.name, t.deleted, t.character, t.propertyName, t.macroName], color: "#9CDCFE" },
+	{ tag: [t.function(t.variableName), t.function(t.propertyName), t.labelName], color: "#DCDCAA" },
+	{ tag: [t.definition(t.name), t.separator], color: "#D4D4D4" },
+	{ tag: [t.typeName, t.className, t.namespace], color: "#4EC9B0" },
+	{ tag: [t.number, t.changed, t.annotation, t.modifier, t.self], color: "#B5CEA8" },
+	{ tag: [t.operator, t.operatorKeyword, t.escape, t.regexp, t.link, t.special(t.string)], color: "#D4D4D4" },
+	{ tag: [t.meta, t.comment], color: "#6A9955", fontStyle: "italic" },
+	{ tag: t.strong, fontWeight: "bold" },
+	{ tag: t.emphasis, fontStyle: "italic" },
+	{ tag: t.strikethrough, textDecoration: "line-through" },
+	{ tag: t.heading, fontWeight: "bold", color: "#569CD6" },
+	{ tag: [t.atom, t.bool, t.special(t.variableName)], color: "#569CD6" },
+	{ tag: [t.processingInstruction, t.string, t.inserted], color: "#CE9178" },
+	{ tag: t.url, color: "#569CD6", textDecoration: "underline" },
+	{ tag: t.invalid, color: "#F44747" },
+	{ tag: t.punctuation, color: "#D4D4D4" },
+	{ tag: [t.bracket, t.squareBracket, t.paren], color: "#D4D4D4" },
+]);
 import { javascript } from "@codemirror/lang-javascript";
 import { python } from "@codemirror/lang-python";
 import { html } from "@codemirror/lang-html";
@@ -385,7 +412,8 @@ function createEditorState(content, filename) {
 					}
 				}
 			]),
-			oneDark,
+			oneDarkTheme,
+			syntaxHighlighting(vscodeHighlightStyle),
 			customTheme,
 			jumpHoverField,
 			diffMarkerField,

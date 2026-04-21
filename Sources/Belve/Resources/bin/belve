@@ -132,12 +132,12 @@ case "${1:-}" in
                 ;;
 
             subagent-start)
-                msg=$(parse_json 'return j.description||j.name||"subagent"')
+                msg=$(parse_json 'return j.agent_type||j.description||j.name||"subagent"')
                 emit_event "running" "subagent:$msg"
                 ;;
 
             subagent-stop)
-                msg=$(parse_json 'return j.description||j.name||"subagent"')
+                msg=$(parse_json 'return j.agent_type||j.description||j.name||"subagent"')
                 emit_event "running" "subagent-done:$msg"
                 ;;
 

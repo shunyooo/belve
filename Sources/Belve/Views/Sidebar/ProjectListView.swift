@@ -9,53 +9,123 @@ struct ProjectListView: View {
 	var onRenameProject: ((UUID, String) -> Void)?
 	var onDeleteProject: ((UUID) -> Void)?
 	var onMoveProject: ((IndexSet, Int) -> Void)?
+	var onTogglePin: ((UUID) -> Void)?
 	var onFocusPane: ((UUID, String) -> Void)?
+	var onSetProjectGroup: ((UUID, String?) -> Void)?
+	var groupNames: [String] = []
+	var collapsedGroups: Set<String> = []
+	var onToggleGroupCollapse: ((String) -> Void)?
+	var onRenameGroup: ((String, String) -> Void)?
+	var uniqueGroupName: (() -> String)?
+	var onMoveProjectToSection: ((UUID, String) -> Void)?
 	@ObservedObject var activeCommandState: CommandAreaState
+	/// Returns the set of currently-existing pane UUIDs (as lowercase strings)
+	/// for a given project. Used to filter the session list to panes that still
+	/// exist in the UI.
+	var paneIdsForProject: ((UUID) -> Set<String>)?
+
+	private static let pinnedKey = "__pinned__"
 
 	@State private var renamingProjectId: UUID?
 	@State private var renameText = ""
-	@State private var contextMenuProjectId: UUID?
+	@State private var renamingGroupName: String?
+	@State private var groupRenameText: String = ""
 	@State private var draggingProjectId: UUID?
 	@State private var dropTargetIndex: Int?
-
+	/// Projects selected for bulk operations. The primary selection
+	/// (`selectedProject`) is always a member of this set when non-empty.
+	@State private var selectedProjectIds: Set<UUID> = []
+	/// Last clicked project id — used as the anchor for Shift+click range
+	/// selection.
+	@State private var rangeAnchorId: UUID?
+	/// Section key (groupName / pinnedKey / "") currently being hovered during
+	/// a drag. Used to highlight the target header.
+	@State private var dragOverSectionKey: String?
 	@Namespace private var selectionNamespace
 
 	var body: some View {
-		ZStack {
+		ZStack(alignment: .topLeading) {
 			VStack(alignment: .leading, spacing: 0) {
 				Spacer().frame(height: Theme.titlebarHeight)
 				ScrollView {
 					VStack(spacing: 2) {
-						ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
-							if renamingProjectId == project.id {
-								RenameField(text: $renameText) {
-									if !renameText.isEmpty {
-										onRenameProject?(project.id, renameText)
-									}
-									renamingProjectId = nil
-								}
-								.padding(.horizontal, 8)
-							} else {
-								if dropTargetIndex == index && draggingProjectId != project.id {
-									dropIndicator()
-								}
+						// Pinned section — implicit group, always appears first when non-empty.
+						let pinned = projects.filter { $0.isPinned }
+						if !pinned.isEmpty {
+							groupSection(
+								label: "Pinned",
+								icon: "pin.fill",
+								key: Self.pinnedKey,
+								members: pinned
+							)
+						}
 
-								projectSection(project: project, index: index)
+						// Named groups in first-appearance order. Pinned projects are already
+						// rendered above and are skipped here.
+						ForEach(groupNames, id: \.self) { groupName in
+							let members = projects.filter { $0.groupName == groupName && !$0.isPinned }
+							if !members.isEmpty {
+								groupSection(
+									label: groupName,
+									icon: "folder",
+									key: groupName,
+									members: members
+								)
 							}
+						}
+
+						// Ungrouped, unpinned projects at the bottom — no header.
+						let ungrouped = projects.filter { !$0.isPinned && ($0.groupName ?? "").isEmpty }
+						ForEach(ungrouped, id: \.id) { project in
+							projectRowBlock(project: project)
 						}
 
 						if dropTargetIndex == projects.count {
 							dropIndicator()
 						}
 
+						// Bottom catcher: right-click opens the sidebar menu, drag drops
+						// here remove the project from its group (and Pinned section).
+						// The drop highlight uses key "" so it doesn't collide with
+						// real group keys.
+						let ungroupHover = dragOverSectionKey == ""
 						Color.clear
-							.frame(height: 20)
+							.frame(minHeight: 200)
+							.contentShape(Rectangle())
+							.background(
+								RoundedRectangle(cornerRadius: Theme.radiusSm)
+									.stroke(Theme.accent, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+									.opacity(ungroupHover ? 0.8 : 0)
+									.padding(.horizontal, 4)
+									.padding(.top, 8)
+							)
+							.overlay(alignment: .top) {
+								if ungroupHover {
+									Text("Remove from group")
+										.font(.system(size: 10, weight: .medium))
+										.foregroundStyle(Theme.accent)
+										.padding(.top, 16)
+								}
+							}
+							.overlay(SidebarRightClickDetector(
+								onNewProject: { onAddProject?() },
+								onNewGroup: { promptForNewGroupOnly() }
+							))
+							.onDrop(of: [.text], delegate: SectionDropDelegate(
+								sectionKey: "",
+								dragOverKey: $dragOverSectionKey,
+								draggingProjectId: $draggingProjectId,
+								selectedProjectIds: selectedProjectIds,
+								onMove: { id, key in onMoveProjectToSection?(id, key) }
+							))
 							.onDrop(of: [.text], delegate: ProjectDropDelegate(
 								targetIndex: projects.count,
 								projects: projects,
 								draggingProjectId: $draggingProjectId,
 								dropTargetIndex: $dropTargetIndex,
-								onMoveProject: onMoveProject
+								selectedProjectIds: selectedProjectIds,
+								onMoveProject: onMoveProject,
+								onMoveProjectToSection: onMoveProjectToSection
 							))
 					}
 					.padding(.horizontal, 8)
@@ -70,16 +140,215 @@ struct ProjectListView: View {
 				.padding(.top, 4)
 			}
 		}
-		.onTapGesture {
-			if contextMenuProjectId != nil {
-				contextMenuProjectId = nil
-			}
-		}
-		.animation(.easeOut(duration: 0.12), value: contextMenuProjectId != nil)
+		.animation(.easeOut(duration: 0.12), value: selectedProject != nil)
 		.animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18), value: selectedProject)
 		.onReceive(NotificationCenter.default.publisher(for: .belvePaneClosed)) { notif in
 			if let paneId = notif.userInfo?["paneId"] as? String {
 				notificationStore.archiveSessionsForPane(paneId)
+			}
+		}
+	}
+
+	// MARK: - Group Header
+
+	/// Transition used when a group's members slide in/out on toggle.
+	/// `.move(edge: .top)` caused rows to render above the group header
+	/// during the animation (overflowing into the previous section).
+	/// Plain opacity keeps the rows in place while the parent VStack animates
+	/// the height change, so nothing escapes the section bounds.
+	private var groupCollapseTransition: AnyTransition {
+		.opacity
+	}
+
+	/// Renders one group (header + members container) and attaches a single
+	/// `SectionDropDelegate` spanning the whole thing. Inner project rows still
+	/// have their own `ProjectDropDelegate` which wins for drops exactly on
+	/// rows (reorder); drops on the header or gutter fall through to this
+	/// delegate (section move).
+	@ViewBuilder
+	private func groupSection(
+		label: String,
+		icon: String,
+		key: String,
+		members: [Project]
+	) -> some View {
+		VStack(spacing: 2) {
+			groupHeader(label: label, icon: icon, key: key, count: members.count)
+			if !collapsedGroups.contains(key) {
+				groupMembersContainer {
+					ForEach(Array(members.enumerated()), id: \.element.id) { idx, project in
+						projectRowBlock(
+							project: project,
+							trailingSectionKey: idx == members.count - 1 ? key : nil
+						)
+					}
+				}
+			}
+		}
+		.onDrop(of: [.text], delegate: SectionDropDelegate(
+			sectionKey: key,
+			dragOverKey: $dragOverSectionKey,
+			draggingProjectId: $draggingProjectId,
+			selectedProjectIds: selectedProjectIds,
+			onMove: { id, key in onMoveProjectToSection?(id, key) }
+		))
+	}
+
+	/// Indented container used for every group's member rows (Pinned and named
+	/// groups). A thin left rail makes the containment obvious so the user can
+	/// tell at a glance which rows belong to a group. `.clipped()` keeps rows
+	/// from escaping the container's bounds while the collapse transition is
+	/// running — otherwise they briefly overlap adjacent sections.
+	@ViewBuilder
+	private func groupMembersContainer<Content: View>(
+		@ViewBuilder content: () -> Content
+	) -> some View {
+		HStack(spacing: 0) {
+			Rectangle()
+				.fill(Theme.borderSubtle)
+				.frame(width: 1)
+				.padding(.leading, 10)
+				.padding(.vertical, 2)
+			VStack(spacing: 2) {
+				content()
+			}
+			.padding(.leading, 6)
+		}
+		.clipped()
+		.transition(groupCollapseTransition)
+	}
+
+	@ViewBuilder
+	private func groupHeader(label: String, icon: String, key: String, count: Int) -> some View {
+		if renamingGroupName == key && key != Self.pinnedKey {
+			editableGroupHeader(icon: icon, key: key)
+		} else {
+			staticGroupHeader(label: label, icon: icon, key: key, count: count)
+		}
+	}
+
+	private func staticGroupHeader(label: String, icon: String, key: String, count: Int) -> some View {
+		let collapsed = collapsedGroups.contains(key)
+		let isDropTarget = dragOverSectionKey == key
+		// Using a plain HStack + tap gesture instead of Button so `.onDrop`
+		// receives the drag session events reliably. SwiftUI's Button on macOS
+		// was silently swallowing the drop before `performDrop` could fire.
+		return HStack(spacing: 4) {
+			Image(systemName: "chevron.right")
+				.font(.system(size: 9, weight: .semibold))
+				.rotationEffect(.degrees(collapsed ? 0 : 90))
+				.foregroundStyle(Theme.textTertiary)
+			Image(systemName: icon)
+				.font(.system(size: 9))
+				.foregroundStyle(isDropTarget ? Theme.accent : Theme.textTertiary)
+			Text(label.uppercased())
+				.font(.system(size: 10, weight: .semibold))
+				.foregroundStyle(isDropTarget ? Theme.accent : Theme.textTertiary)
+				.tracking(0.5)
+			Spacer()
+			Text("\(count)")
+				.font(.system(size: 10))
+				.foregroundStyle(Theme.textTertiary.opacity(0.7))
+		}
+		.padding(.horizontal, 6)
+		.padding(.top, 8)
+		.padding(.bottom, 2)
+		.background(
+			RoundedRectangle(cornerRadius: Theme.radiusSm)
+				.fill(isDropTarget ? Theme.accent.opacity(0.15) : Color.clear)
+				.padding(.horizontal, 2)
+		)
+		.contentShape(Rectangle())
+		.onTapGesture {
+			withAnimation(.easeInOut(duration: 0.22)) {
+				onToggleGroupCollapse?(key)
+			}
+		}
+		.animation(.easeInOut(duration: 0.15), value: collapsed)
+		.animation(.easeInOut(duration: 0.12), value: isDropTarget)
+		.contextMenu {
+			if key != Self.pinnedKey {
+				Button("Rename Group") { beginRenameGroup(key) }
+			}
+		}
+	}
+
+	private func editableGroupHeader(icon: String, key: String) -> some View {
+		HStack(spacing: 4) {
+			Image(systemName: "chevron.down")
+				.font(.system(size: 9, weight: .semibold))
+				.foregroundStyle(Theme.textTertiary)
+			Image(systemName: icon)
+				.font(.system(size: 9))
+				.foregroundStyle(Theme.accent)
+			GroupNameField(
+				text: $groupRenameText,
+				onCommit: { commitGroupRename(oldName: key) },
+				onCancel: { renamingGroupName = nil }
+			)
+			Spacer(minLength: 0)
+		}
+		.padding(.horizontal, 6)
+		.padding(.top, 8)
+		.padding(.bottom, 2)
+	}
+
+	private func beginRenameGroup(_ name: String) {
+		groupRenameText = name
+		renamingGroupName = name
+	}
+
+	private func commitGroupRename(oldName: String) {
+		let newName = groupRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
+		if !newName.isEmpty && newName != oldName {
+			onRenameGroup?(oldName, newName)
+		}
+		renamingGroupName = nil
+	}
+
+	/// Renders a single project row with the surrounding rename-edit / drop-indicator
+	/// logic. Wrapped so grouped sections can call it with the same visual result as
+	/// the original flat iteration.
+	@ViewBuilder
+	private func projectRowBlock(project: Project, trailingSectionKey: String? = nil) -> some View {
+		let flatIndex = projects.firstIndex(where: { $0.id == project.id }) ?? 0
+		Group {
+			if renamingProjectId == project.id {
+				RenameField(text: $renameText) {
+					if !renameText.isEmpty {
+						onRenameProject?(project.id, renameText)
+					}
+					renamingProjectId = nil
+				}
+				.padding(.horizontal, 8)
+			} else {
+				if dropTargetIndex == flatIndex && draggingProjectId != project.id {
+					dropIndicator()
+				}
+				projectSection(project: project, index: flatIndex)
+					.overlay(alignment: .bottom) {
+						// When this row is the last member of its group AND a
+						// drag is in progress, overlay the bottom ~18pt of the
+						// row with a drop zone that inserts the dragged
+						// project *after* this row while keeping it in the
+						// current group. Only present during drag so it
+						// doesn't capture clicks on the row.
+						if let key = trailingSectionKey, draggingProjectId != nil {
+							Color.clear
+								.frame(height: 18)
+								.contentShape(Rectangle())
+								.onDrop(of: [.text], delegate: ProjectDropDelegate(
+									targetIndex: flatIndex + 1,
+									projects: projects,
+									draggingProjectId: $draggingProjectId,
+									dropTargetIndex: $dropTargetIndex,
+									selectedProjectIds: selectedProjectIds,
+									forcedSectionKey: key,
+									onMoveProject: onMoveProject,
+									onMoveProjectToSection: onMoveProjectToSection
+								))
+						}
+					}
 			}
 		}
 	}
@@ -91,6 +360,7 @@ struct ProjectListView: View {
 			ProjectRow(
 				project: project,
 				isSelected: selectedProject == project,
+				isMultiSelected: selectedProjectIds.contains(project.id) && selectedProjectIds.count > 1,
 				agentState: notificationStore.agentStatus[project.id],
 				selectionNamespace: selectionNamespace
 			)
@@ -99,34 +369,20 @@ struct ProjectListView: View {
 				DragSourceView(
 					projectId: project.id,
 					onDragStarted: { draggingProjectId = project.id },
-					onClick: { selectedProject = project },
-					onRightClick: { _ in contextMenuProjectId = project.id }
+					onClick: { modifiers in handleProjectClick(project, modifiers: modifiers) },
+					onRightClick: { screenPoint in
+						showProjectContextMenu(for: project, at: screenPoint)
+					}
 				)
 			)
-			.overlay(alignment: .topTrailing) {
-				if contextMenuProjectId == project.id {
-					ProjectContextMenu(
-						onRename: {
-							renameText = project.name
-							renamingProjectId = project.id
-							contextMenuProjectId = nil
-						},
-						onDelete: {
-							onDeleteProject?(project.id)
-							contextMenuProjectId = nil
-						}
-					)
-					.offset(x: 20, y: 30)
-					.transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .topLeading)))
-				}
-			}
-			.zIndex(contextMenuProjectId == project.id ? 100 : 0)
 			.onDrop(of: [.text], delegate: ProjectDropDelegate(
 				targetIndex: index,
 				projects: projects,
 				draggingProjectId: $draggingProjectId,
 				dropTargetIndex: $dropTargetIndex,
-				onMoveProject: onMoveProject
+				selectedProjectIds: selectedProjectIds,
+				onMoveProject: onMoveProject,
+				onMoveProjectToSection: onMoveProjectToSection
 			))
 
 			// Nested agent sessions for this project
@@ -137,7 +393,10 @@ struct ProjectListView: View {
 						SessionRow(
 							session: session,
 							isFocused: session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId
-								&& selectedProject == project
+								&& selectedProject == project,
+							onDismiss: {
+								notificationStore.archiveSession(session.id)
+							}
 						)
 						.onTapGesture {
 							selectedProject = project
@@ -154,10 +413,163 @@ struct ProjectListView: View {
 		}
 	}
 
+	// Sessions whose agent has ended are hidden from the sidebar even when
+	// the pane still exists.
+	private static let inactiveStatuses: Set<AgentStatus> = [.sessionEnd, .idle]
+
 	private func sessionsForProject(_ projectId: UUID) -> [AgentSession] {
-		notificationStore.sessions
-			.filter { $0.projectId == projectId && !$0.isArchived }
+		let livePaneIds = paneIdsForProject?(projectId) ?? []
+		let candidates = notificationStore.sessions.filter { s in
+			guard s.projectId == projectId,
+			      !s.isArchived,
+			      !Self.inactiveStatuses.contains(s.status) else { return false }
+			if livePaneIds.isEmpty { return true }
+			guard let paneId = s.paneId else { return false }
+			return livePaneIds.contains(paneId.lowercased())
+		}
+		// Collapse to one session per pane — keep the most recently updated.
+		var latestPerPane: [String: AgentSession] = [:]
+		var paneless: [AgentSession] = []
+		for s in candidates {
+			if let paneId = s.paneId {
+				if let existing = latestPerPane[paneId] {
+					if s.updatedAt > existing.updatedAt { latestPerPane[paneId] = s }
+				} else {
+					latestPerPane[paneId] = s
+				}
+			} else {
+				paneless.append(s)
+			}
+		}
+		return (Array(latestPerPane.values) + paneless)
 			.sorted { $0.updatedAt > $1.updatedAt }
+	}
+
+	// MARK: - Click handling
+
+	/// Flat visual order used for Shift+click range selection — matches the
+	/// render order (pinned → each named group → ungrouped).
+	private var flatVisibleProjects: [Project] {
+		var result: [Project] = []
+		let pinned = projects.filter { $0.isPinned }
+		result.append(contentsOf: pinned)
+		for name in groupNames {
+			result.append(contentsOf: projects.filter { $0.groupName == name && !$0.isPinned })
+		}
+		result.append(contentsOf: projects.filter { !$0.isPinned && ($0.groupName ?? "").isEmpty })
+		return result
+	}
+
+	private func handleProjectClick(_ project: Project, modifiers: NSEvent.ModifierFlags) {
+		let isShift = modifiers.contains(.shift)
+		let isCmd = modifiers.contains(.command)
+		let id = project.id
+
+		if isShift, let anchor = rangeAnchorId, anchor != id {
+			let visible = flatVisibleProjects
+			if let a = visible.firstIndex(where: { $0.id == anchor }),
+			   let b = visible.firstIndex(where: { $0.id == id }) {
+				let range = min(a, b)...max(a, b)
+				selectedProjectIds = Set(visible[range].map(\.id))
+				selectedProject = project
+			}
+		} else if isCmd {
+			if selectedProjectIds.contains(id) {
+				selectedProjectIds.remove(id)
+				// Primary selection should still be meaningful when possible.
+				if selectedProject?.id == id {
+					selectedProject = selectedProjectIds.first.flatMap { sid in
+						projects.first(where: { $0.id == sid })
+					}
+				}
+			} else {
+				selectedProjectIds.insert(id)
+				selectedProject = project
+			}
+			rangeAnchorId = id
+		} else {
+			selectedProjectIds = [id]
+			selectedProject = project
+			rangeAnchorId = id
+		}
+	}
+
+	/// Resolve the targets for a context-menu action. Right-clicking a project
+	/// that is part of the multi-selection operates on every selected project;
+	/// right-clicking outside it operates on that single project.
+	private func contextTargets(for project: Project) -> [UUID] {
+		if selectedProjectIds.contains(project.id) && selectedProjectIds.count > 1 {
+			return Array(selectedProjectIds)
+		}
+		return [project.id]
+	}
+
+	private func showProjectContextMenu(for project: Project, at screenPoint: NSPoint) {
+		let targets = contextTargets(for: project)
+		let bulk = targets.count > 1
+		FloatingMenuPopup.shared.show(
+			at: screenPoint,
+			size: NSSize(width: 210, height: 380)
+		) {
+			ProjectContextMenu(
+				isPinned: project.isPinned,
+				currentGroup: project.groupName,
+				existingGroups: groupNames,
+				bulkCount: bulk ? targets.count : nil,
+				onTogglePin: {
+					FloatingMenuPopup.shared.close()
+					for id in targets { onTogglePin?(id) }
+				},
+				onSetGroup: { name in
+					FloatingMenuPopup.shared.close()
+					for id in targets { onSetProjectGroup?(id, name) }
+				},
+				onNewGroup: {
+					FloatingMenuPopup.shared.close()
+					promptForNewGroup(projectIds: targets)
+				},
+				onRename: {
+					FloatingMenuPopup.shared.close()
+					// Rename always operates on the single clicked project — no
+					// meaningful bulk semantics.
+					renameText = project.name
+					renamingProjectId = project.id
+				},
+				onDelete: {
+					FloatingMenuPopup.shared.close()
+					for id in targets { onDeleteProject?(id) }
+				}
+			)
+			.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+			.padding(4)
+		}
+	}
+
+	/// Create a new group with a placeholder name, move the given projects into
+	/// it, and immediately enter inline rename mode on the header so the user
+	/// can type the real name.
+	private func promptForNewGroup(projectIds: [UUID]) {
+		guard !projectIds.isEmpty else { return }
+		let placeholder = uniqueGroupName?() ?? "New Group"
+		for id in projectIds { onSetProjectGroup?(id, placeholder) }
+		beginRenameGroup(placeholder)
+	}
+
+	/// Empty-area "New Group" variant: uses the current multi-selection, or
+	/// the single selected project, or the first project overall. Runs the
+	/// same inline flow.
+	private func promptForNewGroupOnly() {
+		let targets: [UUID]
+		if selectedProjectIds.count > 1 {
+			targets = Array(selectedProjectIds)
+		} else if let id = selectedProject?.id {
+			targets = [id]
+		} else if let id = projects.first?.id {
+			targets = [id]
+		} else {
+			return
+		}
+		promptForNewGroup(projectIds: targets)
 	}
 
 	private func dropIndicator() -> some View {
@@ -176,6 +588,7 @@ struct ProjectListView: View {
 private struct SessionRow: View {
 	let session: AgentSession
 	var isFocused: Bool = false
+	var onDismiss: (() -> Void)? = nil
 	@State private var isHovering = false
 
 	private var statusColor: Color {
@@ -183,13 +596,28 @@ private struct SessionRow: View {
 		case .running: return Theme.accent
 		case .waiting: return Theme.yellow
 		case .completed, .sessionEnd: return Theme.green
-		case .sessionStart: return Theme.accent
+		// `sessionStart` is the "claude launched, no prompt yet" state — show
+		// it as neutral/idle so it's visually distinct from actively running.
+		case .sessionStart: return Theme.textTertiary
 		case .idle: return Theme.textTertiary
 		}
 	}
 
+	/// Sessions in `.sessionStart` are idle (claude is waiting for user input
+	/// after launch); only `.running` and `.waiting` should look "live" in the
+	/// sidebar.
 	private var isActive: Bool {
-		session.status == .running || session.status == .waiting || session.status == .sessionStart
+		session.status == .running || session.status == .waiting
+	}
+
+	/// Primary text shown in the session row. Falls back to "Ready" for the
+	/// `sessionStart` state so the row reads as idle instead of showing the
+	/// raw hook message ("started").
+	private var primaryText: String {
+		if let prompt = session.lastUserPrompt, !prompt.isEmpty { return prompt }
+		if let label = session.label, !label.isEmpty { return label }
+		if session.status == .sessionStart { return "Ready" }
+		return session.message
 	}
 
 	var body: some View {
@@ -207,7 +635,7 @@ private struct SessionRow: View {
 			}
 
 			VStack(alignment: .leading, spacing: 2) {
-				Text(session.lastUserPrompt ?? session.label ?? session.message)
+				Text(primaryText)
 					.font(.system(size: 11, weight: isActive ? .medium : .regular))
 					.foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
 					.lineLimit(2)
@@ -263,6 +691,13 @@ private struct SessionRow: View {
 			RoundedRectangle(cornerRadius: 4)
 				.fill(isFocused ? Theme.surfaceActive : (isHovering ? Theme.surfaceHover : Color.clear))
 		)
+		.contextMenu {
+			if let onDismiss {
+				Button(action: onDismiss) {
+					Label("Dismiss", systemImage: "xmark")
+				}
+			}
+		}
 		.contentShape(Rectangle())
 		.onHover { isHovering = $0 }
 	}
@@ -308,12 +743,64 @@ private extension Date {
 
 // MARK: - Drop Delegate
 
+// MARK: - Section Drop Delegate
+
+/// Drop target attached to each group header (including the Pinned section).
+/// Accepts a project being dragged and moves it into the target section, or
+/// applies the same move to every selected project when the drag originated
+/// from a member of the current multi-selection.
+struct SectionDropDelegate: DropDelegate {
+	let sectionKey: String
+	@Binding var dragOverKey: String?
+	@Binding var draggingProjectId: UUID?
+	let selectedProjectIds: Set<UUID>
+	let onMove: (UUID, String) -> Void
+
+	func dropEntered(info: DropInfo) {
+		withAnimation(.easeOut(duration: 0.12)) { dragOverKey = sectionKey }
+	}
+
+	func dropExited(info: DropInfo) {
+		if dragOverKey == sectionKey {
+			withAnimation(.easeOut(duration: 0.12)) { dragOverKey = nil }
+		}
+	}
+
+	func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+	func validateDrop(info: DropInfo) -> Bool { draggingProjectId != nil }
+
+	func performDrop(info: DropInfo) -> Bool {
+		guard let dragged = draggingProjectId else { reset(); return false }
+		let ids: [UUID] = (selectedProjectIds.contains(dragged) && selectedProjectIds.count > 1)
+			? Array(selectedProjectIds)
+			: [dragged]
+		for id in ids { onMove(id, sectionKey) }
+		reset()
+		return true
+	}
+
+	private func reset() {
+		withAnimation(.easeOut(duration: 0.12)) {
+			dragOverKey = nil
+			draggingProjectId = nil
+		}
+	}
+}
+
 struct ProjectDropDelegate: DropDelegate {
 	let targetIndex: Int
 	let projects: [Project]
 	@Binding var draggingProjectId: UUID?
 	@Binding var dropTargetIndex: Int?
+	let selectedProjectIds: Set<UUID>
+	/// When set, overrides the section inferred from neighbouring rows. Used
+	/// for the trailing drop zone at the bottom of a group: the flat index
+	/// would otherwise point at the first row of the next group and the
+	/// project would land there instead.
+	var forcedSectionKey: String? = nil
 	var onMoveProject: ((IndexSet, Int) -> Void)?
+	var onMoveProjectToSection: ((UUID, String) -> Void)?
 
 	func dropEntered(info: DropInfo) {
 		withAnimation(.easeOut(duration: 0.15)) { dropTargetIndex = targetIndex }
@@ -326,6 +813,31 @@ struct ProjectDropDelegate: DropDelegate {
 			  let sourceIndex = projects.firstIndex(where: { $0.id == dragId }) else {
 			reset(); return false
 		}
+
+		// If the drop lands next to an existing row, inherit that row's
+		// section (Pinned / group / ungrouped) so dragging between grouped
+		// rows moves the project into that group. Drops past the last row
+		// (targetIndex == projects.count) don't infer — they preserve the
+		// dragged project's current membership. `forcedSectionKey` overrides
+		// inference (used for per-group trailing drop zones).
+		let inferredKey: String? = forcedSectionKey ?? (
+			(targetIndex < projects.count)
+				? Self.sectionKey(for: projects[targetIndex])
+				: (targetIndex > 0 ? Self.sectionKey(for: projects[targetIndex - 1]) : nil)
+		)
+
+		// Apply section change to the dragged project (and the rest of the
+		// multi-selection if it's part of one).
+		if let sectionKey = inferredKey {
+			let source = projects[sourceIndex]
+			if Self.sectionKey(for: source) != sectionKey {
+				let ids: [UUID] = (selectedProjectIds.contains(dragId) && selectedProjectIds.count > 1)
+					? Array(selectedProjectIds)
+					: [dragId]
+				for id in ids { onMoveProjectToSection?(id, sectionKey) }
+			}
+		}
+
 		let dest = targetIndex
 		if sourceIndex != dest && sourceIndex + 1 != dest {
 			onMoveProject?(IndexSet(integer: sourceIndex), dest)
@@ -342,22 +854,70 @@ struct ProjectDropDelegate: DropDelegate {
 			dropTargetIndex = nil
 		}
 	}
+
+	/// Match the keying used by `SectionDropDelegate` and
+	/// `ProjectStore.moveProjectToSection` so an inferred drop target flows
+	/// through the same codepath as explicit section drops.
+	private static func sectionKey(for project: Project) -> String {
+		if project.isPinned { return "__pinned__" }
+		if let g = project.groupName, !g.isEmpty { return g }
+		return ""
+	}
 }
 
 // MARK: - Context Menu
 
 struct ProjectContextMenu: View {
+	var isPinned: Bool = false
+	var currentGroup: String? = nil
+	var existingGroups: [String] = []
+	/// When set, the menu is operating on a multi-selection of this size.
+	/// Rename is hidden (no sensible bulk semantics); a header row announces
+	/// the count so the user knows the action is bulk.
+	var bulkCount: Int? = nil
+	var onTogglePin: (() -> Void)?
+	var onSetGroup: ((String?) -> Void)?
+	var onNewGroup: (() -> Void)?
 	let onRename: () -> Void
 	let onDelete: () -> Void
 
+	@State private var showGroupSubmenu = false
+
 	var body: some View {
 		VStack(alignment: .leading, spacing: 1) {
-			ContextMenuItem(label: "Rename", icon: "pencil", action: onRename)
-			ContextMenuDivider()
-			ContextMenuItem(label: "Delete", icon: "trash", isDestructive: true, action: onDelete)
+			if let count = bulkCount {
+				Text("\(count) projects selected")
+					.font(.system(size: 10, weight: .semibold))
+					.foregroundStyle(Theme.accent)
+					.padding(.horizontal, 10)
+					.padding(.vertical, 4)
+				ContextMenuDivider()
+			}
+			if let onTogglePin {
+				ContextMenuItem(
+					label: isPinned ? "Unpin" : "Pin",
+					icon: isPinned ? "pin.slash" : "pin",
+					action: onTogglePin
+				)
+				ContextMenuDivider()
+			}
+			if onSetGroup != nil {
+				groupSection
+				ContextMenuDivider()
+			}
+			if bulkCount == nil {
+				ContextMenuItem(label: "Rename", icon: "pencil", action: onRename)
+				ContextMenuDivider()
+			}
+			ContextMenuItem(
+				label: bulkCount.map { "Delete \($0) Projects" } ?? "Delete",
+				icon: "trash",
+				isDestructive: true,
+				action: onDelete
+			)
 		}
 		.padding(.vertical, 4)
-		.frame(width: 160)
+		.frame(width: 180)
 		.background(
 			RoundedRectangle(cornerRadius: Theme.radiusSm)
 				.fill(.ultraThinMaterial)
@@ -368,6 +928,57 @@ struct ProjectContextMenu: View {
 				.strokeBorder(Theme.border, lineWidth: 1)
 		)
 		.shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+	}
+
+	/// "Move to Group" expander. Inline (not a flyout submenu) because the sidebar
+	/// is narrow — a right-side flyout would be clipped by the window edge.
+	private var groupSection: some View {
+		VStack(alignment: .leading, spacing: 1) {
+			Button(action: { withAnimation(.easeOut(duration: 0.12)) { showGroupSubmenu.toggle() } }) {
+				HStack(spacing: 8) {
+					Image(systemName: "folder")
+						.font(.system(size: 11))
+						.frame(width: 16)
+					Text("Move to Group")
+						.font(.system(size: 12))
+					Spacer()
+					Image(systemName: "chevron.right")
+						.font(.system(size: 9))
+						.rotationEffect(.degrees(showGroupSubmenu ? 90 : 0))
+				}
+				.foregroundStyle(Theme.textSecondary)
+				.padding(.horizontal, 10)
+				.padding(.vertical, 5)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+
+			if showGroupSubmenu {
+				VStack(alignment: .leading, spacing: 1) {
+					ForEach(existingGroups, id: \.self) { name in
+						let isCurrent = name == currentGroup
+						ContextMenuItem(
+							label: name + (isCurrent ? "  ✓" : ""),
+							icon: "folder",
+							action: { onSetGroup?(name) }
+						)
+					}
+					if !existingGroups.isEmpty {
+						ContextMenuDivider()
+					}
+					ContextMenuItem(label: "New Group…", icon: "plus", action: { onNewGroup?() })
+					if currentGroup != nil {
+						ContextMenuItem(
+							label: "Remove from Group",
+							icon: "xmark",
+							action: { onSetGroup?(nil) }
+						)
+					}
+				}
+				.padding(.leading, 12)
+				.transition(.opacity.combined(with: .move(edge: .top)))
+			}
+		}
 	}
 }
 
@@ -416,7 +1027,7 @@ struct ContextMenuDivider: View {
 struct DragSourceView: NSViewRepresentable {
 	let projectId: UUID
 	let onDragStarted: () -> Void
-	let onClick: () -> Void
+	let onClick: (NSEvent.ModifierFlags) -> Void
 	var onRightClick: ((CGPoint) -> Void)?
 
 	func makeNSView(context: Context) -> DragSourceNSView {
@@ -438,14 +1049,16 @@ struct DragSourceView: NSViewRepresentable {
 	class DragSourceNSView: NSView {
 		var projectId: UUID?
 		var onDragStarted: (() -> Void)?
-		var onClick: (() -> Void)?
+		var onClick: ((NSEvent.ModifierFlags) -> Void)?
 		var onRightClick: ((CGPoint) -> Void)?
 		private var mouseDownLocation: NSPoint?
 		private var didDrag = false
+		private var mouseDownModifiers: NSEvent.ModifierFlags = []
 		private let dragThreshold: CGFloat = 4
 
 		override func mouseDown(with event: NSEvent) {
 			mouseDownLocation = event.locationInWindow
+			mouseDownModifiers = event.modifierFlags
 			didDrag = false
 		}
 
@@ -463,16 +1076,18 @@ struct DragSourceView: NSViewRepresentable {
 		}
 
 		override func mouseUp(with event: NSEvent) {
-			if !didDrag { onClick?() }
+			if !didDrag { onClick?(mouseDownModifiers) }
 			mouseDownLocation = nil
 			didDrag = false
 		}
 
 		override func rightMouseDown(with event: NSEvent) {
-			guard let contentView = window?.contentView else { return }
-			let windowPoint = contentView.convert(event.locationInWindow, from: nil)
-			let swiftUIPoint = CGPoint(x: windowPoint.x, y: contentView.bounds.height - windowPoint.y)
-			onRightClick?(swiftUIPoint)
+			guard let window = self.window else { return }
+			// Emit the click location in screen coords so callers can anchor a
+			// NSPanel-based popup at the cursor without fighting SwiftUI coord
+			// spaces.
+			let screenPoint = window.convertPoint(toScreen: event.locationInWindow)
+			onRightClick?(screenPoint)
 		}
 
 		private func snapshot() -> NSImage {
@@ -487,6 +1102,118 @@ struct DragSourceView: NSViewRepresentable {
 
 extension DragSourceView.DragSourceNSView: NSDraggingSource {
 	func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .move }
+}
+
+// MARK: - Sidebar Right-Click Detector
+
+/// Detects right-clicks over empty sidebar space and shows a styled popup
+/// anchored to the cursor. Uses `FloatingMenuPopup` (SwiftUI inside NSPanel)
+/// so positioning matches the cursor in any window style.
+struct SidebarRightClickDetector: NSViewRepresentable {
+	let onNewProject: () -> Void
+	let onNewGroup: () -> Void
+
+	func makeNSView(context: Context) -> DetectorNSView {
+		let view = DetectorNSView()
+		view.onNewProject = onNewProject
+		view.onNewGroup = onNewGroup
+		return view
+	}
+
+	func updateNSView(_ nsView: DetectorNSView, context: Context) {
+		nsView.onNewProject = onNewProject
+		nsView.onNewGroup = onNewGroup
+	}
+
+	class DetectorNSView: NSView {
+		var onNewProject: (() -> Void)?
+		var onNewGroup: (() -> Void)?
+
+		override func rightMouseDown(with event: NSEvent) {
+			guard let window = self.window else { return }
+			let screenPoint = window.convertPoint(toScreen: event.locationInWindow)
+			let captured = (onNewProject, onNewGroup)
+			Task { @MainActor in
+				FloatingMenuPopup.shared.show(
+					at: screenPoint,
+					size: NSSize(width: 190, height: 80)
+				) {
+					SidebarContextMenuContent(
+						onNewProject: {
+							FloatingMenuPopup.shared.close()
+							captured.0?()
+						},
+						onNewGroup: {
+							FloatingMenuPopup.shared.close()
+							captured.1?()
+						}
+					)
+				}
+			}
+		}
+	}
+}
+
+/// Styled SwiftUI content shown inside the floating popup for empty-area clicks.
+private struct SidebarContextMenuContent: View {
+	let onNewProject: () -> Void
+	let onNewGroup: () -> Void
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 1) {
+			ContextMenuItem(label: "New Project", icon: "plus", action: onNewProject)
+			ContextMenuDivider()
+			ContextMenuItem(label: "New Group…", icon: "folder.badge.plus", action: onNewGroup)
+		}
+		.padding(.vertical, 4)
+		.frame(width: 180)
+		.background(
+			RoundedRectangle(cornerRadius: Theme.radiusSm)
+				.fill(.ultraThinMaterial)
+				.environment(\.colorScheme, .dark)
+		)
+		.overlay(
+			RoundedRectangle(cornerRadius: Theme.radiusSm)
+				.strokeBorder(Theme.border, lineWidth: 1)
+		)
+		.shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+		.padding(4) // breathing room for shadow/border against panel edge
+	}
+}
+
+// MARK: - Group Name Field (inline rename on the group header)
+
+struct GroupNameField: View {
+	@Binding var text: String
+	let onCommit: () -> Void
+	let onCancel: () -> Void
+	@FocusState private var isFocused: Bool
+
+	var body: some View {
+		TextField("Group name", text: $text)
+			.textFieldStyle(.plain)
+			.font(.system(size: 10, weight: .semibold))
+			.tracking(0.5)
+			.foregroundStyle(Theme.textPrimary)
+			.padding(.horizontal, 4)
+			.padding(.vertical, 2)
+			.background(RoundedRectangle(cornerRadius: 3).fill(Theme.surfaceActive))
+			.overlay(
+				RoundedRectangle(cornerRadius: 3)
+					.strokeBorder(Theme.accent.opacity(0.6), lineWidth: 1)
+			)
+			.focused($isFocused)
+			.onSubmit(onCommit)
+			.onExitCommand(perform: onCancel)
+			.onAppear {
+				isFocused = true
+				// Select-all so the placeholder is overwritten on first keystroke.
+				DispatchQueue.main.async {
+					NSApp.keyWindow?.firstResponder?
+						.tryToPerform(#selector(NSText.selectAll(_:)), with: nil)
+				}
+			}
+	}
 }
 
 // MARK: - Rename Field
@@ -535,6 +1262,9 @@ struct SidebarIconButton: View {
 struct ProjectRow: View {
 	let project: Project
 	let isSelected: Bool
+	/// True when part of a multi-selection (Shift/Cmd click). Gets a subtler
+	/// highlight than the primary selection so the focus row is still obvious.
+	var isMultiSelected: Bool = false
 	var agentState: AgentState?
 	var selectionNamespace: Namespace.ID?
 	@EnvironmentObject var projectStore: ProjectStore
@@ -556,10 +1286,17 @@ struct ProjectRow: View {
 	var body: some View {
 		HStack(spacing: 10) {
 			VStack(alignment: .leading, spacing: 1) {
-				Text(project.name)
-					.font(Theme.fontBody)
-					.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
-					.lineLimit(1)
+				HStack(spacing: 4) {
+					if project.isPinned {
+						Image(systemName: "pin.fill")
+							.font(.system(size: 9))
+							.foregroundStyle(Theme.accent)
+					}
+					Text(project.name)
+						.font(Theme.fontBody)
+						.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+						.lineLimit(1)
+				}
 
 				if let status = loadingStatus {
 					HStack(spacing: 4) {
@@ -585,8 +1322,12 @@ struct ProjectRow: View {
 		.padding(.vertical, 7)
 		.background(
 			ZStack {
-				if isHovering && !isSelected {
+				if isHovering && !isSelected && !isMultiSelected {
 					RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.surfaceHover)
+				}
+				if isMultiSelected && !isSelected {
+					RoundedRectangle(cornerRadius: Theme.radiusSm)
+						.fill(Theme.accent.opacity(0.18))
 				}
 				if isSelected {
 					if let ns = selectionNamespace {
