@@ -4,8 +4,11 @@ import AppKit
 struct MainWindow: View {
 	@EnvironmentObject var commandPaletteState: CommandPaletteState
 	@EnvironmentObject var projectStore: ProjectStore
+	@EnvironmentObject var notificationStore: NotificationStore
 	@State private var sidebarWidthAtDragStart: CGFloat = 0
-	@State private var openFile: OpenFile?
+	/// Per-project open file cache. Keeping the loaded `OpenFile` around avoids
+	/// re-fetching (SSH read for remote projects) on every project switch.
+	@State private var openFilesByProject: [UUID: OpenFile] = [:]
 	@State private var showSettings = false
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
@@ -69,6 +72,11 @@ struct MainWindow: View {
 				.onReceive(NotificationCenter.default.publisher(for: .belveSelectNextProject)) { _ in
 					projectStore.selectNextProject()
 				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveToggleBrowser)) { _ in
+					guard let project = projectStore.selectedProject else { return }
+					let ls = layoutState.state(for: project.id)
+					BrowserWindowManager.shared.toggle(project: project, layoutState: ls)
+				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveSelectPreviousProject)) { _ in
 					projectStore.selectPreviousProject()
 				}
@@ -106,14 +114,6 @@ struct MainWindow: View {
 
 		let paletteHandlers = AnyView(
 			projectShortcuts
-				.onChange(of: projectStore.selectedProject) {
-					// Clear openFile on project switch — PreviewArea for the new
-					// project will restore its own `lastOpenedFile` in onAppear.
-					openFile = nil
-					DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-						projectStore.refocusTerminal()
-					}
-				}
 				.onChange(of: commandPaletteState.isPresented) {
 					if !commandPaletteState.isPresented {
 						paletteMode = .commands
@@ -183,6 +183,26 @@ struct MainWindow: View {
 				topBar
 				Theme.borderSubtle.frame(height: 1)
 				projectContent
+				Theme.borderSubtle.frame(height: 1)
+				BottomBar(
+					project: projectStore.selectedProject,
+					gitBranch: projectStore.gitBranch,
+					activeAgentProjectCount: notificationStore.agentStatus.values.filter {
+						$0.status == .running || $0.status == .waiting
+					}.count,
+					portManager: PortForwardManager.shared,
+					onUpdateForwards: { id, forwards in
+						projectStore.updateProjectForwards(id, forwards: forwards)
+					},
+					onResolveDetection: { id, port, action in
+						projectStore.resolvePortDetection(projectId: id, port: port, action: action)
+					},
+					onOpenBrowser: {
+						guard let project = projectStore.selectedProject else { return }
+						let ls = layoutState.state(for: project.id)
+						BrowserWindowManager.shared.toggle(project: project, layoutState: ls)
+					}
+				)
 			}
 			.background(Theme.surface)
 		}
@@ -201,13 +221,24 @@ struct MainWindow: View {
 				onRenameProject: { id, name in projectStore.renameProject(id, name: name) },
 				onDeleteProject: { id in projectStore.deleteProject(id) },
 				onMoveProject: { source, dest in projectStore.moveProject(from: source, to: dest) },
+				onTogglePin: { id in projectStore.togglePin(id) },
 				onFocusPane: { projectId, paneId in
 					if let paneUUID = UUID(uuidString: paneId) {
 						commandAreaState(for: projectId).activePaneId = paneUUID
 						projectStore.refocusTerminal(paneId: paneId)
 					}
 				},
-				activeCommandState: commandAreaState(for: projectStore.selectedProject?.id ?? UUID())
+				onSetProjectGroup: { id, name in projectStore.setProjectGroup(id, groupName: name) },
+				groupNames: projectStore.groupNames,
+				collapsedGroups: projectStore.collapsedGroups,
+				onToggleGroupCollapse: { name in projectStore.toggleGroupCollapse(name) },
+				onRenameGroup: { old, new in projectStore.renameGroup(from: old, to: new) },
+				uniqueGroupName: { projectStore.uniqueGroupName() },
+				onMoveProjectToSection: { id, key in projectStore.moveProjectToSection(id, sectionKey: key) },
+				activeCommandState: commandAreaState(for: projectStore.selectedProject?.id ?? UUID()),
+				paneIdsForProject: { projectId in
+					Set(commandAreaState(for: projectId).orderedPaneIds().map { $0.uuidString.lowercased() })
+				}
 			)
 			.frame(width: layoutState.sidebarWidth)
 
@@ -295,7 +326,10 @@ struct MainWindow: View {
 				PreviewArea(
 					project: project,
 					layoutState: projectLayout,
-					openFile: isSelected ? $openFile : .constant(nil)
+					openFile: Binding(
+						get: { openFilesByProject[project.id] },
+						set: { openFilesByProject[project.id] = $0 }
+					)
 				)
 				.id(project.hashValue)
 				.frame(width: previewWidth)
@@ -325,20 +359,35 @@ struct MainWindow: View {
 		.opacity(isSelected ? 1 : 0)
 		.allowsHitTesting(isSelected)
 		.environment(\.projectActive, isSelected)
+		.onAppear {
+			// `.onChange(of: isSelected)` doesn't fire for the initial value,
+			// so handle browser restore for the first-loaded project here.
+			if isSelected, projectLayout.browserOpen {
+				BrowserWindowManager.shared.open(project: project, layoutState: projectLayout)
+			}
+		}
 		.onChange(of: isSelected) { _, nowSelected in
 			if nowSelected {
-				// Force re-fit terminals after becoming visible
-				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-					NotificationCenter.default.post(
-						name: .belveTerminalRefit,
-						object: nil,
-						userInfo: ["projectId": project.id]
-					)
-				}
-				// Focus terminal after project switch (delay past refit layout)
 				let targetPaneId = commandAreaState(for: project.id).activePaneId
-				DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+				// Refocus on the next runloop tick — SwiftUI will have laid out
+				// the now-visible workspace by then, so the WKWebView can
+				// accept first-responder without the old staggered 0.15–0.5s
+				// guard that was causing the perceived post-switch lag.
+				DispatchQueue.main.async {
 					projectStore.refocusTerminal(paneId: targetPaneId?.uuidString)
+				}
+				// Trigger terminal refit in the same tick; xterm.js can resize
+				// safely even before first output.
+				NotificationCenter.default.post(
+					name: .belveTerminalRefit,
+					object: nil,
+					userInfo: ["projectId": project.id]
+				)
+				// Hide other projects' browser panels and restore this
+				// project's if it was open last time.
+				BrowserWindowManager.shared.hideAllExcept(keepProjectId: project.id)
+				if projectLayout.browserOpen {
+					BrowserWindowManager.shared.open(project: project, layoutState: projectLayout)
 				}
 			}
 		}
@@ -450,7 +499,7 @@ struct MainWindow: View {
 			if projectLayout.showFileTree { stops.append(.fileTree) }
 			// Editor is only a cycle stop when a file is actually open; otherwise
 			// there's nothing to focus and the placeholder is just a blank area.
-			if openFile != nil { stops.append(.editor) }
+			if openFilesByProject[project.id] != nil { stops.append(.editor) }
 		}
 		guard !stops.isEmpty else { return }
 

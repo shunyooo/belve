@@ -101,6 +101,8 @@ extension Notification.Name {
 	static let belveReloadProject = Notification.Name("belveReloadProject")
 	static let belveFileDeleted = Notification.Name("belveFileDeleted")
 	static let belveUndo = Notification.Name("belveUndo")
+	static let belvePortDetected = Notification.Name("belvePortDetected")
+	static let belveToggleBrowser = Notification.Name("belveToggleBrowser")
 }
 
 class CommandPaletteState: ObservableObject {
@@ -191,6 +193,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 					NotificationCenter.default.post(name: .belveToggleEditor, object: nil)
 				}
 				return nil
+			case "b" where shift:
+				NotificationCenter.default.post(name: .belveToggleBrowser, object: nil)
+				return nil
 			case "\\" where !shift:
 				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
 				return nil
@@ -231,7 +236,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				NotificationCenter.default.post(name: .belveOpenFolder, object: nil)
 				return nil
 			case "r" where !shift:
-				NotificationCenter.default.post(name: .belveReloadProject, object: nil)
+				// Cmd+R routes to the browser when its panel is the key window
+				// (matches the obvious "this is a browser, reload it" mental
+				// model); otherwise fall back to project reload.
+				if NSApp.keyWindow?.identifier?.rawValue.hasPrefix("BelveBrowser-") == true {
+					NotificationCenter.default.post(
+						name: .belveBrowserNav,
+						object: nil,
+						userInfo: ["action": BrowserView.NavAction.reload]
+					)
+				} else {
+					NotificationCenter.default.post(name: .belveReloadProject, object: nil)
+				}
 				return nil
 			default:
 				return event

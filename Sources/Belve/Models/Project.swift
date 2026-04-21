@@ -6,20 +6,78 @@ enum Workspace: Codable, Hashable {
 	case devContainer(host: String, workspace: String)
 }
 
+struct PortForward: Codable, Hashable, Identifiable {
+	let id: UUID
+	var localPort: Int
+	var remotePort: Int
+	var enabled: Bool
+	/// true if created by auto-detect (remote listening-port scanner). Purely
+	/// informational — doesn't change behaviour.
+	var autoDetected: Bool
+
+	init(id: UUID = UUID(), localPort: Int, remotePort: Int, enabled: Bool = true, autoDetected: Bool = false) {
+		self.id = id
+		self.localPort = localPort
+		self.remotePort = remotePort
+		self.enabled = enabled
+		self.autoDetected = autoDetected
+	}
+}
+
 struct Project: Identifiable, Codable, Hashable {
 	let id: UUID
 	var name: String
 	var workspace: Workspace
+	/// Pinned projects are the "currently-active" set — Cmd+[/] cycles only
+	/// through pinned projects when any are pinned.
+	var isPinned: Bool = false
+	/// Optional user-defined group name. Projects sharing the same groupName
+	/// render together under a collapsible header in the sidebar. Pinned
+	/// projects always appear in the implicit "Pinned" section regardless of
+	/// groupName — when unpinned they return to their named group.
+	var groupName: String?
+	/// User-configured TCP port forwards (local → remote). Manual entries plus
+	/// anything the user chose "Always forward" on from the auto-detect toast.
+	var portForwards: [PortForward] = []
+	/// Auto-detected remote listening ports that the user explicitly dismissed
+	/// ("Never forward"). Keeps the detection toast from re-appearing for the
+	/// same port on every poll.
+	var portForwardBlocklist: Set<Int> = []
+	/// Remote ports the user has chosen "Always forward" on — they bypass the
+	/// toast and are silently added as auto-detected entries on first sight.
+	var portForwardAllowlist: Set<Int> = []
 
-	init(id: UUID = UUID(), name: String, workspace: Workspace = .local(path: nil)) {
+	init(id: UUID = UUID(), name: String, workspace: Workspace = .local(path: nil), isPinned: Bool = false, groupName: String? = nil) {
 		self.id = id
 		self.name = name
 		self.workspace = workspace
+		self.isPinned = isPinned
+		self.groupName = groupName
+	}
+
+	enum CodingKeys: String, CodingKey {
+		case id, name, workspace, isPinned, groupName, portForwards, portForwardBlocklist, portForwardAllowlist
+	}
+
+	init(from decoder: Decoder) throws {
+		let c = try decoder.container(keyedBy: CodingKeys.self)
+		id = try c.decode(UUID.self, forKey: .id)
+		name = try c.decode(String.self, forKey: .name)
+		workspace = try c.decode(Workspace.self, forKey: .workspace)
+		isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+		groupName = try c.decodeIfPresent(String.self, forKey: .groupName)
+		portForwards = try c.decodeIfPresent([PortForward].self, forKey: .portForwards) ?? []
+		portForwardBlocklist = try c.decodeIfPresent(Set<Int>.self, forKey: .portForwardBlocklist) ?? []
+		portForwardAllowlist = try c.decodeIfPresent(Set<Int>.self, forKey: .portForwardAllowlist) ?? []
 	}
 
 	/// Create a copy with a new UUID. Forces SwiftUI view recreation when connection type changes.
 	func withNewId() -> Project {
-		Project(id: UUID(), name: name, workspace: workspace)
+		var copy = Project(id: UUID(), name: name, workspace: workspace, isPinned: isPinned, groupName: groupName)
+		copy.portForwards = portForwards
+		copy.portForwardBlocklist = portForwardBlocklist
+		copy.portForwardAllowlist = portForwardAllowlist
+		return copy
 	}
 
 	// MARK: - Convenience computed properties

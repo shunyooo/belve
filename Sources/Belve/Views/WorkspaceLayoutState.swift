@@ -18,19 +18,54 @@ final class ProjectLayoutState: ObservableObject, Codable {
 	@Published var lastOpenedFile: String? = nil {
 		didSet { onChanged?() }
 	}
+	/// Preview-area mode: `.editor` shows the file tree + code/markdown editor
+	/// (the default), `.browser` swaps that out for a lightweight WKWebView
+	/// for debugging forwarded ports and local dev servers.
+	@Published var previewMode: PreviewMode = .editor {
+		didSet { onChanged?() }
+	}
+	/// Persisted URL shown in the browser pane. Restored when the user
+	/// flips `previewMode` back to `.browser`.
+	@Published var browserURL: String = "" {
+		didSet { onChanged?() }
+	}
+	/// Whether the floating browser panel was open when this project was last
+	/// active. The window is auto-restored on project select.
+	@Published var browserOpen: Bool = false {
+		didSet { onChanged?() }
+	}
+	/// Whether the browser panel was in its shrunk (thumbnail) state.
+	@Published var browserThumbnail: Bool = false {
+		didSet { onChanged?() }
+	}
+	/// Last full-size frame of the browser panel (separate from thumbnail
+	/// dimensions so shrinking + restoring doesn't lose the user's preferred
+	/// size/position).
+	@Published var browserFrame: StoredFrame? = nil {
+		didSet { onChanged?() }
+	}
+	/// 仮想 viewport (width, height) — 設定されていれば WKWebView をその論理
+	/// サイズで描画し、ウィンドウサイズに合わせて scale で縮小する。
+	/// nil = ネイティブ (ウィンドウサイズそのまま)。media query を効かせた
+	/// まま小さいウィンドウで広い画面のレイアウトを確認するために使う。
+	@Published var browserViewport: StoredViewport? = nil {
+		didSet { onChanged?() }
+	}
 
 	var onChanged: (() -> Void)?
 
-	init(commandAreaFraction: CGFloat = 0.65, showEditor: Bool = true, showFileTree: Bool = true, fileTreeWidth: CGFloat = 200, lastOpenedFile: String? = nil) {
+	init(commandAreaFraction: CGFloat = 0.65, showEditor: Bool = true, showFileTree: Bool = true, fileTreeWidth: CGFloat = 200, lastOpenedFile: String? = nil, previewMode: PreviewMode = .editor, browserURL: String = "") {
 		self.commandAreaFraction = commandAreaFraction
 		self.showEditor = showEditor
 		self.showFileTree = showFileTree
 		self.fileTreeWidth = fileTreeWidth
 		self.lastOpenedFile = lastOpenedFile
+		self.previewMode = previewMode
+		self.browserURL = browserURL
 	}
 
 	enum CodingKeys: String, CodingKey {
-		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile
+		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile, previewMode, browserURL, browserOpen, browserThumbnail, browserFrame, browserViewport
 	}
 
 	required init(from decoder: Decoder) throws {
@@ -40,6 +75,12 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		showFileTree = try container.decodeIfPresent(Bool.self, forKey: .showFileTree) ?? true
 		fileTreeWidth = try container.decodeIfPresent(CGFloat.self, forKey: .fileTreeWidth) ?? 200
 		lastOpenedFile = try container.decodeIfPresent(String.self, forKey: .lastOpenedFile)
+		previewMode = try container.decodeIfPresent(PreviewMode.self, forKey: .previewMode) ?? .editor
+		browserURL = try container.decodeIfPresent(String.self, forKey: .browserURL) ?? ""
+		browserOpen = try container.decodeIfPresent(Bool.self, forKey: .browserOpen) ?? false
+		browserThumbnail = try container.decodeIfPresent(Bool.self, forKey: .browserThumbnail) ?? false
+		browserFrame = try container.decodeIfPresent(StoredFrame.self, forKey: .browserFrame)
+		browserViewport = try container.decodeIfPresent(StoredViewport.self, forKey: .browserViewport)
 	}
 
 	func encode(to encoder: Encoder) throws {
@@ -49,7 +90,49 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		try container.encode(showFileTree, forKey: .showFileTree)
 		try container.encode(fileTreeWidth, forKey: .fileTreeWidth)
 		try container.encodeIfPresent(lastOpenedFile, forKey: .lastOpenedFile)
+		try container.encode(previewMode, forKey: .previewMode)
+		try container.encode(browserURL, forKey: .browserURL)
+		try container.encode(browserOpen, forKey: .browserOpen)
+		try container.encode(browserThumbnail, forKey: .browserThumbnail)
+		try container.encodeIfPresent(browserFrame, forKey: .browserFrame)
+		try container.encodeIfPresent(browserViewport, forKey: .browserViewport)
 	}
+}
+
+/// 仮想 viewport の永続化用 (CGSize は Codable 非対応)。
+struct StoredViewport: Codable, Equatable {
+	let width: Double
+	let height: Double
+
+	init(_ size: CGSize) {
+		width = size.width
+		height = size.height
+	}
+
+	var size: CGSize { CGSize(width: width, height: height) }
+}
+
+enum PreviewMode: String, Codable {
+	case editor
+	case browser
+}
+
+/// `NSRect` equivalent that survives JSON encoding. Used for persisting the
+/// browser panel's full-size frame across project switches and app restarts.
+struct StoredFrame: Codable, Equatable {
+	let x: Double
+	let y: Double
+	let width: Double
+	let height: Double
+
+	init(_ rect: CGRect) {
+		x = rect.origin.x
+		y = rect.origin.y
+		width = rect.size.width
+		height = rect.size.height
+	}
+
+	var rect: CGRect { CGRect(x: x, y: y, width: width, height: height) }
 }
 
 final class WorkspaceLayoutStateManager: ObservableObject {

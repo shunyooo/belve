@@ -98,8 +98,13 @@ struct PreviewArea: View {
 			editedContent = openFile?.content ?? ""
 			savedContentReference = openFile?.content ?? ""
 			startFileWatch()
-			// Persist open file path
-			layoutState.lastOpenedFile = openFile?.path
+			// Persist only when we actually have a file open. A nil transition
+			// frequently comes from a project switch clearing the shared
+			// `openFile` state — writing nil here would wipe the saved
+			// `lastOpenedFile` for this project and break restore on re-entry.
+			if let path = openFile?.path {
+				layoutState.lastOpenedFile = path
+			}
 			guard let file = openFile else { return }
 			NotificationCenter.default.post(
 				name: .belveRevealFileInTree,
@@ -111,8 +116,10 @@ struct PreviewArea: View {
 			stopFileWatch()
 		}
 		.onAppear {
-			// Restore previously open file
+			// Restore previously open file. Remote providers may not be
+			// ready on first call; loadFile retries internally for those.
 			if openFile == nil, let savedPath = layoutState.lastOpenedFile {
+				NSLog("[Belve][restore] project=%@ tries to restore file=%@", project.name, savedPath)
 				loadFile(at: savedPath)
 			}
 		}
@@ -185,6 +192,19 @@ struct PreviewArea: View {
 						Circle()
 							.fill(Theme.textSecondary)
 							.frame(width: 6, height: 6)
+						// Revert: sits next to the dirty dot so the visual
+						// association ("this dot says edited → this icon undoes
+						// those edits") is immediate. Uses a U-turn arrow,
+						// which reads as "go back" across most UIs.
+						Button {
+							reloadFromDisk()
+						} label: {
+							Image(systemName: "arrow.uturn.backward")
+								.font(.system(size: 10, weight: .medium))
+								.foregroundStyle(Theme.textSecondary)
+						}
+						.buttonStyle(.plain)
+						.tooltip("Revert · discard edits and reload from disk")
 					}
 					Spacer()
 					Button {
@@ -444,8 +464,8 @@ struct PreviewArea: View {
 		return relative.isEmpty ? (path as NSString).lastPathComponent : relative
 	}
 
-	private func loadFile(at path: String, line: Int? = nil, column: Int? = nil) {
-		NSLog("[Belve] loadFile: \(path)")
+	private func loadFile(at path: String, line: Int? = nil, column: Int? = nil, retriesRemaining: Int = 5) {
+		NSLog("[Belve] loadFile: \(path) (retries left=\(retriesRemaining))")
 		let fileType = FileType.detect(path: path)
 
 		if fileType == .image || fileType == .pdf {
@@ -467,6 +487,17 @@ struct PreviewArea: View {
 					loadingPath = nil
 					postFileLoadingState(path: path, isLoading: false)
 					openFile = OpenFile(path: path, content: content, line: line, column: column)
+				}
+			} else if retriesRemaining > 0 && project.isRemote {
+				// Remote provider often fails on the first read after app
+				// start because the SSH ControlMaster is still being
+				// established. Retry with exponential-ish backoff so file
+				// restoration eventually succeeds without spamming.
+				let delay = Double(6 - retriesRemaining) * 0.6 + 0.4
+				NSLog("[Belve] Remote read failed, retrying in %.1fs: %@", delay, path)
+				DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+					guard openFile == nil else { return }
+					loadFile(at: path, line: line, column: column, retriesRemaining: retriesRemaining - 1)
 				}
 			} else {
 				NSLog("[Belve] Failed to read file: \(path)")
@@ -490,6 +521,28 @@ struct PreviewArea: View {
 				"isLoading": isLoading
 			]
 		)
+	}
+
+	/// Drop the unsaved in-editor edits and re-read the file from disk. Asks
+	/// for confirmation first so this isn't catastrophic if mis-clicked.
+	private func reloadFromDisk() {
+		guard let file = openFile, isDirty else { return }
+		let alert = NSAlert()
+		alert.messageText = "Discard changes and reload?"
+		alert.informativeText = "Unsaved edits to \((file.path as NSString).lastPathComponent) will be replaced with the current contents of the file on disk."
+		alert.alertStyle = .warning
+		alert.addButton(withTitle: "Discard & Reload")
+		alert.addButton(withTitle: "Cancel")
+		guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+		let path = file.path
+		let line = file.line
+		let column = file.column
+		// Mark clean first so the loadFile path doesn't race with the
+		// external-change watcher (which skips reload while `isDirty`).
+		isDirty = false
+		openFile = nil
+		loadFile(at: path, line: line, column: column)
 	}
 
 	func saveCurrentFile() {
