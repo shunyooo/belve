@@ -174,20 +174,11 @@ func main() {
 	os.Exit(1)
 }
 
-var containerID string
-var containerPaneID string
-
 func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	// Always kill old daemons for this socket, then take over.
 	killOldDaemons(socketPath)
 	os.Remove(socketPath)
 	writePidFile(socketPath)
-
-	// Detect container ID, pane ID, socket, workdir from docker exec command args
-	containerID = detectContainerID(command, args)
-	containerPaneID = detectEnvValue(command, args, "BELVE_PANE_ID")
-	containerSocket := detectContainerSocket(command, args)
-	containerWorkdir := detectWorkdir(command, args)
 
 	// Ignore SIGHUP to survive SSH/docker disconnects
 	signal.Ignore(syscall.SIGHUP)
@@ -274,12 +265,9 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 							cols = c
 							rows = r
 							mu.Unlock()
-							if containerID != "" {
-								go resizeContainerPty(containerID, containerPaneID, c, r)
-							}
 							f, _ := os.OpenFile("/tmp/belve-persist-resize.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 							if f != nil {
-								fmt.Fprintf(f, "%s resize: cols=%d rows=%d cid=%s pane=%s\n", time.Now().Format(time.RFC3339), c, r, containerID, containerPaneID)
+								fmt.Fprintf(f, "%s resize: cols=%d rows=%d\n", time.Now().Format(time.RFC3339), c, r)
 								f.Close()
 							}
 						}
@@ -368,31 +356,14 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 		// Log exit
 		logExitDiagnostics(socketPath, childPid, waitErr, exitCode, exitSignal)
 
-		// Decide whether to respawn
-		shouldRespawn := false
-		if respawnCount < maxRespawns {
-			if exitCode == 137 {
-				// SIGKILL — something external killed the child
-				shouldRespawn = true
-			} else if containerID != "" {
-				// Host daemon wrapping docker exec: always respawn
-				// (docker exec can drop for many reasons unrelated to user action)
-				shouldRespawn = true
-			}
-		}
-
-		if shouldRespawn {
+		// Decide whether to respawn — only on SIGKILL (= external kill).
+		// Old behavior also respawned on docker-exec daemon death, but that
+		// path is gone (Phase B uses container-internal broker via runTCPBroker).
+		if respawnCount < maxRespawns && exitCode == 137 {
 			respawnCount++
-			var statusMessage, msg string
-			if exitCode == 137 {
-				statusMessage = "Remote terminal crashed (SIGKILL). Restarting shell..."
-				msg = fmt.Sprintf("\r\n\x1b[33m[belve] remote terminal crashed (SIGKILL), restarting shell... (%d/%d)\x1b[0m\r\n",
-					respawnCount, maxRespawns)
-			} else {
-				statusMessage = fmt.Sprintf("Connection lost (exit %d). Reconnecting...", exitCode)
-				msg = fmt.Sprintf("\r\n\x1b[33m[belve] connection lost (exit %d), reconnecting... (%d/%d)\x1b[0m\r\n",
-					exitCode, respawnCount, maxRespawns)
-			}
+			statusMessage := "Remote terminal crashed (SIGKILL). Restarting shell..."
+			msg := fmt.Sprintf("\r\n\x1b[33m[belve] remote terminal crashed (SIGKILL), restarting shell... (%d/%d)\x1b[0m\r\n",
+				respawnCount, maxRespawns)
 			notice := belveNoticeData(statusMessage, msg)
 			mu.Lock()
 			replayBuf = nil
@@ -400,11 +371,6 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 				writeMsg(c, msgData, notice)
 			}
 			mu.Unlock()
-
-			// For host daemon wrapping docker exec: ensure container daemon is running
-			if containerID != "" && containerSocket != "" {
-				ensureContainerDaemon(containerID, containerSocket, containerWorkdir, containerPaneID, cols, rows)
-			}
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -1341,178 +1307,9 @@ func writePidFile(socketPath string) {
 	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 }
 
-// cleanupLocalProcesses kills old local processes with the same pane ID.
-// Used inside containers where there's no docker exec wrapper.
-func cleanupLocalProcesses(paneID string) {
-	// Kill old belve-persist daemons for the same session
-	// (the socket will be re-created by us)
-	cmd := exec.Command("sh", "-c",
-		fmt.Sprintf(`for d in /proc/[0-9]*/environ; do
-			pid=${d#/proc/}; pid=${pid%%%%/environ}
-			grep -qz 'BELVE_PANE_ID=%s' "$d" 2>/dev/null || continue
-			[ "$pid" = "$$" ] && continue
-			kill -9 "$pid" 2>/dev/null
-		done`, paneID))
-	cmd.Run()
-}
-
-// cleanupOldContainerProcesses kills old container processes with the same pane ID.
-// Called synchronously before starting a new session to prevent zombie accumulation.
-// Uses SIGKILL and also kills child processes via process group.
-func cleanupOldContainerProcesses(cid, paneID string) {
-	// Fast path: kill via PID file, then fall back to /proc scan for stragglers
-	script := fmt.Sprintf(
-		`pidfile="$HOME/.belve/panes/%s.pid"; `+
-			`if [ -f "$pidfile" ]; then `+
-			`pid=$(cat "$pidfile"); `+
-			`kill -9 -"$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null; `+
-			`rm -f "$pidfile"; `+
-			`fi; `+
-			`for d in /proc/[0-9]*/environ; do `+
-			`pid=${d#/proc/}; pid=${pid%%/environ}; `+
-			`grep -qz 'BELVE_PANE_ID=%s' "$d" 2>/dev/null || continue; `+
-			`kill -9 -"$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null; `+
-			`done`,
-		paneID, paneID)
-	cmd := exec.Command("docker", "exec", cid, "sh", "-c", script)
-	cmd.Run()
-}
-
-// detectContainerID extracts the container ID from docker exec command args.
-// Finds the first argument that is 12+ hex characters (container ID format).
-func detectContainerID(command string, args []string) string {
-	allArgs := append([]string{command}, args...)
-	for _, arg := range allArgs {
-		if len(arg) < 12 {
-			continue
-		}
-		isHex := true
-		for _, c := range arg {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-				isHex = false
-				break
-			}
-		}
-		if isHex {
-			return arg
-		}
-	}
-	return ""
-}
-
-// detectContainerSocket extracts the container socket path from docker exec command args.
-// Looks for "-socket /path" in the args after the container ID.
-func detectContainerSocket(command string, args []string) string {
-	allArgs := append([]string{command}, args...)
-	for i, arg := range allArgs {
-		if arg == "-socket" && i+1 < len(allArgs) {
-			path := allArgs[i+1]
-			// Return the LAST -socket value (the container's, not ours)
-			// Continue scanning to find the container's socket
-			for j := i + 2; j < len(allArgs); j++ {
-				if allArgs[j] == "-socket" && j+1 < len(allArgs) {
-					path = allArgs[j+1]
-				}
-			}
-			return path
-		}
-	}
-	return ""
-}
-
-// detectWorkdir extracts -w value from docker exec command args.
-func detectWorkdir(command string, args []string) string {
-	allArgs := append([]string{command}, args...)
-	for i, arg := range allArgs {
-		if arg == "-w" && i+1 < len(allArgs) {
-			return allArgs[i+1]
-		}
-	}
-	return ""
-}
-
-// ensureContainerDaemon starts a container persist daemon if not already running.
-func ensureContainerDaemon(cid, containerSock, workdir, paneID string, cols, rows uint16) {
-	// Check if socket exists — if so, daemon is alive
-	checkCmd := exec.Command("docker", "exec", cid, "test", "-S", containerSock)
-	if checkCmd.Run() == nil {
-		return
-	}
-
-	// Start new container daemon
-	daemonArgs := []string{"exec", "-d"}
-	if workdir != "" {
-		daemonArgs = append(daemonArgs, "-w", workdir)
-	}
-	if paneID != "" {
-		daemonArgs = append(daemonArgs, "-e", "BELVE_PANE_ID="+paneID)
-	}
-	daemonArgs = append(daemonArgs, "-e", "BELVE_SESSION=1", "-e", "TERM=xterm-256color")
-	daemonArgs = append(daemonArgs, cid,
-		"/root/.belve/bin/belve-persist", "-daemon",
-		"-socket", containerSock,
-		"-cols", fmt.Sprintf("%d", cols),
-		"-rows", fmt.Sprintf("%d", rows),
-		"-command", "/root/.belve/session-bootstrap.sh")
-	exec.Command("docker", daemonArgs...).Run()
-
-	// Wait for socket to appear
-	for i := 0; i < 30; i++ {
-		time.Sleep(200 * time.Millisecond)
-		checkCmd = exec.Command("docker", "exec", cid, "test", "-S", containerSock)
-		if checkCmd.Run() == nil {
-			return
-		}
-	}
-}
-
-// detectEnvValue extracts the value of a -e KEY=VALUE arg from docker exec command args.
-func detectEnvValue(command string, args []string, key string) string {
-	allArgs := append([]string{command}, args...)
-	prefix := key + "="
-	for i, arg := range allArgs {
-		if arg == "-e" && i+1 < len(allArgs) {
-			if len(allArgs[i+1]) > len(prefix) && allArgs[i+1][:len(prefix)] == prefix {
-				return allArgs[i+1][len(prefix):]
-			}
-		}
-	}
-	return ""
-}
-
-// resizeContainerPty resizes the PTY inside a Docker container by
-// running stty via docker exec. This bypasses the docker exec SIGWINCH issue.
-// When paneID is set, only the process with matching BELVE_PANE_ID is resized.
-func resizeContainerPty(cid, paneID string, cols, rows uint16) {
-	var script string
-	if paneID != "" {
-		// Fast path: use PID file written by session-bootstrap.sh
-		// After stty, send SIGWINCH to the process and its group (for 2-layer persist)
-		script = fmt.Sprintf(
-			`pidfile="$HOME/.belve/panes/%s.pid"; `+
-				`if [ -f "$pidfile" ]; then `+
-				`pid=$(cat "$pidfile"); `+
-				`tty=$(readlink /proc/$pid/fd/0 2>/dev/null); `+
-				`if [ -n "$tty" ]; then stty -F "$tty" rows %d cols %d 2>/dev/null; kill -WINCH "$pid" 2>/dev/null; for cpid in $(pgrep -P "$pid" 2>/dev/null); do kill -WINCH "$cpid" 2>/dev/null; for gpid in $(pgrep -P "$cpid" 2>/dev/null); do kill -WINCH "$gpid" 2>/dev/null; done; done; exit 0; fi; `+
-				`fi; `+
-				`best=""; besttty=""; `+
-				`for d in /proc/[0-9]*/environ; do `+
-				`pid=${d#/proc/}; pid=${pid%%/environ}; `+
-				`grep -qz 'BELVE_PANE_ID=%s' "$d" 2>/dev/null || continue; `+
-				`tty=$(readlink /proc/$pid/fd/0 2>/dev/null); `+
-				`echo "$tty" | grep -q "^/dev/pts/" || continue; `+
-				`if [ -z "$best" ] || [ "$pid" -gt "$best" ]; then best=$pid; besttty=$tty; fi; `+
-				`done; `+
-				`[ -n "$besttty" ] && stty -F "$besttty" rows %d cols %d 2>/dev/null`,
-			paneID, rows, cols, paneID, rows, cols)
-	} else {
-		// Fallback: resize the 4 newest belve-bashrc processes
-		script = fmt.Sprintf(
-			"for p in $(ps aux --sort=-start_time | grep belve-bashrc | grep -v grep | head -4 | awk '{print $2}'); "+
-				"do TTY=$(readlink /proc/$p/fd/0 2>/dev/null) && [ -n \"$TTY\" ] && "+
-				"stty -F $TTY rows %d cols %d 2>/dev/null; done",
-			rows, cols)
-	}
-	cmd := exec.Command("docker", "exec", cid, "sh", "-c", script)
-	cmd.Run()
-}
+// (Removed in Phase 5 cleanup: cleanupLocalProcesses, cleanupOldContainerProcesses,
+// detectContainerID, detectContainerSocket, detectWorkdir, detectEnvValue,
+// ensureContainerDaemon, resizeContainerPty — these were workarounds for the
+// pre-Phase-B docker-exec broker architecture. The current container broker
+// runs inside the container via runTCPBroker and resizes via setPtySize +
+// sendSigwinchToPty (descendant-walking), so the docker-exec helpers are dead.)

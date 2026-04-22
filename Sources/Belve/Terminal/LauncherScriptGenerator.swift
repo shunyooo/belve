@@ -123,7 +123,13 @@ enum LauncherScriptGenerator {
 		        "$PERSIST_BIN" -socket "$PERSIST_SOCK" 2>/dev/null && exit 0
 		        rm -f "$PERSIST_SOCK"
 		    fi
-		    exec "$PERSIST_BIN" -socket "$PERSIST_SOCK" -command "$BELVE_SHELL"
+		    # `-cols` / `-rows` を必ず渡す。これが無いと daemon は inner PTY を
+		    # default サイズ (0x0 → 80x24 fallback) で作って zsh を起動するため、
+		    # 最初の prompt が 80x24 で出力されて scrollback に残る → 後の resize
+		    # で claude/codex 等の TUI が崩れた表示になる原因。
+		    exec "$PERSIST_BIN" -socket "$PERSIST_SOCK" \
+		        -cols "${BELVE_COLS:-80}" -rows "${BELVE_ROWS:-24}" \
+		        -command "$BELVE_SHELL"
 		fi
 		# Fallback: no belve-persist
 		exec sh -c "$BELVE_SHELL"
