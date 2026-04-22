@@ -269,7 +269,10 @@ final class PortForwardManager: ObservableObject {
 	// MARK: - Remote listening-port scanner
 
 	private func startScanTimer() {
-		scanTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+		// 30s interval: 4s だと 12+ projects ぶんの SSH exec が常時 master を
+		// 食って PTY echo に 30-50ms 上乗せされる (測定実績あり)。port forward の
+		// 自動検出は user-experience 上 30s ごとで十分。
+		scanTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
 			Task { @MainActor [weak self] in
 				await self?.scanAll()
 			}
