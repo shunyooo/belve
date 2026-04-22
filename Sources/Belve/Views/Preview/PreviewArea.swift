@@ -594,16 +594,22 @@ struct PreviewArea: View {
 		stopFileWatch()
 		guard let file = openFile else { return }
 		NSLog("[Belve][filewatch] start path=%@ remote=%d", file.path, project.isRemote ? 1 : 0)
-		// RPC 経路: 親ディレクトリを watch + push event で reload。
-		// fsevent は path/kind 付きで来るので 2 秒 polling 不要。
-		if project.isRemote, let client = RemoteRPCRegistry.shared.client(for: project.id) {
-			NSLog("[Belve][filewatch] RPC path")
+		if project.isRemote {
+			// Remote project は **必ず RPC 経路**。silent fallback はしない
+			// (= 11 inactive project が永遠に ssh stat を叩いて入力ラグの
+			// 元になっていた過去の事例。CLAUDE.md の「優しい fallback 禁止」
+			// 参照)。RPC client が無ければ「監視されてない」状態で続行。
+			// client は ProjectStore が起動時 + select 時に eager 登録する
+			// 責務を持つ。
+			guard let client = RemoteRPCRegistry.shared.client(for: project.id) else {
+				NSLog("[Belve][filewatch] no RPC client for project=%@ — file watch disabled (will not poll)",
+				      project.name)
+				return
+			}
 			startFileWatchRPC(file: file, client: client)
 			return
 		}
-		NSLog("[Belve][filewatch] polling fallback (rpc client = %@)",
-		      RemoteRPCRegistry.shared.client(for: project.id) == nil ? "nil" : "present")
-		// Local / RPC 未確立 — 旧式 polling にフォールバック。
+		// Local: macOS FSEvents 化は別仕事、当面 2 秒 polling のまま。
 		startFileWatchPolling(file: file)
 	}
 
@@ -635,10 +641,7 @@ struct PreviewArea: View {
 		if !fileWatchRPCSubscribed {
 			fileWatchRPCSubscribed = true
 			client.subscribePush { type, msg in
-				NSLog("[Belve][filewatch] push type=%@ path=%@ kind=%@",
-				      type,
-				      (msg["path"] as? String) ?? "?",
-				      (msg["kind"] as? String) ?? "?")
+				// 高頻度に来るので NSLog は出さない (= CPU 食う)。
 				guard type == "fsevent",
 				      let evPath = msg["path"] as? String,
 				      let kind = msg["kind"] as? String, kind == "modify"

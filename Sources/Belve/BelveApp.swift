@@ -143,6 +143,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Stale port forwards from a previous run point at dead control sockets; drop them.
 		SSHTunnelManager.shared.teardownAll()
 
+		// teardownAll が終わった後に全 remote project の RPC client を eager 登録。
+		// init で spawn すると teardownAll と race して全部失敗する。
+		projectStore.setupAllRemoteRPC()
+
 		// Generate launcher script for terminal sessions
 		LauncherScriptGenerator.generate()
 

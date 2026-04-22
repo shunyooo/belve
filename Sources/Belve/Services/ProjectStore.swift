@@ -132,60 +132,43 @@ class ProjectStore: ObservableObject {
 		NSLog("[Belve][select] project=%@ sshHost=%@",
 		      project?.name ?? "nil",
 		      project?.sshHost ?? "nil")
-		if let p = project, let host = p.sshHost {
-			let rh = remoteHostForForward(p)
-			let isDev = p.isDevContainer
-			let projShort = String(p.id.uuidString.prefix(8))
+		// 現在の active project を PortForwardManager に伝える (= scan を 1
+		// project に絞る adaptive scope policy)。
+		Task { @MainActor in PortForwardManager.shared.setActiveProjectId(project?.id) }
+		if let p = project, p.sshHost != nil {
 			Task { @MainActor in
-				NSLog("[Belve][select] task start project=%@ host=%@ projShort=%@", p.name, host, projShort)
-				PortForwardManager.shared.sync(project: p, host: host, remoteHost: rh)
-				PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
-
-				// Phase B: VM router 経由で control RPC。Mac → router (per-VM) →
-				// container/VM broker。SSH session 1 本で全 project を捌くので
-				// MaxSessions 食い尽くしが起きない。失敗時は provider が
-				// executeSSH に fallback する。
-				_ = isDev
-				do {
-					NSLog("[Belve][select] ensuring router forward for host=%@", host)
-					let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
-					NSLog("[Belve][select] router port=%d", routerLocalPort)
-					RemoteRPCRegistry.shared.registerControlPort(
-						projectId: p.id,
-						localPort: UInt16(routerLocalPort),
-						projShort: projShort
-					)
-					// Push-driven refresh: fsevent on project root → debounced
-					// gitStatus + file tree refresh notification. Replaces 5s polling.
-					self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
-				} catch {
-					NSLog("[Belve] router channel setup failed project=%@ error=%@",
-						  String(p.id.uuidString.prefix(8)), error.localizedDescription)
-				}
+				await self.setupRemoteRPC(for: p)
 			}
 		}
 	}
 
-	/// 1度だけ subscribe して、project の root + .git を watch する。fsevent は
+	/// 1度だけ subscribe して、project の rootPath を watch する。fsevent は
 	/// 250ms debounce の後 `refreshGitStatus()` + `belveRefreshFileTree`
 	/// notification をトリガする。多重購読は `rpcSubscribed` で防ぐ。
+	///
+	/// 注意: `.git` は監視しない (= git status の実行自体が `.git/index.lock` を
+	/// create/delete する → fsevent → refresh → git status → 無限ループ)。
+	/// commit / checkout / stage 後の状態変化は 30s の backstop polling で拾う。
+	/// `.git` 内の "本物の" 変更だけ抽出する path filter を入れれば watch を
+	/// 復活できるが、現状は安全側で disabled。
 	private func subscribeRPCFsEvents(projectId: UUID, rootPath: String) {
 		guard !rpcSubscribed.contains(projectId) else { return }
 		guard let client = RemoteRPCRegistry.shared.client(for: projectId) else { return }
 		rpcSubscribed.insert(projectId)
-		// 全 fsevent → debounced refresh。FileTreeState 側でも別購読してて
-		// そっちは個別 dir の即時 refresh を担当 (役割分担)。
-		client.subscribePush { [weak self] type, _ in
+		client.subscribePush { [weak self] type, msg in
 			guard type == "fsevent" else { return }
+			// .git 配下の event は無視 (path が ".git/..." or ".../.git/..." 等
+			// 様々な形で来る。先頭にスラッシュ無しのケースも catch する)。
+			if let path = msg["path"] as? String,
+			   path.hasPrefix(".git/") || path.contains("/.git/") || path.hasSuffix("/.git") || path == ".git" {
+				return
+			}
 			DispatchQueue.main.async {
 				self?.scheduleFsRefresh(projectId: projectId)
 			}
 		}
-		// root + (もしあれば) .git を watch。git 操作は .git/HEAD / index の
-		// 更新で検出。これで commit / checkout / stage の状態変化が即反映される。
 		Task { @MainActor in
 			_ = try? await client.send(op: "watch", params: ["path": rootPath])
-			_ = try? await client.send(op: "watch", params: ["path": "\(rootPath)/.git"])
 		}
 	}
 
@@ -910,30 +893,48 @@ class ProjectStore: ObservableObject {
 			saveProjects()
 		}
 		selectedProject = decoded.first
-		// `selectedProject = ...` bypasses `select()`, so manually run the same
-		// Phase B router setup here. Without this, the auto-restored initial
-		// project never gets an RPC client, providers fall back to executeSSH,
-		// and the SSH master gets exhausted by ls/git/stat bursts.
-		if let p = selectedProject, let host = p.sshHost {
-			let isDev = p.isDevContainer
-			let projShort = String(p.id.uuidString.prefix(8))
+		let initialActiveId = selectedProject?.id
+		Task { @MainActor in PortForwardManager.shared.setActiveProjectId(initialActiveId) }
+		// RPC client の eager 登録は AppDelegate.didFinishLaunching が
+		// teardownAll を終えた後に `setupAllRemoteRPC()` を呼ぶことで行う。
+		// ここで spawn すると teardownAll と race して全部失敗する。
+	}
+
+	/// AppDelegate.didFinishLaunching から呼ばれる。全 remote project の
+	/// RPC client を eager 登録する。PreviewArea (keep-alive で全 project ぶん
+	/// 構築される) の file watch が RPC 経路で揃うので、polling fallback の
+	/// 暴走が起きない。
+	func setupAllRemoteRPC() {
+		for p in projects where p.sshHost != nil {
 			Task { @MainActor in
-				NSLog("[Belve][load] initial setup project=%@ host=%@", p.name, host)
-				PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
-				PortForwardManager.shared.sync(project: p, host: host, remoteHost: "127.0.0.1")
-				do {
-					let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
-					RemoteRPCRegistry.shared.registerControlPort(
-						projectId: p.id,
-						localPort: UInt16(routerLocalPort),
-						projShort: projShort
-					)
-					self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
-				} catch {
-					NSLog("[Belve][load] router channel setup failed project=%@ error=%@",
-						  String(p.id.uuidString.prefix(8)), error.localizedDescription)
-				}
+				await self.setupRemoteRPC(for: p)
 			}
+		}
+	}
+
+	/// Project 1 つぶんの remote ops 初期化:
+	///   PortForwardManager.sync + scan 登録 + SSH router forward + RPC client 登録 + fsevent 購読
+	/// `select()` と `loadProjects()` 両方から呼ぶので、両者で同等のセットアップ
+	/// を保証する。
+	@MainActor
+	private func setupRemoteRPC(for p: Project) async {
+		guard let host = p.sshHost else { return }
+		let projShort = String(p.id.uuidString.prefix(8))
+		let isDev = p.isDevContainer
+		let rh = remoteHostForForward(p)
+		PortForwardManager.shared.sync(project: p, host: host, remoteHost: rh)
+		PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
+		do {
+			let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
+			RemoteRPCRegistry.shared.registerControlPort(
+				projectId: p.id,
+				localPort: UInt16(routerLocalPort),
+				projShort: projShort
+			)
+			self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
+		} catch {
+			NSLog("[Belve][rpc] setup failed project=%@ error=%@",
+				  String(p.id.uuidString.prefix(8)), error.localizedDescription)
 		}
 	}
 

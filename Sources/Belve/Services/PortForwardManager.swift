@@ -42,6 +42,12 @@ final class PortForwardManager: ObservableObject {
 	private var lastSeenRemotePorts: [UUID: Set<Int>] = [:]
 	/// (host, projShort, isDevContainer) for active scans
 	private var scanContexts: [UUID: ScanContext] = [:]
+	/// Active project (= ユーザーが現在見てる project)。scan は active 1 個ぶん
+	/// だけ実行する (= 全 12 project scan で SSH master が詰まる問題への対処、
+	/// adaptive scope policy)。ProjectStore.select / loadProjects が更新する。
+	private var _activeProjectId: UUID?
+	func setActiveProjectId(_ id: UUID?) { _activeProjectId = id }
+	var activeProjectId: UUID? { _activeProjectId }
 
 	private struct ScanContext {
 		let host: String
@@ -63,9 +69,9 @@ final class PortForwardManager: ObservableObject {
 
 	private init() {
 		startHealthTimer()
-		// startScanTimer()  // 一時無効化: 多 project だと SSH master 食って
-		// PTY 入力遅延の元になる。手動 scan API は残してるので将来 lazy
-		// trigger (active project だけ等) で復活可能。
+		// active project のみ 4 秒ごとに scan する形で復活。
+		// 全 project scan は SSH master 詰まりの元なので無し。
+		startScanTimer()
 	}
 
 	// MARK: - Public API
@@ -271,40 +277,49 @@ final class PortForwardManager: ObservableObject {
 	// MARK: - Remote listening-port scanner
 
 	private func startScanTimer() {
-		// 30s interval: 4s だと 12+ projects ぶんの SSH exec が常時 master を
-		// 食って PTY echo に 30-50ms 上乗せされる (測定実績あり)。port forward の
-		// 自動検出は user-experience 上 30s ごとで十分。
-		scanTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+		// active project のみ 4 秒間隔で scan = 0.25 SSH exec/s 相当。
+		// 全 project は scan しない (= 多 project 環境で SSH master 詰まり防止)。
+		scanTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
 			Task { @MainActor [weak self] in
-				await self?.scanAll()
+				await self?.scanActive()
 			}
 		}
 	}
 
+	/// Active project だけ scan する。`scanAll` は全 project iterate するので
+	/// scope を絞った版。
+	private func scanActive() async {
+		guard let pid = activeProjectId, let ctx = scanContexts[pid] else { return }
+		await scanOne(projectId: pid, ctx: ctx)
+	}
+
+	private func scanOne(projectId: UUID, ctx: ScanContext) async {
+		let current = await Self.scanRemotePorts(ctx: ctx)
+		NSLog("[Belve][scan] project=%@ host=%@ devContainer=%@ found=%@",
+			String(projectId.uuidString.prefix(8)),
+			ctx.host,
+			ctx.isDevContainer ? "Y" : "N",
+			current.sorted().map(String.init).joined(separator: ","))
+		let isFirstScan = lastSeenRemotePorts[projectId] == nil
+		let previous = lastSeenRemotePorts[projectId] ?? []
+		lastSeenRemotePorts[projectId] = current
+		if isFirstScan {
+			NSLog("[Belve][scan] baseline established for project=%@", String(projectId.uuidString.prefix(8)))
+			return
+		}
+		guard !current.isEmpty else { return }
+		let newPorts = current.subtracting(previous)
+		for port in newPorts {
+			NSLog("[Belve][scan] new port detected project=%@ port=%d",
+				String(projectId.uuidString.prefix(8)), port)
+			handleNewPort(projectId: projectId, port: port)
+		}
+	}
+
+	/// 全 project ぶん scan (= 旧挙動)。今は使ってないが API として残してる。
 	private func scanAll() async {
 		for (projectId, ctx) in scanContexts {
-			let current = await Self.scanRemotePorts(ctx: ctx)
-			NSLog("[Belve][scan] project=%@ host=%@ devContainer=%@ found=%@",
-				String(projectId.uuidString.prefix(8)),
-				ctx.host,
-				ctx.isDevContainer ? "Y" : "N",
-				current.sorted().map(String.init).joined(separator: ","))
-			let isFirstScan = lastSeenRemotePorts[projectId] == nil
-			let previous = lastSeenRemotePorts[projectId] ?? []
-			lastSeenRemotePorts[projectId] = current
-			// First scan establishes the baseline — don't toast every pre-existing
-			// listening port (the container already has dozens at start).
-			if isFirstScan {
-				NSLog("[Belve][scan] baseline established for project=%@", String(projectId.uuidString.prefix(8)))
-				continue
-			}
-			guard !current.isEmpty else { continue }
-			let newPorts = current.subtracting(previous)
-			for port in newPorts {
-				NSLog("[Belve][scan] new port detected project=%@ port=%d",
-					String(projectId.uuidString.prefix(8)), port)
-				handleNewPort(projectId: projectId, port: port)
-			}
+			await scanOne(projectId: projectId, ctx: ctx)
 		}
 	}
 
