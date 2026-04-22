@@ -89,6 +89,43 @@ final class MasterClient: @unchecked Sendable {
 		return v
 	}
 
+	/// Project の setup (deploy_bundle + ssh belve-setup) を master 側で
+	/// 実行する。Idempotent: 既に done なら即返却、進行中なら同期待ち、
+	/// failed/idle なら走らせる。per-host で直列化されるので並列に呼んでも安全。
+	///
+	/// `binDir` は Belve.app が認識している binary の置き場 (.app bundle)。
+	/// master process は自分の path から推測することもできるが、明示的に
+	/// 渡す方が場所変更に対してロバストで Belve.app との依存関係も明示的になる。
+	@discardableResult
+	func ensureSetup(
+		projectId: UUID,
+		host: String,
+		isDevContainer: Bool,
+		workspacePath: String,
+		projShort: String,
+		binDir: String
+	) async throws -> Bool {
+		let res = try await send(op: "ensureSetup", params: [
+			"projectId": projectId.uuidString,
+			"host": host,
+			"isDevContainer": isDevContainer,
+			"workspacePath": workspacePath,
+			"projShort": projShort,
+			"binDir": binDir,
+		])
+		if !res.ok {
+			throw MasterError.setupFailed(res.error ?? "unknown")
+		}
+		return true
+	}
+
+	/// container rebuild / broker 死亡など、setup を再実行させたい時に呼ぶ。
+	func invalidateSetup(projectId: UUID) async throws {
+		_ = try await send(op: "invalidateSetup", params: [
+			"projectId": projectId.uuidString,
+		])
+	}
+
 	// MARK: - Send
 
 	/// Send a request, await response. Reconnects + retries once on the first
@@ -324,6 +361,7 @@ enum MasterError: LocalizedError {
 	case versionMismatch(got: String, want: String)
 	case malformedResponse(String)
 	case timeout
+	case setupFailed(String)
 
 	var errorDescription: String? {
 		switch self {
@@ -335,6 +373,7 @@ enum MasterError: LocalizedError {
 		case .versionMismatch(let got, let want): return "master version mismatch got=\(got) want=\(want)"
 		case .malformedResponse(let m): return "malformed master response: \(m)"
 		case .timeout: return "master request timed out"
+		case .setupFailed(let m): return "project setup failed: \(m)"
 		}
 	}
 }

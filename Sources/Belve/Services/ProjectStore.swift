@@ -923,10 +923,32 @@ class ProjectStore: ObservableObject {
 		guard let host = p.sshHost else { return }
 		let projShort = String(p.id.uuidString.prefix(8))
 		let isDev = p.isDevContainer
+		let workspacePath = p.path ?? ""
 		let rh = remoteHostForForward(p)
 		PortForwardManager.shared.sync(project: p, host: host, remoteHost: rh)
 		PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
 		do {
+			// Phase 2 (master 化): まず master に setup を投げる。Master 側で
+			// per-host 直列化 + idempotent state 管理されてるので並列に呼んで OK。
+			// 失敗しても今は launcher が保険で同じ事をやるので fall through する
+			// (Phase 2b で launcher 側を撤廃したらここの failure を厳格化する)。
+			if let binDir = Self.belveBinDir() {
+				do {
+					try await MasterClient.shared.ensureSetup(
+						projectId: p.id,
+						host: host,
+						isDevContainer: isDev,
+						workspacePath: workspacePath,
+						projShort: projShort,
+						binDir: binDir
+					)
+					NSLog("[Belve][master] ensureSetup ok project=%@", String(p.id.uuidString.prefix(8)))
+				} catch {
+					NSLog("[Belve][master] ensureSetup failed project=%@ error=%@",
+					      String(p.id.uuidString.prefix(8)), error.localizedDescription)
+				}
+			}
+
 			let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
 			RemoteRPCRegistry.shared.registerControlPort(
 				projectId: p.id,
@@ -939,6 +961,19 @@ class ProjectStore: ObservableObject {
 			NSLog("[Belve][rpc] setup failed project=%@ error=%@",
 				  String(p.id.uuidString.prefix(8)), error.localizedDescription)
 		}
+	}
+
+	/// Belve.app bundle 内の bin dir。Master が deploy_bundle で remote に
+	/// 送るファイル (belve / claude / belve-setup / belve-persist-linux-* /
+	/// session-bootstrap.sh) の置き場。
+	private static func belveBinDir() -> String? {
+		if let resourcePath = Bundle.main.resourcePath {
+			return (resourcePath as NSString).appendingPathComponent("bin")
+		}
+		// Dev fallback (SPM 直叩き、本番では走らない)
+		let dev = "/Users/s07309/src/dock-code/Belve.app/Contents/Resources/bin"
+		if FileManager.default.fileExists(atPath: dev) { return dev }
+		return nil
 	}
 
 	/// Brokerに `pwd` op を発行して cwd (= ワークスペースの絶対パス) を取得し

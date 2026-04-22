@@ -336,13 +336,42 @@ struct XTermTerminalView: NSViewRepresentable {
 			// right container/VM broker. 1 forward per VM, regardless of project.
 			if project.isRemote, let host = project.sshHost {
 				let pid = project.id
+				let isDev = project.isDevContainer
+				let workspacePath = project.path ?? ""
+				let projShort = String(project.id.uuidString.prefix(8))
+				let binDirOpt: String? = {
+					if let r = Bundle.main.resourcePath {
+						return (r as NSString).appendingPathComponent("bin")
+					}
+					return nil
+				}()
 				Task { @MainActor in
+					// Phase 2: pane を spawn する前に master に setup を依頼。
+					// per-host 直列化 + idempotent なので並列に呼んで OK。
+					// 既に setup 済みなら即返却 (= ms 単位)、未だなら走らせて wait。
+					if let binDir = binDirOpt {
+						do {
+							try await MasterClient.shared.ensureSetup(
+								projectId: pid,
+								host: host,
+								isDevContainer: isDev,
+								workspacePath: workspacePath,
+								projShort: projShort,
+								binDir: binDir
+							)
+						} catch {
+							NSLog("[Belve] master.ensureSetup failed: \(error)")
+							postConnectionState(isLoading: false)
+							postConnectionStatus("Setup failed: \(error.localizedDescription)")
+							postDisconnectedState(isDisconnected: true)
+							return
+						}
+					}
 					do {
 						let port = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
 						var envWithPort = env
 						envWithPort["BELVE_LOCAL_BROKER_PORT"] = String(port)
 						spawnPTY(launcherPath: launcherPath, env: envWithPort, cols: cols, rows: rows, project: project)
-						_ = pid
 					} catch {
 						NSLog("[Belve] router forward failed: \(error)")
 						postConnectionState(isLoading: false)

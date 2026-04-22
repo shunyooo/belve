@@ -64,6 +64,15 @@ var globalSetupManager = &setupManager{
 	hostLocks: map[string]*sync.Mutex{},
 }
 
+// invalidate: 指定 project の状態をリセット (= 次回 ensureSetup で再実行)。
+// container rebuild / broker 死亡など、再 setup が必要な事象を Belve.app が
+// 検知した時に呼ぶ。
+func (sm *setupManager) invalidate(projectID string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	delete(sm.projects, projectID)
+}
+
 func (sm *setupManager) hostLock(host string) *sync.Mutex {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()

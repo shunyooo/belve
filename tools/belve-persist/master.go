@@ -131,7 +131,56 @@ func masterDispatch(req masterReq) masterRes {
 			"version": macMasterVersion,
 			"pid":     fmt.Sprintf("%d", os.Getpid()),
 		}}
+	case "ensureSetup":
+		return opEnsureSetup(req)
+	case "invalidateSetup":
+		return opInvalidateSetup(req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
+}
+
+// ensureSetup params: {projectId, host, isDevContainer, workspacePath, projShort, binDir}
+// 戻り値: {state: "ready"|"failed", error?: "..."}
+func opEnsureSetup(req masterReq) masterRes {
+	p := req.Params
+	sreq := setupReq{
+		ProjectID:      strParam(p, "projectId"),
+		Host:           strParam(p, "host"),
+		IsDevContainer: boolParam(p, "isDevContainer"),
+		WorkspacePath:  strParam(p, "workspacePath"),
+		ProjShort:      strParam(p, "projShort"),
+		BinDir:         strParam(p, "binDir"),
+	}
+	st, errStr := globalSetupManager.ensureSetup(sreq)
+	result := map[string]string{"state": st.String()}
+	if errStr != "" {
+		result["error"] = errStr
+	}
+	return masterRes{ID: req.ID, OK: st == setupReady, Result: result, Error: errStr}
+}
+
+// invalidateSetup: 指定 project の setup state をリセット (= 次回 ensureSetup で再実行)。
+// container 再構築 / broker 死亡時に Belve.app から呼ぶ。
+func opInvalidateSetup(req masterReq) masterRes {
+	pid := strParam(req.Params, "projectId")
+	if pid == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "projectId required"}
+	}
+	globalSetupManager.invalidate(pid)
+	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"projectId": pid}}
+}
+
+func strParam(p map[string]interface{}, key string) string {
+	if v, ok := p[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func boolParam(p map[string]interface{}, key string) bool {
+	if v, ok := p[key].(bool); ok {
+		return v
+	}
+	return false
 }

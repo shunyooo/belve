@@ -148,20 +148,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// running, attaches via /tmp/belve-master.sock, version-handshakes.
 		// 失敗しても今は致命的ではない (まだ master を実際に使ってる経路が無い)
 		// ので NSLog で握り潰し、existing path で継続する。Phase 2+ で必須化。
-		NSLog("[Belve][master] dispatching bootstrap task")
-		Task.detached(priority: .userInitiated) {
-			NSLog("[Belve][master] bootstrap task started")
+		// Master daemon を bootstrap してから setupAllRemoteRPC を走らせる。
+		// 順序が重要: setupRemoteRPC が master.ensureSetup を呼ぶので、master
+		// が ready でないと先頭の数個が connection lost で fall back する。
+		Task.detached(priority: .userInitiated) { [projectStore] in
 			do {
 				let v = try await MasterClient.shared.bootstrap()
 				NSLog("[Belve][master] bootstrap ok version=%@", v)
 			} catch {
 				NSLog("[Belve][master] bootstrap failed: %@", error.localizedDescription)
 			}
+			await MainActor.run {
+				projectStore.setupAllRemoteRPC()
+			}
 		}
-
-		// teardownAll が終わった後に全 remote project の RPC client を eager 登録。
-		// init で spawn すると teardownAll と race して全部失敗する。
-		projectStore.setupAllRemoteRPC()
 
 		// Generate launcher script for terminal sessions
 		LauncherScriptGenerator.generate()

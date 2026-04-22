@@ -24,65 +24,12 @@ enum LauncherScriptGenerator {
 		#!/bin/bash
 		export TERM=xterm-256color
 		BELVE_BIN_DIR="\#(embeddedBinDir.path)"
-		# Literal path (not template) so Swift-side SSHTunnelManager can share the same ControlMaster
-		BELVE_SSH_CONTROL="/tmp/belve-ssh-ctrl-$BELVE_SSH_HOST"
-		SETUP_COMMON="-o ControlMaster=auto -o ControlPath=$BELVE_SSH_CONTROL -o ControlPersist=600 -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-		SCP_OPTS="$SETUP_COMMON"
-		SETUP_SSH="ssh $SETUP_COMMON"
-		CONNECT_SSH="ssh $SETUP_COMMON -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes -o SetEnv=TERM=xterm-256color"
 
-		# Deploy all scripts + persist binaries in a single SCP+SSH.
-		# Includes both arch binaries; remote selects the correct one.
-		# Uses md5 of the tar to skip if unchanged.
-		deploy_bundle() {
-		    local host="$1"
-		    local tmptar="/tmp/belve-deploy-$$.tar.gz"
-
-		    # Build tar with all deploy files (both arch binaries included)
-		    local staging="/tmp/belve-stage-$$"
-		    mkdir -p "$staging/bin"
-		    cp "$BELVE_BIN_DIR/belve" "$staging/bin/"
-		    cp "$BELVE_BIN_DIR/claude" "$staging/bin/"
-		    cp "$BELVE_BIN_DIR/codex" "$staging/bin/"
-		    cp "$BELVE_BIN_DIR/belve-setup" "$staging/bin/"
-		    cp "$BELVE_BIN_DIR/belve-persist-linux-amd64" "$staging/bin/"
-		    cp "$BELVE_BIN_DIR/belve-persist-linux-arm64" "$staging/bin/"
-		    cp "$BELVE_BIN_DIR/session-bootstrap.sh" "$staging/"
-		    tar czf "$tmptar" -C "$staging" .
-		    rm -rf "$staging"
-
-		    # Check if remote already has the same bundle
-		    local local_md5=$(md5 -q "$tmptar" 2>/dev/null || md5sum "$tmptar" 2>/dev/null | cut -d' ' -f1)
-
-		    # Single SCP + single SSH (no prior SSH needed)
-		    if ! scp -q $SCP_OPTS "$tmptar" "$host:/tmp/belve-deploy.tar.gz"; then
-		        echo "[belve] deploy_bundle: SCP FAILED" >&2
-		        rm -f "$tmptar"
-		        return 1
-		    fi
-		    rm -f "$tmptar"
-
-		    $SETUP_SSH "$host" "
-		        if [ -f ~/.belve/.deploy-md5 ] && [ \"\$(cat ~/.belve/.deploy-md5)\" = '$local_md5' ]; then
-		            rm -f /tmp/belve-deploy.tar.gz
-		            exit 0
-		        fi
-		        mkdir -p ~/.belve/bin ~/.belve/sessions ~/.belve/zdotdir ~/.belve/projects
-		        tar xzf /tmp/belve-deploy.tar.gz -C ~/.belve
-		        ARCH=\$(uname -m)
-		        if [ \"\$ARCH\" = 'aarch64' ] || [ \"\$ARCH\" = 'arm64' ]; then
-		            mv -f ~/.belve/bin/belve-persist-linux-arm64 ~/.belve/bin/belve-persist
-		        else
-		            mv -f ~/.belve/bin/belve-persist-linux-amd64 ~/.belve/bin/belve-persist
-		        fi
-		        rm -f ~/.belve/bin/belve-persist-linux-amd64 ~/.belve/bin/belve-persist-linux-arm64
-		        chmod +x ~/.belve/bin/* ~/.belve/session-bootstrap.sh 2>/dev/null
-		        echo '$local_md5' > ~/.belve/.deploy-md5
-		        rm -f /tmp/belve-deploy.tar.gz
-		    " 2>/dev/null
-		}
-
-		# SSH/DevContainer: SCP deploy + setup + connect
+		# Remote (SSH / DevContainer): Phase 2 移行で deploy_bundle / belve-setup の
+		# 呼び出しは Mac master daemon (`belve-persist -mac-master`) が担当する
+		# ようになり、launcher は belve-persist client での attach だけ行う。
+		# Mac 側 (XTermTerminalView.startPTY) で master.ensureSetup を await して
+		# から PTY を spawn しているので、ここに辿り着いた時点で setup は完了済み。
 		if [ -n "$BELVE_SSH_HOST" ]; then
 		    PROJ_SHORT=$(echo "$BELVE_PROJECT_ID" | cut -c1-8)
 		    if [ "${BELVE_PANE_INDEX:-0}" = "0" ]; then
@@ -94,87 +41,9 @@ enum LauncherScriptGenerator {
 		    # Status reporting for loading UI
 		    belve_status() { printf '\x1b]9;belve-status;%s\x07' "$1"; }
 
-		    belve_status "Connecting to $BELVE_SSH_HOST..."
-
-		    # Per-host serialization for SSH-using setup phase。N pane が同時に open
-		    # した時に、(a) deploy_bundle の SCP/SSH と (b) belve-setup の `ssh host`
-		    # を全て直列化する。これをやらないと SSHD MaxSessions=10 を超えて
-		    # `Session open refused` で launcher が exit 1 → PTY 永久リトライ。
-		    #
-		    # PID file 付きで stale 検出。macOS は flock 不在なので mkdir + PID で同等。
-		    # lock holder が SIGKILL 等で trap を実行できずに死んだ場合、次の launcher
-		    # は PID を見て生存確認し、死んでいれば dir を消して乗っ取る。
-		    SETUP_LOCK="/tmp/belve-setup-$BELVE_SSH_HOST.lock"
-		    SETUP_LOCK_PID="$SETUP_LOCK/pid"
-		    setup_acquire() {
-		        local elapsed=0
-		        local max_iter=3000  # 3000 * 0.2s = 600s (= 10min)。初回起動で全 pane が
-		                            # 並ぶと O(N * Tsetup) かかる。timeout=120s だと
-		                            # キュー後尾の pane が落ちて exit 1 → PTY retry の
-		                            # 連鎖に入るので余裕を持たせる。
-		        while [ $elapsed -lt $max_iter ]; do
-		            if mkdir "$SETUP_LOCK" 2>/dev/null; then
-		                echo $$ > "$SETUP_LOCK_PID"
-		                return 0
-		            fi
-		            if [ -f "$SETUP_LOCK_PID" ]; then
-		                local holder
-		                holder=$(cat "$SETUP_LOCK_PID" 2>/dev/null)
-		                if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-		                    rm -rf "$SETUP_LOCK"
-		                    continue
-		                fi
-		            fi
-		            sleep 0.2
-		            elapsed=$((elapsed + 1))
-		        done
-		        return 1
-		    }
-		    setup_release() {
-		        rm -rf "$SETUP_LOCK" 2>/dev/null
-		    }
-		    if ! setup_acquire; then
-		        belve_status "setup lock timeout"
-		        echo "[belve] setup lock timeout (>120s)" >&2
-		        exit 1
-		    fi
-		    trap setup_release EXIT
-
-		    # Ensure ControlMaster is established (skip if already exists)
-		    if ! ssh -o ControlPath="$BELVE_SSH_CONTROL" -O check "$BELVE_SSH_HOST" 2>/dev/null; then
-		        ssh -o ControlMaster=yes -o ControlPath="$BELVE_SSH_CONTROL" -o ControlPersist=600 \
-		            -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
-		            -fN "$BELVE_SSH_HOST" 2>/dev/null || true
-		    fi
-
-		    # Deploy all files in a single tar (1 SCP + 1 SSH)
-		    deploy_bundle "$BELVE_SSH_HOST"
-
-		    # Always run belve-setup — it's idempotent. Fast path (container running) just
-		    # ensures the broker is alive; slow path (first connect / rebuilt) runs `devcontainer up`.
-		    if [ -n "$BELVE_DEVCONTAINER" ]; then
-		        belve_status "Preparing DevContainer..."
-		        SETUP_ARGS="--devcontainer --workspace $BELVE_WORKDIR --project-short $PROJ_SHORT"
-		        $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup $SETUP_ARGS" \
-		            || { setup_release; belve_status "Setup failed"; echo "Setup failed"; exit 1; }
-		    else
-		        belve_status "Preparing remote broker..."
-		        $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup" \
-		            || { setup_release; belve_status "Setup failed"; echo "Setup failed"; exit 1; }
-		    fi
-		    setup_release
-		    trap - EXIT
-
-		    # --- Phase B: VM router forward ---
-		    # Swift (SSHTunnelManager.ensureRouterForward) pre-allocated
-		    # BELVE_LOCAL_BROKER_PORT pointing at the per-VM router (1 forward
-		    # per VM, regardless of project count). belve-persist tcpbackend
-		    # sends a JSON preamble containing PROJ_SHORT so the router knows
-		    # which container/VM-broker to dispatch to. No per-project ssh -O
-		    # forward needed in the launcher anymore.
 		    if [ -z "${BELVE_LOCAL_BROKER_PORT:-}" ]; then
 		        belve_status "Router port not set"
-		        echo "[belve] ERROR: BELVE_LOCAL_BROKER_PORT not set (router forward should have been established by Swift side)" >&2
+		        echo "[belve] ERROR: BELVE_LOCAL_BROKER_PORT not set (Swift side should have set it)" >&2
 		        exit 1
 		    fi
 
