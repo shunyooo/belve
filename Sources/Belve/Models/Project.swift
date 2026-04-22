@@ -130,9 +130,10 @@ struct Project: Identifiable, Codable, Hashable {
 		case .local(let path):
 			return LocalProvider(path: path)
 		case .ssh(let host, let path):
-			return SSHProvider(host: host, path: path)
+			// projectId は RemoteRPCRegistry でクライアントを引くために必要。
+			return SSHProvider(host: host, path: path, projectId: id)
 		case .devContainer(let host, let ws):
-			return DevContainerProvider(host: host, workspace: ws)
+			return DevContainerProvider(host: host, workspace: ws, projectId: id)
 		}
 	}
 }

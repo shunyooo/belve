@@ -168,10 +168,36 @@ extension WorkspaceProvider {
 	// MARK: Git (shared via run())
 
 	func gitBranch(_ path: String) -> String? {
-		run("cd \(shellQuote(path)) && git rev-parse --abbrev-ref HEAD 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines)
+		// Try RPC first (if this provider is associated with an active
+		// project that has an RPC client). For Local / providers without
+		// projectId, this returns nil and we fall through.
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
+		   let client = RemoteRPCRegistry.shared.client(for: pid),
+		   let res = syncRPC(client: client, op: "gitBranch", params: ["path": path]),
+		   let result = res.result,
+		   let branch = result["branch"] as? String
+		{
+			return branch.isEmpty ? nil : branch
+		}
+		return run("cd \(shellQuote(path)) && git rev-parse --abbrev-ref HEAD 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines)
 	}
 
 	func gitStatus(_ path: String) -> [String: String] {
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
+		   let client = RemoteRPCRegistry.shared.client(for: pid),
+		   let res = syncRPC(client: client, op: "gitStatus", params: ["path": path]),
+		   let result = res.result,
+		   let files = result["files"] as? [[String: Any]]
+		{
+			var out: [String: String] = [:]
+			for f in files {
+				guard let status = f["status"] as? String,
+				      let file = f["file"] as? String
+				else { continue }
+				out[file] = status
+			}
+			return out
+		}
 		guard let output = run("cd \(shellQuote(path)) && git status --porcelain 2>/dev/null") else { return [:] }
 		var result: [String: String] = [:]
 		for line in output.components(separatedBy: "\n") where line.count >= 4 {
@@ -490,11 +516,25 @@ struct LocalProvider: WorkspaceProvider {
 	}
 }
 
+// MARK: - Remote provider scoping for RPC
+
+/// Mixin: providers that have an associated project can hand the gitBranch /
+/// gitStatus shared impls a projectId, which they use to look up the
+/// `RemoteRPCClient` and shortcut around the executeSSH path. Local and
+/// dummy providers don't conform → they keep using the `run(...)` shell path.
+protocol RemoteProjectScoped {
+	var projectIdForRPC: UUID { get }
+}
+
 // MARK: - SSHProvider
 
-struct SSHProvider: WorkspaceProvider {
+struct SSHProvider: WorkspaceProvider, RemoteProjectScoped {
 	let host: String
 	let path: String?
+	/// 該当プロジェクト ID。`RemoteRPCRegistry` のキーに使う (RPC が利用可能
+	/// なら ls/git ops を control 経由に切り替える)。
+	let projectId: UUID
+	var projectIdForRPC: UUID { projectId }
 
 	var sshHost: String? { host }
 	var effectivePath: String { path ?? "~" }
@@ -578,9 +618,13 @@ struct SSHProvider: WorkspaceProvider {
 
 // MARK: - DevContainerProvider
 
-struct DevContainerProvider: WorkspaceProvider {
+struct DevContainerProvider: WorkspaceProvider, RemoteProjectScoped {
 	let host: String
 	let workspace: String
+	/// 該当プロジェクト ID。`RemoteRPCRegistry` のキーに使う (RPC が利用可能
+	/// なら ls/git ops を control 経由に切り替える)。
+	let projectId: UUID
+	var projectIdForRPC: UUID { projectId }
 
 	var sshHost: String? { host }
 	var effectivePath: String { "." }
@@ -779,14 +823,66 @@ extension Array where Element == FileItem {
 
 extension SSHProvider {
 	fileprivate func listDirectoryRemote(_ path: String) -> [FileItem] {
-		WorkspaceProvider_listDirectoryRemote(path, run: run)
+		// RPC fast path: 既存 SSH port forward 越しに 1 TCP 往復で済む
+		// (vs `ssh host ls` で ~20-50ms の fork/exec)。失敗 (RPC 未確立等)
+		// なら従来の executeSSH 経路にフォールバック。
+		if let items = listDirectoryViaRPC(projectId: projectId, path: path) {
+			return items.sortedLikeVSCode()
+		}
+		return WorkspaceProvider_listDirectoryRemote(path, run: run)
 	}
 }
 
 extension DevContainerProvider {
 	fileprivate func listDirectoryRemote(_ path: String) -> [FileItem] {
-		WorkspaceProvider_listDirectoryRemote(path, run: run)
+		if let items = listDirectoryViaRPC(projectId: projectId, path: path) {
+			return items.sortedLikeVSCode()
+		}
+		return WorkspaceProvider_listDirectoryRemote(path, run: run)
 	}
+}
+
+// MARK: - RPC bridge (sync wrapper around RemoteRPCClient.send)
+
+/// Block the calling thread until the RPC response (or error / timeout)
+/// returns. Provider methods are sync; RPC is async. Bridging here keeps the
+/// migration local (no need to make every call site async).
+///
+/// Returns nil if RPC isn't available for this project (no client registered)
+/// — caller should fallback to `executeSSH`.
+private func listDirectoryViaRPC(projectId: UUID, path: String) -> [FileItem]? {
+	guard let client = RemoteRPCRegistry.shared.client(for: projectId) else {
+		return nil
+	}
+	let res = syncRPC(client: client, op: "ls", params: ["path": path])
+	guard let result = res?.result,
+	      let entries = result["entries"] as? [[String: Any]]
+	else { return nil }
+	return entries.compactMap { e -> FileItem? in
+		guard let name = e["name"] as? String,
+		      let isDir = e["isDir"] as? Bool
+		else { return nil }
+		if AppConfig.shared.shouldExclude(name) { return nil }
+		let fullPath = (path as NSString).appendingPathComponent(name)
+		return FileItem(name: name, path: fullPath, isDirectory: isDir)
+	}
+}
+
+func syncRPC(client: RemoteRPCClient, op: String, params: [String: Any]) -> RPCResponse? {
+	let sem = DispatchSemaphore(value: 0)
+	var out: RPCResponse?
+	Task.detached {
+		do {
+			out = try await client.send(op: op, params: params)
+		} catch {
+			NSLog("[Belve][rpc] %@ failed: %@", op, error.localizedDescription)
+		}
+		sem.signal()
+	}
+	// 5s よりちょい余裕。client.send 側のタイムアウトに任せる。
+	_ = sem.wait(timeout: .now() + 6.0)
+	guard let res = out, res.ok else { return nil }
+	return res
 }
 
 private func WorkspaceProvider_listDirectoryRemote(_ path: String, run: (String) -> String?) -> [FileItem] {

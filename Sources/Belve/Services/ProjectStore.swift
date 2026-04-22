@@ -114,9 +114,34 @@ class ProjectStore: ObservableObject {
 		if let p = project, let host = p.sshHost {
 			let rh = remoteHostForForward(p)
 			let isDev = p.isDevContainer
+			let projShort = String(p.id.uuidString.prefix(8))
 			Task { @MainActor in
 				PortForwardManager.shared.sync(project: p, host: host, remoteHost: rh)
 				PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
+
+				// Set up control RPC channel: separate SSH port forward Mac → broker's
+				// control listener. The forward target depends on where the broker
+				// runs (VM loopback for plain SSH, container IP for DevContainer).
+				// Failure here is non-fatal — provider falls back to executeSSH.
+				do {
+					let controlRemoteAddr: String
+					if isDev {
+						if let cip = await PortForwardManager.fetchContainerIP(host: host, projShort: projShort) {
+							controlRemoteAddr = cip
+						} else {
+							throw NSError(domain: "Belve", code: 1, userInfo: [NSLocalizedDescriptionKey: "container IP not available"])
+						}
+					} else {
+						controlRemoteAddr = "127.0.0.1"
+					}
+					let localPort = try await SSHTunnelManager.shared.ensureControlChannel(
+						host: host, projectId: p.id, remoteAddr: controlRemoteAddr
+					)
+					RemoteRPCRegistry.shared.registerControlPort(projectId: p.id, localPort: UInt16(localPort))
+				} catch {
+					NSLog("[Belve] control channel setup failed project=%@ error=%@",
+						  String(p.id.uuidString.prefix(8)), error.localizedDescription)
+				}
 			}
 		}
 	}
@@ -155,8 +180,16 @@ class ProjectStore: ObservableObject {
 			}
 
 			DispatchQueue.main.async {
-				self?.gitBranch = branch
-				self?.gitFileStatus = expanded
+				// 値が変わってない時は @Published を触らない。
+				// SwiftUI の subscribe がノーオプで返る (値同じなら no-op だが、
+				// `gitFileStatus` を読んでる View は publisher 通知だけで body
+				// 再評価される。コンテンツが同じでも最帰着で flicker の原因になる)。
+				if self?.gitBranch != branch {
+					self?.gitBranch = branch
+				}
+				if self?.gitFileStatus != expanded {
+					self?.gitFileStatus = expanded
+				}
 			}
 		}
 	}

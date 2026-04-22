@@ -418,7 +418,10 @@ struct MainWindow: View {
 						FolderBrowserView(
 							isPresented: $commandPaletteState.isPresented,
 							initialPath: browserPath,
-							provider: SSHProvider(host: host, path: nil),
+							// folder browser is not bound to a project — pass a fresh
+							// UUID so the RPC lookup always misses and we fall back
+							// to executeSSH cleanly.
+							provider: SSHProvider(host: host, path: nil, projectId: UUID()),
 							highlightDevContainers: true
 						) { path in
 							projectStore.openRemoteDevContainerOnCurrent(host: host, workspacePath: path)

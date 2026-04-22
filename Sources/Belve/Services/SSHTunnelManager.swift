@@ -16,13 +16,20 @@ import Darwin
 final class SSHTunnelManager: @unchecked Sendable {
 	static let shared = SSHTunnelManager()
 
-	/// host → projectId → local port
+	/// host → projectId → local port (PTY broker forward)
 	private var tunnels: [String: [UUID: Int]] = [:]
+	/// host → projectId → local port (control RPC forward)
+	private var controlTunnels: [String: [UUID: Int]] = [:]
 	private var allocatedPorts: Set<Int> = []
 	/// Dedup `ensureControlMaster` calls for the same host while spawn is in flight.
 	/// Cleared on completion (success or failure) so a later death of the master
 	/// doesn't pin us to a stale task.
 	private var inflightMasters: [String: Task<Void, Error>] = [:]
+	/// Dedup in-flight control-forward establishment per (host, project).
+	private var inflightControlForwards: [String: Task<Int, Error>] = [:]
+	/// host → projectId → "LPORT:RADDR:RPORT" — needed for `ssh -O cancel -L`
+	/// (which requires the EXACT spec used at forward time).
+	private var controlSpecs: [String: [UUID: String]] = [:]
 	private let stateLock = NSLock()
 
 	private let basePort = 19222
@@ -85,25 +92,94 @@ final class SSHTunnelManager: @unchecked Sendable {
 		try await task.value
 	}
 
+	/// Set up Mac → remote control-RPC forward for (host, project). Allocates a
+	/// local port, runs `ssh -O forward -L LPORT:remoteAddr:remotePort host`,
+	/// and returns the local port so the caller can hand it to
+	/// `RemoteRPCRegistry.shared.registerControlPort(...)`.
+	///
+	/// Idempotent — repeat calls return the same port; concurrent callers for
+	/// the same project share an in-flight task.
+	///
+	/// `remoteAddr` is `127.0.0.1` for plain SSH (broker bound to VM loopback)
+	/// and the container IP for DevContainer (broker bound to 0.0.0.0 inside
+	/// the container). The caller is responsible for figuring out which.
+	func ensureControlChannel(
+		host: String,
+		projectId: UUID,
+		remoteAddr: String,
+		remotePort: Int = 19224
+	) async throws -> Int {
+		// Fast path
+		if let existing = stateLock.withLock({ controlTunnels[host]?[projectId] }) {
+			return existing
+		}
+		let key = "\(host)#\(projectId.uuidString)"
+		let task: Task<Int, Error> = stateLock.withLock {
+			if let inflight = inflightControlForwards[key] { return inflight }
+			let new = Task<Int, Error> { [weak self] in
+				guard let self else { throw TunnelError.noPortAvailable }
+				try await SSHTunnelManager.shared.ensureControlMaster(host: host)
+				let port = try self.allocateLocalPort(map: \SSHTunnelManager.controlTunnels, host: host, projectId: projectId)
+				let spec = "\(port):\(remoteAddr):\(remotePort)"
+				let ok = await Self.runForward(host: host, local: port, remoteHost: remoteAddr, remotePort: remotePort)
+				if !ok {
+					self.stateLock.withLock {
+						self.controlTunnels[host]?[projectId] = nil
+						self.allocatedPorts.remove(port)
+					}
+					throw TunnelError.forwardFailed
+				}
+				self.stateLock.withLock {
+					self.controlSpecs[host, default: [:]][projectId] = spec
+				}
+				NSLog("[Belve][tunnel] control forward host=%@ project=%@ local=%d → %@:%d",
+					  host, String(projectId.uuidString.prefix(8)), port, remoteAddr, remotePort)
+				return port
+			}
+			inflightControlForwards[key] = new
+			return new
+		}
+		defer {
+			stateLock.withLock { _ = inflightControlForwards.removeValue(forKey: key) }
+		}
+		return try await task.value
+	}
+
 	/// Tear down the forward for a specific (host, project). Runs `ssh -O cancel` off the
 	/// main thread. Safe to call even if no tunnel is registered.
 	func teardownTunnel(host: String, projectId: UUID) {
 		stateLock.lock()
-		guard let port = tunnels[host]?[projectId] else {
-			stateLock.unlock()
-			return
+		let ptyPort = tunnels[host]?[projectId]
+		let ctlPort = controlTunnels[host]?[projectId]
+		let ctlSpec = controlSpecs[host]?[projectId]
+		if ptyPort != nil {
+			tunnels[host]?[projectId] = nil
+			if tunnels[host]?.isEmpty == true { tunnels[host] = nil }
+			allocatedPorts.remove(ptyPort!)
 		}
-		tunnels[host]?[projectId] = nil
-		if tunnels[host]?.isEmpty == true {
-			tunnels[host] = nil
+		if ctlPort != nil {
+			controlTunnels[host]?[projectId] = nil
+			if controlTunnels[host]?.isEmpty == true { controlTunnels[host] = nil }
+			allocatedPorts.remove(ctlPort!)
 		}
-		allocatedPorts.remove(port)
+		if ctlSpec != nil {
+			controlSpecs[host]?[projectId] = nil
+			if controlSpecs[host]?.isEmpty == true { controlSpecs[host] = nil }
+		}
 		stateLock.unlock()
+		guard ptyPort != nil || ctlPort != nil else { return }
 
 		DispatchQueue.global(qos: .utility).async {
-			Self.cancelForward(host: host, projectId: projectId, localPort: port)
-			NSLog("[Belve][tunnel] closed host=%@ project=%@ port=%d",
-				  host, String(projectId.uuidString.prefix(8)), port)
+			if let port = ptyPort {
+				Self.cancelForward(host: host, projectId: projectId, localPort: port)
+				NSLog("[Belve][tunnel] closed host=%@ project=%@ port=%d",
+					  host, String(projectId.uuidString.prefix(8)), port)
+			}
+			if let spec = ctlSpec {
+				Self.cancelForwardSpec(host: host, spec: spec)
+				NSLog("[Belve][tunnel] closed control host=%@ project=%@ spec=%@",
+					  host, String(projectId.uuidString.prefix(8)), spec)
+			}
 		}
 	}
 
@@ -196,6 +272,50 @@ final class SSHTunnelManager: @unchecked Sendable {
 		"/tmp/belve-ssh-ctrl-\(host)"
 	}
 
+	/// Allocate a free local port and record it in the given map (under lock).
+	/// Called for both PTY forwards (`tunnels`) and control forwards
+	/// (`controlTunnels`).
+	private func allocateLocalPort(
+		map keyPath: ReferenceWritableKeyPath<SSHTunnelManager, [String: [UUID: Int]]>,
+		host: String,
+		projectId: UUID
+	) throws -> Int {
+		try stateLock.withLock {
+			if let existing = self[keyPath: keyPath][host]?[projectId] {
+				return existing
+			}
+			for port in basePort...maxPort {
+				guard !allocatedPorts.contains(port) else { continue }
+				guard Self.isPortFree(port) else { continue }
+				self[keyPath: keyPath][host, default: [:]][projectId] = port
+				allocatedPorts.insert(port)
+				return port
+			}
+			throw TunnelError.noPortAvailable
+		}
+	}
+
+	/// `ssh -O forward -L LPORT:remoteAddr:remotePort host` against an
+	/// existing ControlMaster. Returns `true` on success.
+	@discardableResult
+	private static func runForward(host: String, local: Int, remoteHost: String, remotePort: Int) async -> Bool {
+		await Task.detached(priority: .userInitiated) {
+			let proc = Process()
+			proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+			proc.arguments = [
+				"-o", "ControlPath=\(controlPath(for: host))",
+				"-O", "forward",
+				"-L", "\(local):\(remoteHost):\(remotePort)",
+				host,
+			]
+			proc.standardOutput = FileHandle.nullDevice
+			proc.standardError = FileHandle.nullDevice
+			do { try proc.run() } catch { return false }
+			proc.waitUntilExit()
+			return proc.terminationStatus == 0
+		}.value
+	}
+
 	/// `ssh -O check` returns 0 iff the master's control socket is alive and accepting
 	/// commands. Cheap (no network round-trip).
 	private static func checkMaster(host: String) -> Bool {
@@ -266,6 +386,23 @@ final class SSHTunnelManager: @unchecked Sendable {
 		return result == 0
 	}
 
+	/// Cancel a forward whose spec is known explicitly. Used for control
+	/// forwards (Swift-managed, no .spec file written by launcher).
+	private static func cancelForwardSpec(host: String, spec: String) {
+		let proc = Process()
+		proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+		proc.arguments = [
+			"-o", "ControlPath=\(controlPath(for: host))",
+			"-O", "cancel",
+			"-L", spec,
+			host,
+		]
+		proc.standardOutput = FileHandle.nullDevice
+		proc.standardError = FileHandle.nullDevice
+		try? proc.run()
+		proc.waitUntilExit()
+	}
+
 	/// Cancel the forward. `ssh -O cancel` requires the EXACT spec used when forwarding
 	/// (local port + remote target). The launcher writes the spec to `<tunnelDir>/<projId>.spec`;
 	/// if that file is missing (e.g. project was never connected), we fall back to a
@@ -299,6 +436,7 @@ final class SSHTunnelManager: @unchecked Sendable {
 	enum TunnelError: LocalizedError {
 		case noPortAvailable
 		case masterFailed(host: String)
+		case forwardFailed
 
 		var errorDescription: String? {
 			switch self {
@@ -306,6 +444,8 @@ final class SSHTunnelManager: @unchecked Sendable {
 				return "No local port available in range 19222-19322"
 			case .masterFailed(let host):
 				return "Failed to establish SSH ControlMaster for \(host)"
+			case .forwardFailed:
+				return "ssh -O forward failed"
 			}
 		}
 	}

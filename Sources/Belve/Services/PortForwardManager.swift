@@ -473,7 +473,11 @@ final class PortForwardManager: ObservableObject {
 	/// The file is written by `belve-setup` at DevContainer start and contains
 	/// a `CIP=<ipv4>` line. Returns nil if the file is missing or malformed —
 	/// caller falls back to 127.0.0.1.
-	private static func fetchContainerIP(host: String, projShort: String) async -> String? {
+	/// Look up the container IP for a DevContainer project. Reads `CIP=...` from
+	/// `~/.belve/projects/<projShort>.env` over SSH (uses the existing
+	/// ControlMaster, no fresh handshake). `internal` so SSHTunnelManager /
+	/// ProjectStore can reuse without duplicating the SSH call.
+	static func fetchContainerIP(host: String, projShort: String) async -> String? {
 		await withCheckedContinuation { continuation in
 			DispatchQueue.global(qos: .utility).async {
 				let proc = Process()
