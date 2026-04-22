@@ -164,6 +164,8 @@ func dispatchOp(cs *connState, req ctrlReq) ctrlRes {
 	switch req.Op {
 	case "ping":
 		return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"pong": "ok"}}
+	case "pwd":
+		return opPwd(req)
 	case "ls":
 		return opLs(req)
 	case "stat":
@@ -196,6 +198,14 @@ func dispatchOp(cs *connState, req ctrlReq) ctrlRes {
 }
 
 // MARK: - Operations
+
+func opPwd(req ctrlReq) ctrlRes {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return errRes(req.ID, err.Error())
+	}
+	return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"cwd": cwd}}
+}
 
 func opLs(req ctrlReq) ctrlRes {
 	if req.Path == "" {

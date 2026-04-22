@@ -266,9 +266,22 @@ final class RemoteRPCRegistry: @unchecked Sendable {
 
 	private var clients: [UUID: RemoteRPCClient] = [:]
 	private var localPorts: [UUID: UInt16] = [:]
+	/// Cached `pwd` result per project (= broker cwd, which is the workspace
+	/// root inside the container for DevContainer / on the VM for SSH). Used
+	/// to resolve `./...` paths (DevContainer's `effectivePath = "."`) to a
+	/// real absolute path for the file tree's "Copy Full Path" menu.
+	private var cwds: [UUID: String] = [:]
 	private let lock = NSLock()
 
 	private init() {}
+
+	func cwd(for projectId: UUID) -> String? {
+		lock.withLock { cwds[projectId] }
+	}
+
+	func setCwd(_ cwd: String, for projectId: UUID) {
+		lock.withLock { cwds[projectId] = cwd }
+	}
 
 	/// Register the local port that's been forwarded to the project's control
 	/// listener. Called by `ProjectStore.select` after `SSHTunnelManager` sets
@@ -297,6 +310,7 @@ final class RemoteRPCRegistry: @unchecked Sendable {
 		let removed: RemoteRPCClient? = lock.withLock {
 			let c = clients.removeValue(forKey: projectId)
 			localPorts.removeValue(forKey: projectId)
+			cwds.removeValue(forKey: projectId)
 			return c
 		}
 		removed?.disconnect()
@@ -307,6 +321,7 @@ final class RemoteRPCRegistry: @unchecked Sendable {
 			let all = Array(clients.values)
 			clients.removeAll()
 			localPorts.removeAll()
+			cwds.removeAll()
 			return all
 		}
 		for c in snapshot { c.disconnect() }

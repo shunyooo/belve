@@ -543,7 +543,9 @@ class ProjectStore: ObservableObject {
 		}
 		let newProject = Project(
 			name: (path as NSString).lastPathComponent,
-			workspace: newWorkspace
+			workspace: newWorkspace,
+			isPinned: oldProject.isPinned,
+			groupName: oldProject.groupName
 		)
 		projects[index] = newProject
 		saveProjects()
@@ -932,9 +934,29 @@ class ProjectStore: ObservableObject {
 				projShort: projShort
 			)
 			self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
+			self.fetchAndCacheCwd(for: p.id)
 		} catch {
 			NSLog("[Belve][rpc] setup failed project=%@ error=%@",
 				  String(p.id.uuidString.prefix(8)), error.localizedDescription)
+		}
+	}
+
+	/// Brokerに `pwd` op を発行して cwd (= ワークスペースの絶対パス) を取得し
+	/// `RemoteRPCRegistry` に保存する。DevContainer の `effectivePath` は `.`
+	/// なので、ファイルツリーの "Copy Full Path" でこの値を prefix として
+	/// 使って `./tasks/...` を `/workspaces/.../tasks/...` に解決する。
+	private func fetchAndCacheCwd(for projectId: UUID) {
+		guard let client = RemoteRPCRegistry.shared.client(for: projectId) else { return }
+		Task.detached {
+			do {
+				let res = try await client.send(op: "pwd", params: [:])
+				if let cwd = res.result?["cwd"] as? String, !cwd.isEmpty {
+					RemoteRPCRegistry.shared.setCwd(cwd, for: projectId)
+				}
+			} catch {
+				NSLog("[Belve][rpc] pwd failed project=%@ error=%@",
+				      String(projectId.uuidString.prefix(8)), error.localizedDescription)
+			}
 		}
 	}
 
