@@ -138,10 +138,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			}
 		}
 
-		// Clean stale SSH sessions from previous app runs (prevents MaxSessions exhaustion)
+		// Phase 3 移行: SSH master / port forward は master daemon が常駐管理する。
+		// Belve.app 起動時に stale 掃除 (cleanupStaleBelveProcesses) や teardownAll を
+		// 呼ぶと master の管理する SSH socket まで kill してしまう。Master が
+		// 既存の場合は触らず attach するのが正しい。Stale 掃除は master daemon
+		// 側 (起動時の os.Remove(socketPath) と既存 master 検知ロジック) に任せる。
+		// 残すのは「per-pane の local belve-persist client (tcpbackend)」と「stale
+		// session sock file」だけ。これらは master ではなく launcher 経由で生まれる
+		// もので、Belve.app 死亡で reorganize される。
 		Self.cleanupStaleBelveProcesses()
-		// Stale port forwards from a previous run point at dead control sockets; drop them.
-		SSHTunnelManager.shared.teardownAll()
 
 		// Phase 1 (mac master daemon): bootstrap before anything else that might
 		// want to talk to it. Launches `belve-persist -mac-master` if not already
@@ -317,19 +322,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		//    if we leave them alive, the launcher's socket-reuse path attaches to a
 		//    daemon pointing at the wrong forward.
 		// 4. remove socket files and spec files so the next launcher run starts fresh.
+		// Master daemon 管理下の SSH master / control sockets は触らない。
+		// 残骸として消すのは local pane の belve-persist client + その socket file 系。
+		// Master 自体 (`belve-persist.*-mac-master`) も touch しない (= 別プロセスとして生存)。
 		let script = """
-		for sock in /tmp/belve-ssh-ctrl-*; do
-		    [ -S "$sock" ] || continue
-		    host=${sock#/tmp/belve-ssh-ctrl-}
-		    ssh -o ControlPath="$sock" -O exit "$host" >/dev/null 2>&1 || true
-		done
-		pkill -f 'belve-ssh-ctrl' 2>/dev/null
-		pkill -f 'belve-connect' 2>/dev/null
-		pkill -f 'belve-setup' 2>/dev/null
 		pkill -f 'belve-persist-darwin.*tcpbackend' 2>/dev/null
-		pkill -f 'belve-persist-darwin.*-socket' 2>/dev/null
-		rm -f /tmp/belve-ssh-ctrl-* 2>/dev/null
-		rm -rf /tmp/belve-shell/tunnels 2>/dev/null
+		# `-socket` を含む client (tcpbackend 経由ではない master 接続用 client) も掃除
+		pkill -f 'belve-persist-darwin.*-socket /tmp/belve-shell' 2>/dev/null
 		rm -f /tmp/belve-shell/sessions/belve-*.sock 2>/dev/null
 		rm -f /tmp/belve-shell/sessions/belve-*.ver 2>/dev/null
 		rm -f /tmp/belve-shell/sessions/belve-*.sock.pid 2>/dev/null

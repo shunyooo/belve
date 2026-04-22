@@ -126,6 +126,32 @@ final class MasterClient: @unchecked Sendable {
 		])
 	}
 
+	/// host への SSH ControlMaster を保証する (spawn if missing)。
+	/// PortForwardManager が独自の port forward を立てる前に呼ぶ。
+	func ensureControlMaster(host: String) async throws {
+		_ = try await send(op: "ensureControlMaster", params: [
+			"host": host,
+		])
+	}
+
+	/// Per-VM router への port forward を保証する。Mac 側が listen する local
+	/// port (= belve-persist client の `-tcpbackend` の接続先) を返す。
+	/// host あたり 1 個の forward (Phase B 設計、複数 project で共有)。
+	func ensureRouterForward(host: String, remotePort: Int = 19200) async throws -> Int {
+		let res = try await send(op: "ensureRouterForward", params: [
+			"host": host,
+			"remotePort": remotePort,
+		])
+		guard let port = res.result?["localPort"] as? Int else {
+			throw MasterError.malformedResponse("localPort missing from ensureRouterForward")
+		}
+		return port
+	}
+
+	func teardownAllTunnels() async throws {
+		_ = try await send(op: "teardownAllTunnels", params: [:])
+	}
+
 	// MARK: - Send
 
 	/// Send a request, await response. Reconnects + retries once on the first

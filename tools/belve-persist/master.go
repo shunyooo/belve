@@ -135,6 +135,14 @@ func masterDispatch(req masterReq) masterRes {
 		return opEnsureSetup(req)
 	case "invalidateSetup":
 		return opInvalidateSetup(req)
+	case "ensureControlMaster":
+		return opEnsureControlMaster(req)
+	case "ensureRouterForward":
+		return opEnsureRouterForward(req)
+	case "tunnelStatus":
+		return opTunnelStatus(req)
+	case "teardownAllTunnels":
+		return opTeardownAllTunnels(req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
@@ -171,6 +179,49 @@ func opInvalidateSetup(req masterReq) masterRes {
 	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"projectId": pid}}
 }
 
+// ensureControlMaster params: {host}
+// SSH master を spawn (なければ)。port forward を伴わない用途 (= PortForwardManager
+// が独自に `ssh -O forward` する前) で使う。
+func opEnsureControlMaster(req masterReq) masterRes {
+	host := strParam(req.Params, "host")
+	if host == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "host required"}
+	}
+	if err := globalTunnelManager.ensureControlMaster(host); err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: err.Error()}
+	}
+	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"host": host}}
+}
+
+// ensureRouterForward params: {host, remotePort?}
+// 戻り値: {localPort: int}
+func opEnsureRouterForward(req masterReq) masterRes {
+	host := strParam(req.Params, "host")
+	if host == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "host required"}
+	}
+	remotePort := intParam(req.Params, "remotePort")
+	port, err := globalTunnelManager.ensureRouterForward(host, remotePort)
+	if err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: err.Error()}
+	}
+	return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{"localPort": port}}
+}
+
+func opTunnelStatus(req masterReq) masterRes {
+	st := globalTunnelManager.status()
+	conv := make(map[string]interface{}, len(st))
+	for k, v := range st {
+		conv[k] = v
+	}
+	return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{"forwards": conv}}
+}
+
+func opTeardownAllTunnels(req masterReq) masterRes {
+	globalTunnelManager.teardownAll()
+	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"status": "ok"}}
+}
+
 func strParam(p map[string]interface{}, key string) string {
 	if v, ok := p[key].(string); ok {
 		return v
@@ -183,4 +234,14 @@ func boolParam(p map[string]interface{}, key string) bool {
 		return v
 	}
 	return false
+}
+
+func intParam(p map[string]interface{}, key string) int {
+	switch v := p[key].(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	}
+	return 0
 }
