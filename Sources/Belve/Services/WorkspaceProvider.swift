@@ -209,7 +209,21 @@ extension WorkspaceProvider {
 	}
 
 	func gitDiffHunks(_ path: String, file: String) -> [GitDiffHunk] {
+		// RPC fast path
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
+		   let client = RemoteRPCRegistry.shared.client(for: pid),
+		   let res = syncRPC(client: client, op: "gitDiff", params: ["path": path, "file": file]),
+		   let result = res.result,
+		   let diff = result["diff"] as? String
+		{
+			return Self.parseDiffHunks(diff)
+		}
 		guard let output = run("cd \(shellQuote(path)) && git diff -U0 -- \(shellQuote(file)) 2>/dev/null") else { return [] }
+		return Self.parseDiffHunks(output)
+	}
+
+	/// Parse `git diff -U0` output into hunks. Shared between RPC + shell paths.
+	private static func parseDiffHunks(_ output: String) -> [GitDiffHunk] {
 		var hunks: [GitDiffHunk] = []
 		for line in output.components(separatedBy: "\n") where line.hasPrefix("@@") {
 			let parts = line.components(separatedBy: " ")
@@ -231,6 +245,15 @@ extension WorkspaceProvider {
 
 	func gitCheckIgnore(_ repoPath: String, paths: [String]) -> Set<String> {
 		guard !paths.isEmpty else { return [] }
+		// RPC fast path
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
+		   let client = RemoteRPCRegistry.shared.client(for: pid),
+		   let res = syncRPC(client: client, op: "gitCheckIgnore", params: ["path": repoPath, "paths": paths]),
+		   let result = res.result,
+		   let ignored = result["ignored"] as? [String]
+		{
+			return Set(ignored)
+		}
 		let quotedPaths = paths.map { shellQuote($0) }.joined(separator: " ")
 		let result = runAllowFailure("cd \(shellQuote(repoPath)) && git check-ignore \(quotedPaths) 2>/dev/null")
 		guard let output = result else { return [] }
@@ -526,6 +549,27 @@ protocol RemoteProjectScoped {
 	var projectIdForRPC: UUID { get }
 }
 
+extension RemoteProjectScoped {
+	/// 同期 RPC 呼び出し → result を返す。Client 未確立 / エラー時は nil。
+	/// 各 provider 実装が「RPC で値が取れたらそれを返す、取れなければ
+	/// executeSSH 経由 fallback」のパターンで使う。
+	func rpcResult(op: String, params: [String: Any]) -> [String: Any]? {
+		guard let client = RemoteRPCRegistry.shared.client(for: projectIdForRPC),
+		      let res = syncRPC(client: client, op: op, params: params),
+		      let result = res.result
+		else { return nil }
+		return result
+	}
+
+	/// op が成功すれば true。result の中身は見ない (write/delete/mkdir/rename 用)。
+	func rpcOK(op: String, params: [String: Any]) -> Bool {
+		guard let client = RemoteRPCRegistry.shared.client(for: projectIdForRPC),
+		      let res = syncRPC(client: client, op: op, params: params)
+		else { return false }
+		return res.ok
+	}
+}
+
 // MARK: - SSHProvider
 
 struct SSHProvider: WorkspaceProvider, RemoteProjectScoped {
@@ -548,16 +592,53 @@ struct SSHProvider: WorkspaceProvider, RemoteProjectScoped {
 	}
 
 	func listDirectory(_ path: String) -> [FileItem] { listDirectoryRemote(path) }
-	func fileExists(_ path: String) -> Bool { run("test -f \(shellQuote(path)) && echo yes || echo no") == "yes" }
-	func readFile(_ path: String) -> String? { run("cat \(shellQuote(path))") }
+
+	func fileExists(_ path: String) -> Bool {
+		// RPC: stat が成功したら存在。size/mtime は見ない。
+		if let _ = rpcResult(op: "stat", params: ["path": path]) { return true }
+		// Fallback shell
+		return run("test -f \(shellQuote(path)) && echo yes || echo no") == "yes"
+	}
+
+	func readFile(_ path: String) -> String? {
+		if let result = rpcResult(op: "read", params: ["path": path]),
+		   let content = result["content"] as? String { return content }
+		return run("cat \(shellQuote(path))")
+	}
+
 	func writeFile(_ path: String, content: String) -> Bool {
+		// RPC は base64 で渡す方が改行/制御文字に安全。
+		let b64 = Data(content.utf8).base64EncodedString()
+		if rpcOK(op: "write", params: ["path": path, "data": b64, "encoding": "base64"]) {
+			return true
+		}
 		let escaped = content.replacingOccurrences(of: "'", with: "'\\''")
 		return run("printf '%s' '\(escaped)' > \(shellQuote(path))") != nil
 	}
-	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) { deleteItemRemote(path) }
-	func moveItem(from: String, to: String) -> Bool { run("mv \(shellQuote(from)) \(shellQuote(to))") != nil }
-	func createFile(_ path: String) -> Bool { run("touch \(shellQuote(path))") != nil }
+
+	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) {
+		if rpcOK(op: "delete", params: ["path": path]) {
+			return (true, nil)
+		}
+		return deleteItemRemote(path)
+	}
+
+	func moveItem(from: String, to: String) -> Bool {
+		if rpcOK(op: "rename", params: ["path": from, "path2": to]) { return true }
+		return run("mv \(shellQuote(from)) \(shellQuote(to))") != nil
+	}
+
+	func createFile(_ path: String) -> Bool {
+		// 空ファイル作成: write op で空文字。
+		if rpcOK(op: "write", params: ["path": path, "data": "", "encoding": "utf8"]) { return true }
+		return run("touch \(shellQuote(path))") != nil
+	}
+
 	func modificationDate(_ path: String) -> Date? {
+		if let result = rpcResult(op: "stat", params: ["path": path]),
+		   let mtime = result["mtime"] as? Double {
+			return Date(timeIntervalSince1970: mtime)
+		}
 		guard let epoch = run("stat -c %Y \(shellQuote(path)) 2>/dev/null || stat -f %m \(shellQuote(path)) 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines),
 			  let ts = TimeInterval(epoch) else { return nil }
 		return Date(timeIntervalSince1970: ts)
@@ -638,16 +719,45 @@ struct DevContainerProvider: WorkspaceProvider, RemoteProjectScoped {
 	}
 
 	func listDirectory(_ path: String) -> [FileItem] { listDirectoryRemote(path) }
-	func fileExists(_ path: String) -> Bool { run("test -f \(shellQuote(path)) && echo yes || echo no") == "yes" }
-	func readFile(_ path: String) -> String? { run("cat \(shellQuote(path))") }
+
+	func fileExists(_ path: String) -> Bool {
+		if let _ = rpcResult(op: "stat", params: ["path": path]) { return true }
+		return run("test -f \(shellQuote(path)) && echo yes || echo no") == "yes"
+	}
+
+	func readFile(_ path: String) -> String? {
+		if let result = rpcResult(op: "read", params: ["path": path]),
+		   let content = result["content"] as? String { return content }
+		return run("cat \(shellQuote(path))")
+	}
+
 	func writeFile(_ path: String, content: String) -> Bool {
+		let b64 = Data(content.utf8).base64EncodedString()
+		if rpcOK(op: "write", params: ["path": path, "data": b64, "encoding": "base64"]) { return true }
 		let escaped = content.replacingOccurrences(of: "'", with: "'\\''")
 		return run("printf '%s' '\(escaped)' > \(shellQuote(path))") != nil
 	}
-	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) { deleteItemRemote(path) }
-	func moveItem(from: String, to: String) -> Bool { run("mv \(shellQuote(from)) \(shellQuote(to))") != nil }
-	func createFile(_ path: String) -> Bool { run("touch \(shellQuote(path))") != nil }
+
+	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) {
+		if rpcOK(op: "delete", params: ["path": path]) { return (true, nil) }
+		return deleteItemRemote(path)
+	}
+
+	func moveItem(from: String, to: String) -> Bool {
+		if rpcOK(op: "rename", params: ["path": from, "path2": to]) { return true }
+		return run("mv \(shellQuote(from)) \(shellQuote(to))") != nil
+	}
+
+	func createFile(_ path: String) -> Bool {
+		if rpcOK(op: "write", params: ["path": path, "data": "", "encoding": "utf8"]) { return true }
+		return run("touch \(shellQuote(path))") != nil
+	}
+
 	func modificationDate(_ path: String) -> Date? {
+		if let result = rpcResult(op: "stat", params: ["path": path]),
+		   let mtime = result["mtime"] as? Double {
+			return Date(timeIntervalSince1970: mtime)
+		}
 		guard let epoch = run("stat -c %Y \(shellQuote(path)) 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines),
 			  let ts = TimeInterval(epoch) else { return nil }
 		return Date(timeIntervalSince1970: ts)

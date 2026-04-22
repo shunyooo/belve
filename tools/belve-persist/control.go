@@ -33,13 +33,15 @@ import (
 )
 
 type ctrlReq struct {
-	ID       string `json:"id"`
-	Op       string `json:"op"`
-	Path     string `json:"path,omitempty"`
-	Path2    string `json:"path2,omitempty"`    // for rename (dst)
-	Data     string `json:"data,omitempty"`     // for write
-	Encoding string `json:"encoding,omitempty"` // utf8 (default) or base64
-	WatchID  string `json:"watchId,omitempty"`  // for unwatch
+	ID       string   `json:"id"`
+	Op       string   `json:"op"`
+	Path     string   `json:"path,omitempty"`
+	Path2    string   `json:"path2,omitempty"`    // for rename (dst)
+	Data     string   `json:"data,omitempty"`     // for write
+	Encoding string   `json:"encoding,omitempty"` // utf8 (default) or base64
+	WatchID  string   `json:"watchId,omitempty"`  // for unwatch
+	File     string   `json:"file,omitempty"`     // for gitDiff (relative file path within repo)
+	Paths    []string `json:"paths,omitempty"`    // for gitCheckIgnore
 }
 
 type ctrlRes struct {
@@ -180,6 +182,10 @@ func dispatchOp(cs *connState, req ctrlReq) ctrlRes {
 		return opGitBranch(req)
 	case "gitStatus":
 		return opGitStatus(req)
+	case "gitDiff":
+		return opGitDiff(req)
+	case "gitCheckIgnore":
+		return opGitCheckIgnore(req)
 	case "watch":
 		return opWatch(cs, req)
 	case "unwatch":
@@ -352,6 +358,49 @@ func opGitStatus(req ctrlReq) ctrlRes {
 		})
 	}
 	return ctrlRes{ID: req.ID, OK: true, Result: map[string]interface{}{"files": files}}
+}
+
+// `git -C path diff -U0 -- file` を実行して raw 出力をそのまま返す。
+// パース (@@ ヘッダ抽出) は Mac 側で既存ロジックを再利用するため、Go 側は
+// 純粋に実行 + 文字列返しに徹する。
+func opGitDiff(req ctrlReq) ctrlRes {
+	if req.Path == "" || req.File == "" {
+		return errRes(req.ID, "path and file required")
+	}
+	p := expandHome(req.Path)
+	cmd := exec.Command("git", "-C", p, "diff", "-U0", "--", req.File)
+	out, err := cmd.Output()
+	if err != nil {
+		// Not a git repo / no diff / error — return empty diff (caller treats
+		// as "no hunks").
+		return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"diff": ""}}
+	}
+	return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"diff": string(out)}}
+}
+
+// `git -C path check-ignore <paths...>` で ignored なものを返す。
+// `--no-pager` 不要、`-z` (NUL 区切り) も小規模なので使わない。
+func opGitCheckIgnore(req ctrlReq) ctrlRes {
+	if req.Path == "" {
+		return errRes(req.ID, "path required")
+	}
+	if len(req.Paths) == 0 {
+		return ctrlRes{ID: req.ID, OK: true, Result: map[string][]string{"ignored": {}}}
+	}
+	args := []string{"-C", expandHome(req.Path), "check-ignore", "--"}
+	args = append(args, req.Paths...)
+	cmd := exec.Command("git", args...)
+	out, err := cmd.Output()
+	// check-ignore は「なにも ignored じゃない」と exit 1 を返すので、
+	// エラーは無視して output を見る。
+	_ = err
+	ignored := []string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line != "" {
+			ignored = append(ignored, line)
+		}
+	}
+	return ctrlRes{ID: req.ID, OK: true, Result: map[string][]string{"ignored": ignored}}
 }
 
 // MARK: - Watch

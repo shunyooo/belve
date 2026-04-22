@@ -30,6 +30,13 @@ struct PreviewArea: View {
 	@State private var loadingPath: String?
 	@State private var fileWatchTimer: Timer?
 	@State private var lastKnownModTime: Date?
+	/// RPC fast path: 親ディレクトリの fsnotify watch ID。watch 中だけ非 nil。
+	@State private var fileWatchRPCID: String?
+	/// 上記 watch の対象 dir。同じ dir に開き直した時に re-watch しないため。
+	@State private var fileWatchRPCDir: String?
+	/// RPC push 購読の解除トークン (closure ベースなので具体的に解除はせず、
+	/// 内部でフィルタする方針 — 多重 subscribe を防ぐためのフラグ的役割)。
+	@State private var fileWatchRPCSubscribed: Bool = false
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
 	@State private var fileSearchResults: [FileSearchResult] = []
@@ -586,6 +593,83 @@ struct PreviewArea: View {
 	private func startFileWatch() {
 		stopFileWatch()
 		guard let file = openFile else { return }
+		NSLog("[Belve][filewatch] start path=%@ remote=%d", file.path, project.isRemote ? 1 : 0)
+		// RPC 経路: 親ディレクトリを watch + push event で reload。
+		// fsevent は path/kind 付きで来るので 2 秒 polling 不要。
+		if project.isRemote, let client = RemoteRPCRegistry.shared.client(for: project.id) {
+			NSLog("[Belve][filewatch] RPC path")
+			startFileWatchRPC(file: file, client: client)
+			return
+		}
+		NSLog("[Belve][filewatch] polling fallback (rpc client = %@)",
+		      RemoteRPCRegistry.shared.client(for: project.id) == nil ? "nil" : "present")
+		// Local / RPC 未確立 — 旧式 polling にフォールバック。
+		startFileWatchPolling(file: file)
+	}
+
+	private func startFileWatchRPC(file: OpenFile, client: RemoteRPCClient) {
+		let dir = (file.path as NSString).deletingLastPathComponent
+		// 同じ dir なら watch 流用 — re-watch コストを節約。
+		if fileWatchRPCDir != dir {
+			// 古い watch を解除
+			if let oldID = fileWatchRPCID {
+				Task { _ = try? await client.send(op: "unwatch", params: ["watchId": oldID]) }
+			}
+			fileWatchRPCID = nil
+			fileWatchRPCDir = dir
+			// 新規 watch 登録
+			Task {
+				do {
+					let res = try await client.send(op: "watch", params: ["path": dir])
+					if let id = res.result?["watchId"] as? String {
+						await MainActor.run { fileWatchRPCID = id }
+					}
+				} catch {
+					NSLog("[Belve][filewatch] watch failed: %@", error.localizedDescription)
+				}
+			}
+		}
+		// push 購読は 1 回だけ。closure 側で「現在の openFile.path と一致する
+		// modify event のみ」をフィルタするので、ファイル切替時に re-subscribe
+		// しなくて済む。
+		if !fileWatchRPCSubscribed {
+			fileWatchRPCSubscribed = true
+			client.subscribePush { type, msg in
+				NSLog("[Belve][filewatch] push type=%@ path=%@ kind=%@",
+				      type,
+				      (msg["path"] as? String) ?? "?",
+				      (msg["kind"] as? String) ?? "?")
+				guard type == "fsevent",
+				      let evPath = msg["path"] as? String,
+				      let kind = msg["kind"] as? String, kind == "modify"
+				else { return }
+				DispatchQueue.main.async {
+					handleExternalFileChange(at: evPath)
+				}
+			}
+		}
+	}
+
+	private func handleExternalFileChange(at evPath: String) {
+		guard let current = openFile, current.path == evPath, !isDirty else { return }
+		let provider = project.provider
+		DispatchQueue.global(qos: .utility).async {
+			guard let newContent = provider.readFile(evPath) else { return }
+			DispatchQueue.main.async {
+				guard let currentFile = openFile, currentFile.path == evPath, !isDirty else { return }
+				if newContent != currentFile.content {
+					openFile = OpenFile(
+						path: evPath,
+						content: newContent,
+						line: currentFile.line,
+						column: currentFile.column
+					)
+				}
+			}
+		}
+	}
+
+	private func startFileWatchPolling(file: OpenFile) {
 		lastKnownModTime = project.provider.modificationDate(file.path)
 		let path = file.path
 		fileWatchTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [self] _ in
@@ -596,7 +680,6 @@ struct PreviewArea: View {
 				DispatchQueue.main.async {
 					guard let lastMod = lastKnownModTime, newModTime > lastMod else { return }
 					guard let currentFile = openFile, currentFile.path == path, !isDirty else { return }
-					// File changed externally — reload
 					lastKnownModTime = newModTime
 					if let newContent = provider.readFile(path) {
 						if newContent != currentFile.content {
@@ -617,6 +700,15 @@ struct PreviewArea: View {
 		fileWatchTimer?.invalidate()
 		fileWatchTimer = nil
 		lastKnownModTime = nil
+		// RPC watch は次回 startFileWatchRPC で dir 比較してから cleanup する
+		// (= ディレクトリが同じなら流用、違うなら unwatch)。明示的な
+		// 「全停止」が必要なら fileWatchRPCID を unwatch して nil 化する。
+		if let id = fileWatchRPCID,
+		   let client = RemoteRPCRegistry.shared.client(for: project.id) {
+			Task { _ = try? await client.send(op: "unwatch", params: ["watchId": id]) }
+		}
+		fileWatchRPCID = nil
+		fileWatchRPCDir = nil
 	}
 
 	private func handleDefinitionHoverRequest(_ request: EditorDefinitionRequest, completion: @escaping (Bool) -> Void) {
