@@ -131,6 +131,9 @@ struct BrowserView: View {
 	/// モードと同じ感覚)。
 	@ViewBuilder
 	private var webContent: some View {
+		// WebView の下に常にダーク背景を敷く。`drawsBackground=false` した
+		// WKWebView は未ロード時に下地が透けるので、これでダークテーマと
+		// 整合する (真っ白でチカチカしない)。
 		let webView = BrowserWebView(
 			url: requestedURL,
 			navigationState: navigationState,
@@ -413,6 +416,11 @@ private struct BrowserWebView: NSViewRepresentable {
 		view.allowsBackForwardNavigationGestures = true
 		view.navigationDelegate = context.coordinator
 		view.uiDelegate = context.coordinator
+		// 未読み込み / ロード失敗時の素地を WebKit のデフォルト白から外す。
+		// `drawsBackground=false` で WKWebView 自身の背景を透過にして、
+		// SwiftUI 側の `Theme.surface` を見せる。読み込み済みページは
+		// 自分の背景を持つので影響なし。
+		view.setValue(false, forKey: "drawsBackground")
 		context.coordinator.webView = view
 		context.coordinator.observeProperties(view)
 		return view

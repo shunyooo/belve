@@ -86,9 +86,16 @@ class FileTreeState: ObservableObject {
 				updatedCache[path] = project.provider.listDirectory(path)
 			}
 			DispatchQueue.main.async {
-				self.items = rootItems
+				// 差分が無ければ書き戻さない。SwiftUI は配列 reassign を「全行更新」
+				// として扱って ForEach を再評価するので、値が同じでも各行が
+				// 再描画されてちらつく。Equatable diff でガードする。
+				if self.items != rootItems {
+					self.items = rootItems
+				}
 				for (path, children) in updatedCache {
-					self.childrenCache[path] = children
+					if self.childrenCache[path] != children {
+						self.childrenCache[path] = children
+					}
 				}
 			}
 		}
