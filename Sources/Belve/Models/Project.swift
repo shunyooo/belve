@@ -31,11 +31,14 @@ struct Project: Identifiable, Codable, Hashable {
 	/// Pinned projects are the "currently-active" set — Cmd+[/] cycles only
 	/// through pinned projects when any are pinned.
 	var isPinned: Bool = false
-	/// Optional user-defined group name. Projects sharing the same groupName
-	/// render together under a collapsible header in the sidebar. Pinned
-	/// projects always appear in the implicit "Pinned" section regardless of
-	/// groupName — when unpinned they return to their named group.
-	var groupName: String?
+	/// User-defined group name. Required — every project belongs to a group.
+	/// New projects default to `ProjectStore.defaultGroupName` (initially
+	/// "Inbox"). Pinned projects still appear in the implicit "Pinned"
+	/// section regardless of groupName.
+	///
+	/// Codable: legacy data with missing/nil/empty groupName is migrated to
+	/// `ProjectStore.defaultGroupName` at load time (`loadProjects`).
+	var groupName: String
 	/// User-configured TCP port forwards (local → remote). Manual entries plus
 	/// anything the user chose "Always forward" on from the auto-detect toast.
 	var portForwards: [PortForward] = []
@@ -47,7 +50,7 @@ struct Project: Identifiable, Codable, Hashable {
 	/// toast and are silently added as auto-detected entries on first sight.
 	var portForwardAllowlist: Set<Int> = []
 
-	init(id: UUID = UUID(), name: String, workspace: Workspace = .local(path: nil), isPinned: Bool = false, groupName: String? = nil) {
+	init(id: UUID = UUID(), name: String, workspace: Workspace = .local(path: nil), isPinned: Bool = false, groupName: String = "") {
 		self.id = id
 		self.name = name
 		self.workspace = workspace
@@ -65,7 +68,9 @@ struct Project: Identifiable, Codable, Hashable {
 		name = try c.decode(String.self, forKey: .name)
 		workspace = try c.decode(Workspace.self, forKey: .workspace)
 		isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
-		groupName = try c.decodeIfPresent(String.self, forKey: .groupName)
+		// Legacy データは nil/欠損可能。空文字に migrate して、ProjectStore
+		// 側の loadProjects が defaultGroupName を当てる。
+		groupName = try c.decodeIfPresent(String.self, forKey: .groupName) ?? ""
 		portForwards = try c.decodeIfPresent([PortForward].self, forKey: .portForwards) ?? []
 		portForwardBlocklist = try c.decodeIfPresent(Set<Int>.self, forKey: .portForwardBlocklist) ?? []
 		portForwardAllowlist = try c.decodeIfPresent(Set<Int>.self, forKey: .portForwardAllowlist) ?? []

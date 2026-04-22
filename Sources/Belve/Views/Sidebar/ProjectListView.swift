@@ -79,39 +79,17 @@ struct ProjectListView: View {
 							}
 						}
 
-						// Ungrouped, unpinned projects at the bottom — no header.
-						let ungrouped = projects.filter { !$0.isPinned && ($0.groupName ?? "").isEmpty }
-						ForEach(ungrouped, id: \.id) { project in
-							projectRowBlock(project: project)
-						}
-
 						if dropTargetIndex == projects.count {
 							dropIndicator()
 						}
 
-						// Bottom catcher: right-click opens the sidebar menu, drag drops
-						// here remove the project from its group (and Pinned section).
-						// The drop highlight uses key "" so it doesn't collide with
-						// real group keys.
-						let ungroupHover = dragOverSectionKey == ""
+						// Bottom catcher: right-click opens the sidebar menu。
+						// すべての project は必ず group に属するので、ここに drop
+						// しても「グループから外す」ではなく「default group に
+						// 戻す」挙動 (ProjectStore.moveProjectToSection で吸収)。
 						Color.clear
 							.frame(minHeight: 200)
 							.contentShape(Rectangle())
-							.background(
-								RoundedRectangle(cornerRadius: Theme.radiusSm)
-									.stroke(Theme.accent, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-									.opacity(ungroupHover ? 0.8 : 0)
-									.padding(.horizontal, 4)
-									.padding(.top, 8)
-							)
-							.overlay(alignment: .top) {
-								if ungroupHover {
-									Text("Remove from group")
-										.font(.system(size: 10, weight: .medium))
-										.foregroundStyle(Theme.accent)
-										.padding(.top, 16)
-								}
-							}
 							.overlay(SidebarRightClickDetector(
 								onNewProject: { onAddProject?() },
 								onNewGroup: { promptForNewGroupOnly() }
@@ -458,7 +436,8 @@ struct ProjectListView: View {
 	// MARK: - Click handling
 
 	/// Flat visual order used for Shift+click range selection — matches the
-	/// render order (pinned → each named group → ungrouped).
+	/// render order (pinned → each named group)。グループ必須化により ungrouped
+	/// 区分は廃止 (= 必ずどこかの group に属する)。
 	private var flatVisibleProjects: [Project] {
 		var result: [Project] = []
 		let pinned = projects.filter { $0.isPinned }
@@ -466,7 +445,6 @@ struct ProjectListView: View {
 		for name in groupNames {
 			result.append(contentsOf: projects.filter { $0.groupName == name && !$0.isPinned })
 		}
-		result.append(contentsOf: projects.filter { !$0.isPinned && ($0.groupName ?? "").isEmpty })
 		return result
 	}
 
@@ -870,8 +848,7 @@ struct ProjectDropDelegate: DropDelegate {
 	/// through the same codepath as explicit section drops.
 	private static func sectionKey(for project: Project) -> String {
 		if project.isPinned { return "__pinned__" }
-		if let g = project.groupName, !g.isEmpty { return g }
-		return ""
+		return project.groupName.isEmpty ? "" : project.groupName
 	}
 }
 

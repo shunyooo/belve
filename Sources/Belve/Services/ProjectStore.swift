@@ -14,6 +14,11 @@ class ProjectStore: ObservableObject {
 	/// Group header names the user has collapsed. Pinned section has its own
 	/// implicit key `"__pinned__"` so it can also be folded.
 	@Published var collapsedGroups: Set<String> = []
+	/// 新規 project が自動的に所属する group 名。ユーザーがサイドバーで
+	/// rename すると変わる。UserDefaults に永続化。
+	@Published var defaultGroupName: String = "Inbox" {
+		didSet { UserDefaults.standard.set(defaultGroupName, forKey: "Belve.defaultGroupName") }
+	}
 
 	// Per-project loading state, aggregated from pane-level terminal-connection
 	// notifications. Used by the sidebar to show a "Preparing DevContainer..." hint.
@@ -28,6 +33,9 @@ class ProjectStore: ObservableObject {
 	private var fsRefreshTimers: [UUID: DispatchWorkItem] = [:]
 
 	init() {
+		if let saved = UserDefaults.standard.string(forKey: "Belve.defaultGroupName"), !saved.isEmpty {
+			defaultGroupName = saved
+		}
 		loadProjects()
 		loadCollapsedGroups()
 		observePortDetections()
@@ -285,12 +293,14 @@ class ProjectStore: ObservableObject {
 
 	// MARK: - Groups
 
-	/// Distinct non-nil, non-empty group names in first-appearance order.
+	/// Distinct non-empty group names in first-appearance order. Default group
+	/// は projects に member が無くても常に頭に出すかどうかは呼び出し側で選択。
 	var groupNames: [String] {
 		var seen = Set<String>()
 		var result: [String] = []
-		for p in projects {
-			if let g = p.groupName, !g.isEmpty, !seen.contains(g) {
+		for p in projects where !p.groupName.isEmpty {
+			let g = p.groupName
+			if !seen.contains(g) {
 				seen.insert(g)
 				result.append(g)
 			}
@@ -298,10 +308,11 @@ class ProjectStore: ObservableObject {
 		return result
 	}
 
+	/// 空文字 / nil は default group を当てる (= 必ずどこかに属する)。
 	func setProjectGroup(_ id: UUID, groupName: String?) {
 		guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
-		let trimmed = groupName?.trimmingCharacters(in: .whitespacesAndNewlines)
-		projects[index].groupName = (trimmed?.isEmpty == false) ? trimmed : nil
+		let trimmed = (groupName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+		projects[index].groupName = trimmed.isEmpty ? defaultGroupName : trimmed
 		saveProjects()
 	}
 
@@ -336,8 +347,9 @@ class ProjectStore: ObservableObject {
 		if sectionKey == "__pinned__" {
 			projects[index].isPinned = true
 		} else if sectionKey.isEmpty {
+			// 「グループから外す」操作 → default group に戻す (空にしない)。
 			projects[index].isPinned = false
-			projects[index].groupName = nil
+			projects[index].groupName = defaultGroupName
 		} else {
 			projects[index].isPinned = false
 			projects[index].groupName = sectionKey
@@ -467,7 +479,8 @@ class ProjectStore: ObservableObject {
 		let workspace: Workspace = sshHost.map { .ssh(host: $0, path: nil) } ?? .local(path: nil)
 		let project = Project(
 			name: finalName,
-			workspace: workspace
+			workspace: workspace,
+			groupName: defaultGroupName
 		)
 		projects.append(project)
 		saveProjects()
@@ -881,10 +894,21 @@ class ProjectStore: ObservableObject {
 		guard let data = try? Data(contentsOf: Self.projectsFileURL),
 			  let decoded = try? JSONDecoder().decode([Project].self, from: data),
 			  !decoded.isEmpty else {
-			projects = [Project(name: "Project 1")]
+			projects = [Project(name: "Project 1", groupName: defaultGroupName)]
 			return
 		}
-		projects = decoded
+		// Migration: groupName が空の (= legacy ungrouped) project を default
+		// group に紐付け直す。
+		var migrated = decoded
+		var didMigrate = false
+		for i in migrated.indices where migrated[i].groupName.isEmpty {
+			migrated[i].groupName = defaultGroupName
+			didMigrate = true
+		}
+		projects = migrated
+		if didMigrate {
+			saveProjects()
+		}
 		selectedProject = decoded.first
 		// `selectedProject = ...` bypasses `select()`, so manually run the same
 		// Phase B router setup here. Without this, the auto-restored initial
