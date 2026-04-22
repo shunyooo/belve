@@ -553,6 +553,10 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 			logf("accept error: %v", err)
 			break
 		}
+		// PTY 1 byte write が頻発するので NoDelay 明示。
+		if tc, ok := conn.(*net.TCPConn); ok {
+			_ = tc.SetNoDelay(true)
+		}
 
 		go func(c net.Conn) {
 			// Read session handshake (name + \0 + cols:2 + rows:2)
@@ -943,6 +947,11 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 		if err != nil {
 			logf("tcp connect failed: %v (attempt %d)", err, attempt+1)
 			continue
+		}
+		// PTY は 1 byte 単位の write が多いので Nagle を明示的に切る
+		// (Go default は true だが念のため)。
+		if tc, ok := conn.(*net.TCPConn); ok {
+			_ = tc.SetNoDelay(true)
 		}
 
 		// Phase B router preamble. routeProjShort が指定されてれば、

@@ -46,10 +46,15 @@ type projInfo struct {
 }
 
 // 修復中の CID を追跡。同じ container への重複修復を避ける。
+// + 直近 repair 完了時刻も覚えておく — 連続で来た repair 要求を thrash させない
+// (16 pane が同時 reconnect すると pane ごとに repair 発火 → kill ループ)。
 var (
 	repairMu         sync.Mutex
 	repairInProgress = map[string]bool{}
+	repairLastDone   = map[string]time.Time{}
 )
+
+const repairCooldown = 8 * time.Second
 
 func runRouter(listenAddr string) {
 	listener, err := net.Listen("tcp", listenAddr)
@@ -111,6 +116,15 @@ func handleRouterConn(client net.Conn) {
 	}
 	defer upstream.Close()
 
+	// PTY は 1 byte ずつ流れる事が多い (キーストローク)。Nagle が効くと
+	// パケット集約で ~40-200ms の遅延が乗るので両方向で TCP_NODELAY を有効化。
+	if tc, ok := client.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
+	if tc, ok := upstream.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
+
 	// 双方向 piping。bufio に残ってる byte を先に upstream へ流す。
 	// (読んだ preamble 行はもう消費済みなので、buffer 残り = preamble 後ろの
 	// 本来のプロトコルバイト)
@@ -166,13 +180,12 @@ func dialWithHealing(target string, pre routePreamble) (net.Conn, error) {
 }
 
 // container 内に新 binary を入れ直して broker を再起動する。
-// 同じ CID への並行呼び出しは block されるが、最初の呼び出し完了後は
-// すぐ抜けるので再試行 retry が走る。
+// - 同じ CID への並行呼び出しは block (in-flight dedup)
+// - 直近 repairCooldown 以内に成功してれば skip (connection 嵐対策)
 func repairContainerBroker(info *projInfo) error {
 	repairMu.Lock()
 	if repairInProgress[info.CID] {
 		repairMu.Unlock()
-		// 既に他 goroutine が修復中。待つ。
 		for {
 			time.Sleep(100 * time.Millisecond)
 			repairMu.Lock()
@@ -183,11 +196,18 @@ func repairContainerBroker(info *projInfo) error {
 			}
 		}
 	}
+	if last, ok := repairLastDone[info.CID]; ok && time.Since(last) < repairCooldown {
+		// 直近で repair 完了済 — broker は最初の repair で復旧済のはず。
+		// ここでまた kill+spawn すると thrash する。dial poll に任せる。
+		repairMu.Unlock()
+		return nil
+	}
 	repairInProgress[info.CID] = true
 	repairMu.Unlock()
 	defer func() {
 		repairMu.Lock()
 		delete(repairInProgress, info.CID)
+		repairLastDone[info.CID] = time.Now()
 		repairMu.Unlock()
 	}()
 
