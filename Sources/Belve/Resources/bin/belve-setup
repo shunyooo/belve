@@ -88,16 +88,13 @@ ensure_vm_broker() {
         || netstat -tln 2>/dev/null | grep -q '127.0.0.1:19223'; then
         running=1
     fi
-    local old_md5=""
-    [ -f "$stamp" ] && old_md5=$(cat "$stamp")
-    if [ "$running" = "1" ] && [ "$current_md5" = "$old_md5" ]; then
+    # 動いてれば触らない (md5 不一致でも生き残った broker は kill しない)。
+    # 新 binary は次回 broker 再起動時に反映。
+    if [ "$running" = "1" ]; then
+        echo "$current_md5" > "$stamp"
         return 0
     fi
-    if [ "$running" = "1" ]; then
-        pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19223' 2>/dev/null || true
-        sleep 0.5
-    fi
-    # Also clear legacy 19222 broker if it's still around from older deploys.
+    # Legacy 19222 broker 残骸の掃除のみ (新規 19223 と被ったら困るので)。
     pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19222' 2>/dev/null || true
     nohup "$HOME/.belve/bin/belve-persist" \
         -tcplisten 127.0.0.1:19223 \
@@ -131,22 +128,23 @@ ensure_container_broker() {
         fi
     done
 
-    # belve-persist: compare hash, kill old broker + update if changed.
-    # Use `|| true` so pipefail+set -e don't abort when the remote file is missing.
+    # belve-persist: 新 binary を container に置く (= 次回起動時に効く)。
+    # ただし「broker が現在動いてれば kill しない」 — 以前は md5 不一致なら
+    # 必ず kill+respawn してたが、開発で頻繁にビルドすると broker churn の
+    # 元 (= 全 PTY 切断連鎖) になる。新 binary は次回 broker 再起動時 (= 手動 or
+    # router self-heal) に反映される。
     local local_hash=""
     local remote_hash=""
     local_hash=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
     remote_hash=$(docker exec "$cid" md5sum /root/.belve/bin/belve-persist 2>/dev/null | awk '{print $1}' || true)
     if [ "$local_hash" != "$remote_hash" ]; then
-        docker exec "$cid" pkill -9 -f 'belve-persist.*tcplisten' 2>/dev/null || true
-        sleep 0.5
         if ! docker cp "$HOME/.belve/bin/belve-persist" "$cid:/root/.belve/bin/belve-persist" 2>&1; then
             echo "[belve-setup] ERROR: docker cp belve-persist failed" >&2
         fi
     fi
     docker exec "$cid" chmod +x /root/.belve/bin/* /root/.belve/session-bootstrap.sh 2>/dev/null || true
 
-    # Start broker if not already listening
+    # broker が listen してたら触らない (新 binary でも生きてれば再起動しない)
     if docker exec "$cid" sh -c 'ss -tln 2>/dev/null | grep -q :19222 || netstat -tln 2>/dev/null | grep -q :19222' 2>/dev/null; then
         return 0
     fi
