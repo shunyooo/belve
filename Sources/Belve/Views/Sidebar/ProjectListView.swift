@@ -833,7 +833,14 @@ struct ProjectDropDelegate: DropDelegate {
 		reset(); return true
 	}
 
-	func dropExited(info: DropInfo) {}
+	func dropExited(info: DropInfo) {
+		// Drag が cancel された / 別 delegate に移った時に insert line が
+		// 残らないよう、自分の index が表示中なら消す。別 row への hover で
+		// 上書きが先に走るケースは dropEntered 側で正しく更新される。
+		if dropTargetIndex == targetIndex {
+			withAnimation(.easeOut(duration: 0.15)) { dropTargetIndex = nil }
+		}
+	}
 	func validateDrop(info: DropInfo) -> Bool { draggingProjectId != nil }
 
 	private func reset() {
