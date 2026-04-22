@@ -38,11 +38,29 @@ func main() {
 	tcpListen := flag.String("tcplisten", "", "TCP listen address for broker mode (e.g. 0.0.0.0:19222)")
 	tcpBackend := flag.String("tcpbackend", "", "TCP backend address (e.g. 172.17.0.2:19222)")
 	sessionName := flag.String("session", "", "session name for TCP multiplexing")
+	// 接続直後に router に投げる JSON preamble の projShort。指定があれば
+	// MSG_INIT の前に `{"projShort":"X","kind":"pty"}\n` を送る。router が
+	// 居る環境 (Phase B 以降) で必須。空なら preamble 送らない (legacy /
+	// 直接 broker に繋ぐケース、後方互換のため残す)。
+	routeProjShort := flag.String("route", "", "router preamble projShort (Phase B router mode)")
 	// Control RPC port (separate from PTY broker). Mac-side providers use this
 	// to do filesystem / git ops without spawning a fresh `ssh host cmd` per
 	// call (= eliminates 5s polling flicker / latency).
 	ctrlListen := flag.String("controllisten", "", "TCP listen address for control RPC (e.g. 0.0.0.0:19224)")
+	// Router mode: VM 上の単一エンドポイントとして PTY + control 両方を受け、
+	// preamble に従って container broker / VM-local broker に proxy する。
+	// この 1 ポートだけ Mac から SSH forward すれば全 project を捌ける。
+	routerListen := flag.String("router", "", "TCP listen address for router mode (e.g. 0.0.0.0:19200)")
 	flag.Parse()
+
+	// Router mode is foreground if it's the only role.
+	if *routerListen != "" {
+		if *tcpListen == "" && *tcpBackend == "" && *socketPath == "" && *ctrlListen == "" {
+			runRouter(*routerListen)
+			return
+		}
+		go runRouter(*routerListen)
+	}
 
 	// Control listener runs as a background goroutine alongside whatever main
 	// mode (broker / tcpbackend / classic) is active. Crashes are isolated
@@ -73,7 +91,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "tcpbackend requires -socket and -session")
 			os.Exit(1)
 		}
-		runMasterTCPBackend(*socketPath, *tcpBackend, *sessionName, uint16(*initCols), uint16(*initRows))
+		runMasterTCPBackend(*socketPath, *tcpBackend, *sessionName, *routeProjShort, uint16(*initCols), uint16(*initRows))
 		return
 	}
 
@@ -808,7 +826,7 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 
 // runMasterTCPBackend runs a host persist daemon that bridges Unix socket clients
 // to a TCP broker in the container. No child process or PTY needed on the host side.
-func runMasterTCPBackend(socketPath, tcpAddr, sessName string, cols, rows uint16) {
+func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, cols, rows uint16) {
 	// Always kill old daemons for this socket, then take over.
 	killOldDaemons(socketPath)
 	os.Remove(socketPath)
@@ -925,6 +943,19 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName string, cols, rows uint16
 		if err != nil {
 			logf("tcp connect failed: %v (attempt %d)", err, attempt+1)
 			continue
+		}
+
+		// Phase B router preamble. routeProjShort が指定されてれば、
+		// MSG_INIT より前に NDJSON 1 行で routing 情報を送る。
+		// router 未経由 (= 直接 broker に繋ぐレガシー経路) の時は空文字、
+		// この場合 preamble は送らない。
+		if routeProjShort != "" {
+			pre := fmt.Sprintf("{\"projShort\":%q,\"kind\":\"pty\"}\n", routeProjShort)
+			if _, err := conn.Write([]byte(pre)); err != nil {
+				logf("router preamble write failed: %v", err)
+				conn.Close()
+				continue
+			}
 		}
 
 		// Send session handshake:
