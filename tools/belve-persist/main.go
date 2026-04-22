@@ -51,7 +51,16 @@ func main() {
 	// preamble に従って container broker / VM-local broker に proxy する。
 	// この 1 ポートだけ Mac から SSH forward すれば全 project を捌ける。
 	routerListen := flag.String("router", "", "TCP listen address for router mode (e.g. 0.0.0.0:19200)")
+	// Mac master mode: Belve.app から Unix socket で IPC を受け、project setup /
+	// tunnel / session を一元管理する。詳細は docs/notes/2026-04-23-mac-master-design.md。
+	macMaster := flag.String("mac-master", "", "Unix socket path for Mac master mode (e.g. /tmp/belve-master.sock)")
 	flag.Parse()
+
+	// Mac master mode is foreground (= 単一責務、別 mode と組まない)。
+	if *macMaster != "" {
+		runMacMaster(*macMaster)
+		return
+	}
 
 	// Router mode is foreground if it's the only role.
 	if *routerListen != "" {

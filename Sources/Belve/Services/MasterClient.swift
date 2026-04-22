@@ -1,0 +1,340 @@
+import Foundation
+import Network
+
+/// Mac master daemon (`belve-persist -mac-master`) との IPC client。
+/// Belve.app から Unix socket (NDJSON) で master に op を投げる。
+///
+/// Phase 1: ping / version op だけ。Phase 2 以降で ensureSetup / openSession 等を追加。
+/// 詳細設計: docs/notes/2026-04-23-mac-master-design.md
+///
+/// Lifecycle:
+///   - 起動時に `MasterClient.shared.bootstrap()` を呼ぶ
+///   - socket が応答すれば既存の master に attach
+///   - 応答なければ master を spawn してから attach
+///   - master の死活は「次の send で connection lost → 再 spawn → 再 attach」で復活
+final class MasterClient: @unchecked Sendable {
+	static let shared = MasterClient()
+
+	/// Master が listen する socket の絶対パス。固定 (= 多重起動防止 + 再接続容易)。
+	static let socketPath = "/tmp/belve-master.sock"
+
+	/// MasterClient が要求する master version。`bootstrap` 時の version op で
+	/// これと違ったら master を kill → spawn し直して新版に attach する
+	/// (= broker version negotiation の Mac 版)。
+	static let expectedVersion = "1.0"
+
+	private let queue = DispatchQueue(label: "belve.master", qos: .userInitiated)
+	private var connection: NWConnection?
+	private var pending: [String: CheckedContinuation<MasterResponse, Error>] = [:]
+	private var nextID: Int = 0
+	private var readBuffer = Data()
+	private let stateLock = NSLock()
+	private var connectionReady = false
+	/// spawn した master の Process を保持。Foundation の Process は ARC で
+	/// 死ぬとは限らないが (posix_spawn で detach 済み)、参照を維持して `terminate()`
+	/// 等を後から呼べるようにする保険。実際には spawn 後 Belve.app が落ちても
+	/// master は生き続ける設計。
+	private var spawnedMasterProcess: Process?
+
+	private init() {}
+
+	// MARK: - Bootstrap
+
+	/// 起動時に呼ぶ。Master が居なければ spawn し、ping で疎通確認、version
+	/// 確認まで終えて返る。失敗したら throw。
+	@discardableResult
+	func bootstrap() async throws -> String {
+		NSLog("[Belve][master] bootstrap step=probe-existing")
+		// 1. 既存 socket に ping 試行。socket file が無ければ NWConnection が
+		//    waiting state で永遠に待つ可能性があるので、まず file 存在チェック。
+		if FileManager.default.fileExists(atPath: Self.socketPath) {
+			if let version = try? await fetchVersionWithTimeout(seconds: 1.5) {
+				if version == Self.expectedVersion {
+					NSLog("[Belve][master] attached to existing master version=%@", version)
+					return version
+				}
+				NSLog("[Belve][master] version mismatch existing=%@ expected=%@ → restart", version, Self.expectedVersion)
+				killExistingMaster()
+			} else {
+				NSLog("[Belve][master] existing socket but no response → kill")
+				killExistingMaster()
+			}
+		} else {
+			NSLog("[Belve][master] no existing socket")
+		}
+		// 2. spawn → 起動待ち → version 確認
+		NSLog("[Belve][master] bootstrap step=spawn")
+		try spawnMaster()
+		NSLog("[Belve][master] bootstrap step=waitUntilReady")
+		let version = try await waitUntilReady(maxRetries: 25, intervalSeconds: 0.2)
+		guard version == Self.expectedVersion else {
+			throw MasterError.versionMismatch(got: version, want: Self.expectedVersion)
+		}
+		NSLog("[Belve][master] spawned master version=%@", version)
+		return version
+	}
+
+	// MARK: - Public ops
+
+	func ping() async throws -> Bool {
+		let res = try await send(op: "ping", params: [:])
+		return res.ok
+	}
+
+	func version() async throws -> String {
+		let res = try await send(op: "version", params: [:])
+		guard let v = res.result?["version"] as? String else {
+			throw MasterError.malformedResponse("version missing")
+		}
+		return v
+	}
+
+	// MARK: - Send
+
+	/// Send a request, await response. Reconnects + retries once on the first
+	/// transient failure (master died / restarted) so callers don't have to.
+	func send(op: String, params: [String: Any]) async throws -> MasterResponse {
+		do {
+			return try await sendOnce(op: op, params: params)
+		} catch MasterError.connectionLost {
+			NSLog("[Belve][master] reconnect after lost connection")
+			disconnect()
+			return try await sendOnce(op: op, params: params)
+		}
+	}
+
+	private func sendOnce(op: String, params: [String: Any]) async throws -> MasterResponse {
+		try await ensureConnected()
+		let id = stateLock.withLock { () -> String in
+			nextID += 1
+			return "\(nextID)"
+		}
+		var msg: [String: Any] = ["id": id, "op": op]
+		if !params.isEmpty { msg["params"] = params }
+		let line = try Self.encodeLine(msg)
+
+		return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<MasterResponse, Error>) in
+			stateLock.withLock { pending[id] = cont }
+			guard let conn = connection else {
+				stateLock.withLock { _ = pending.removeValue(forKey: id) }
+				cont.resume(throwing: MasterError.connectionLost)
+				return
+			}
+			conn.send(content: line, completion: .contentProcessed { [weak self] err in
+				if let err {
+					self?.stateLock.withLock { _ = self?.pending.removeValue(forKey: id) }
+					cont.resume(throwing: MasterError.sendFailed(err.localizedDescription))
+				}
+			})
+		}
+	}
+
+	// MARK: - Connection
+
+	private func ensureConnected() async throws {
+		if stateLock.withLock({ connectionReady }) { return }
+		try await connect()
+	}
+
+	private func connect() async throws {
+		try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+			let endpoint = NWEndpoint.unix(path: Self.socketPath)
+			let params = NWParameters.tcp  // unix socket は SOCK_STREAM 相当
+			let conn = NWConnection(to: endpoint, using: params)
+			let resumed = ResumedFlag()
+			conn.stateUpdateHandler = { [weak self] state in
+				guard let self else { return }
+				switch state {
+				case .ready:
+					self.stateLock.withLock { self.connectionReady = true }
+					self.startReader(on: conn)
+					if resumed.tryResume() { cont.resume() }
+				case .failed(let err):
+					self.stateLock.withLock { self.connectionReady = false }
+					if resumed.tryResume() { cont.resume(throwing: MasterError.connectFailed(err.localizedDescription)) }
+				case .cancelled:
+					self.stateLock.withLock { self.connectionReady = false }
+				default:
+					break
+				}
+			}
+			self.connection = conn
+			conn.start(queue: self.queue)
+		}
+	}
+
+	/// Continuation の二重 resume を防ぐ atomic flag (NWConnection の
+	/// stateUpdateHandler が複数回呼ばれる可能性に対する保険)。
+	private final class ResumedFlag: @unchecked Sendable {
+		private let lock = NSLock()
+		private var done = false
+		func tryResume() -> Bool {
+			lock.lock(); defer { lock.unlock() }
+			if done { return false }
+			done = true
+			return true
+		}
+	}
+
+	private func disconnect() {
+		stateLock.withLock { connectionReady = false }
+		connection?.cancel()
+		connection = nil
+		let conts = stateLock.withLock { () -> [CheckedContinuation<MasterResponse, Error>] in
+			let snapshot = Array(pending.values)
+			pending.removeAll()
+			return snapshot
+		}
+		for c in conts { c.resume(throwing: MasterError.connectionLost) }
+		readBuffer = Data()
+	}
+
+	private func startReader(on conn: NWConnection) {
+		conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, err in
+			guard let self else { return }
+			if let data, !data.isEmpty {
+				self.readBuffer.append(data)
+				self.processBuffer()
+			}
+			if let err {
+				NSLog("[Belve][master] reader error: %@", err.localizedDescription)
+				self.disconnect()
+				return
+			}
+			if isComplete {
+				self.disconnect()
+				return
+			}
+			self.startReader(on: conn)
+		}
+	}
+
+	private func processBuffer() {
+		while let nlIndex = readBuffer.firstIndex(of: 0x0A) {
+			let line = readBuffer.prefix(upTo: nlIndex)
+			readBuffer.removeSubrange(0...nlIndex)
+			guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+			let id = obj["id"] as? String ?? ""
+			let ok = obj["ok"] as? Bool ?? false
+			let result = obj["result"] as? [String: Any]
+			let errStr = obj["error"] as? String
+			let resp = MasterResponse(id: id, ok: ok, result: result, error: errStr)
+			let cont = stateLock.withLock { pending.removeValue(forKey: id) }
+			cont?.resume(returning: resp)
+		}
+	}
+
+	// MARK: - Spawn / version probe
+
+	private func fetchVersionWithTimeout(seconds: Double) async throws -> String {
+		try await withThrowingTaskGroup(of: String.self) { group in
+			group.addTask { try await self.version() }
+			group.addTask {
+				try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+				throw MasterError.timeout
+			}
+			let result = try await group.next()!
+			group.cancelAll()
+			return result
+		}
+	}
+
+	private func waitUntilReady(maxRetries: Int, intervalSeconds: Double) async throws -> String {
+		for i in 0..<maxRetries {
+			if FileManager.default.fileExists(atPath: Self.socketPath) {
+				if let v = try? await fetchVersionWithTimeout(seconds: 0.5) {
+					NSLog("[Belve][master] waitUntilReady ready after attempt=%d", i + 1)
+					return v
+				}
+			}
+			try? await Task.sleep(nanoseconds: UInt64(intervalSeconds * 1_000_000_000))
+		}
+		throw MasterError.spawnTimeout
+	}
+
+	private func spawnMaster() throws {
+		guard let bin = locateBinary() else {
+			throw MasterError.binaryMissing
+		}
+		// stderr をログファイルに転送 (デバッグ用)。stdout/stdin は捨てる。
+		let logURL = URL(fileURLWithPath: "/tmp/belve-master.log")
+		FileManager.default.createFile(atPath: logURL.path, contents: nil)
+		let logHandle = try FileHandle(forWritingTo: logURL)
+		let proc = Process()
+		proc.executableURL = URL(fileURLWithPath: bin)
+		proc.arguments = ["-mac-master", Self.socketPath]
+		proc.standardInput = FileHandle.nullDevice
+		proc.standardOutput = logHandle
+		proc.standardError = logHandle
+		try proc.run()
+		NSLog("[Belve][master] spawned pid=%d bin=%@", proc.processIdentifier, bin)
+		stateLock.withLock { self.spawnedMasterProcess = proc }
+	}
+
+	private func killExistingMaster() {
+		// /tmp/belve-master.sock を listen している既存プロセスを見つけて kill。
+		// fuser/lsof を使ってもいいが、socket file を消すだけだと bind されてる
+		// プロセスは生き続けるので pgrep でパターンマッチして TERM を送る。
+		let proc = Process()
+		proc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+		proc.arguments = ["-f", "belve-persist.*-mac-master"]
+		proc.standardOutput = FileHandle.nullDevice
+		proc.standardError = FileHandle.nullDevice
+		try? proc.run()
+		proc.waitUntilExit()
+		// socket file も掃除 (master は起動時に Remove するが念の為)。
+		try? FileManager.default.removeItem(atPath: Self.socketPath)
+	}
+
+	private func locateBinary() -> String? {
+		// アプリバンドル内の belve-persist (Darwin arm64)。
+		if let bundle = Bundle.main.resourcePath {
+			let p = (bundle as NSString).appendingPathComponent("bin/belve-persist-darwin-arm64")
+			if FileManager.default.fileExists(atPath: p) { return p }
+		}
+		// 開発時 fallback: SPM build 直叩きの場合は Resources が入らないので、
+		// プロジェクトルートからの相対パスを探す。本番では走らない経路。
+		let dev = "/Users/s07309/src/dock-code/Belve.app/Contents/Resources/bin/belve-persist-darwin-arm64"
+		if FileManager.default.fileExists(atPath: dev) { return dev }
+		return nil
+	}
+
+	// MARK: - Encode helper
+
+	private static func encodeLine(_ msg: [String: Any]) throws -> Data {
+		var data = try JSONSerialization.data(withJSONObject: msg)
+		data.append(0x0A)  // '\n'
+		return data
+	}
+}
+
+struct MasterResponse {
+	let id: String
+	let ok: Bool
+	let result: [String: Any]?
+	let error: String?
+}
+
+enum MasterError: LocalizedError {
+	case binaryMissing
+	case spawnTimeout
+	case connectFailed(String)
+	case connectionLost
+	case sendFailed(String)
+	case versionMismatch(got: String, want: String)
+	case malformedResponse(String)
+	case timeout
+
+	var errorDescription: String? {
+		switch self {
+		case .binaryMissing: return "belve-persist binary not found in app bundle"
+		case .spawnTimeout: return "master did not become ready within 5s"
+		case .connectFailed(let m): return "connect to master failed: \(m)"
+		case .connectionLost: return "master connection lost"
+		case .sendFailed(let m): return "send to master failed: \(m)"
+		case .versionMismatch(let got, let want): return "master version mismatch got=\(got) want=\(want)"
+		case .malformedResponse(let m): return "malformed master response: \(m)"
+		case .timeout: return "master request timed out"
+		}
+	}
+}

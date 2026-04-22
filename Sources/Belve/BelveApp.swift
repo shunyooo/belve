@@ -143,6 +143,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Stale port forwards from a previous run point at dead control sockets; drop them.
 		SSHTunnelManager.shared.teardownAll()
 
+		// Phase 1 (mac master daemon): bootstrap before anything else that might
+		// want to talk to it. Launches `belve-persist -mac-master` if not already
+		// running, attaches via /tmp/belve-master.sock, version-handshakes.
+		// 失敗しても今は致命的ではない (まだ master を実際に使ってる経路が無い)
+		// ので NSLog で握り潰し、existing path で継続する。Phase 2+ で必須化。
+		NSLog("[Belve][master] dispatching bootstrap task")
+		Task.detached(priority: .userInitiated) {
+			NSLog("[Belve][master] bootstrap task started")
+			do {
+				let v = try await MasterClient.shared.bootstrap()
+				NSLog("[Belve][master] bootstrap ok version=%@", v)
+			} catch {
+				NSLog("[Belve][master] bootstrap failed: %@", error.localizedDescription)
+			}
+		}
+
 		// teardownAll が終わった後に全 remote project の RPC client を eager 登録。
 		// init で spawn すると teardownAll と race して全部失敗する。
 		projectStore.setupAllRemoteRPC()
