@@ -416,7 +416,8 @@ struct ProjectListView: View {
 					}
 				}
 				.padding(.leading, 16)
-				.padding(.trailing, 4)
+				// 右端は ProjectRow の背景と揃える (= 0)。trailing に余白を
+				// 入れると session 行の hover/focus 背景だけ右にずれて崩れて見える。
 				.padding(.bottom, 4)
 			}
 		}
