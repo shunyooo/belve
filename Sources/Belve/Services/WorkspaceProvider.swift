@@ -129,7 +129,16 @@ private func executeLocal(_ command: String) -> CommandResult? {
 	return CommandResult(output: output, status: process.terminationStatus)
 }
 
+/// 同時 `ssh host cmd` 実行数を絞るための semaphore。RPC が一時的に死んだ時
+/// (router 経由の container :19224 が旧 broker で listen してない等) に
+/// provider fallback が殺到して SSH MaxSessions を食い尽くすのを防ぐ。
+/// 3 並列まで。残りは順番待ち。RPC 経路に乗る steady state ではほぼ通らない。
+private let executeSSHSemaphore = DispatchSemaphore(value: 3)
+
 private func executeSSH(host: String, _ command: String) -> CommandResult? {
+	executeSSHSemaphore.wait()
+	defer { executeSSHSemaphore.signal() }
+
 	let process = Process()
 	let pipe = Pipe()
 	process.standardOutput = pipe
