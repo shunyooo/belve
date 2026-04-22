@@ -24,7 +24,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 type ctrlReq struct {
@@ -34,6 +39,7 @@ type ctrlReq struct {
 	Path2    string `json:"path2,omitempty"`    // for rename (dst)
 	Data     string `json:"data,omitempty"`     // for write
 	Encoding string `json:"encoding,omitempty"` // utf8 (default) or base64
+	WatchID  string `json:"watchId,omitempty"`  // for unwatch
 }
 
 type ctrlRes struct {
@@ -55,6 +61,38 @@ type gitFileStatus struct {
 	File   string `json:"file"`
 }
 
+// 接続ごとの状態。writer mutex (push event と response の同時書きを直列化) と
+// アクティブな watcher を保持。接続が切れたら watcher は全部 close。
+type connState struct {
+	conn      net.Conn
+	enc       *json.Encoder
+	encMu     sync.Mutex
+	watches   map[string]*fsnotify.Watcher
+	watchesMu sync.Mutex
+	closed    atomic.Bool
+}
+
+func (cs *connState) write(v interface{}) error {
+	if cs.closed.Load() {
+		return io.ErrClosedPipe
+	}
+	cs.encMu.Lock()
+	defer cs.encMu.Unlock()
+	return cs.enc.Encode(v)
+}
+
+func (cs *connState) shutdown() {
+	cs.closed.Store(true)
+	cs.watchesMu.Lock()
+	for _, w := range cs.watches {
+		_ = w.Close()
+	}
+	cs.watches = nil
+	cs.watchesMu.Unlock()
+}
+
+var nextWatchID atomic.Int64
+
 func runControlServer(listenAddr string) {
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -69,23 +107,25 @@ func runControlServer(listenAddr string) {
 			continue
 		}
 		go func(c net.Conn) {
+			cs := &connState{
+				conn:    c,
+				enc:     json.NewEncoder(c),
+				watches: map[string]*fsnotify.Watcher{},
+			}
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(os.Stderr, "[belve-persist] control conn panic: %v\n", r)
 				}
+				cs.shutdown()
 				c.Close()
 			}()
-			handleControlConn(c)
+			handleControlConn(cs)
 		}(conn)
 	}
 }
 
-func handleControlConn(c net.Conn) {
-	reader := bufio.NewReader(c)
-	encoder := json.NewEncoder(c)
-	// 同期処理 — 1 接続 = 1 in-flight。並行性が必要なら client 側で接続を増やす。
-	// 並列にすると EOF 後に走る handler が close 済み conn に書こうとして
-	// silently 落ちるバグ + ordering 保証が無いので reply の順序が乱れる。
+func handleControlConn(cs *connState) {
+	reader := bufio.NewReader(cs.conn)
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -96,11 +136,11 @@ func handleControlConn(c net.Conn) {
 		}
 		var req ctrlReq
 		if err := json.Unmarshal(line, &req); err != nil {
-			_ = encoder.Encode(ctrlRes{OK: false, Error: fmt.Sprintf("bad json: %v", err)})
+			_ = cs.write(ctrlRes{OK: false, Error: fmt.Sprintf("bad json: %v", err)})
 			continue
 		}
-		res := safeDispatch(req)
-		if err := encoder.Encode(res); err != nil {
+		res := safeDispatch(cs, req)
+		if err := cs.write(res); err != nil {
 			fmt.Fprintf(os.Stderr, "[belve-persist] control write: %v\n", err)
 			return
 		}
@@ -109,16 +149,16 @@ func handleControlConn(c net.Conn) {
 
 // dispatchOp を panic から守るラッパ。Handler が panic しても接続だけが
 // fail せずエラー response を返してこの接続は生き残る。
-func safeDispatch(req ctrlReq) (res ctrlRes) {
+func safeDispatch(cs *connState, req ctrlReq) (res ctrlRes) {
 	defer func() {
 		if r := recover(); r != nil {
 			res = ctrlRes{ID: req.ID, OK: false, Error: fmt.Sprintf("handler panic: %v", r)}
 		}
 	}()
-	return dispatchOp(req)
+	return dispatchOp(cs, req)
 }
 
-func dispatchOp(req ctrlReq) ctrlRes {
+func dispatchOp(cs *connState, req ctrlReq) ctrlRes {
 	switch req.Op {
 	case "ping":
 		return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"pong": "ok"}}
@@ -140,6 +180,10 @@ func dispatchOp(req ctrlReq) ctrlRes {
 		return opGitBranch(req)
 	case "gitStatus":
 		return opGitStatus(req)
+	case "watch":
+		return opWatch(cs, req)
+	case "unwatch":
+		return opUnwatch(cs, req)
 	default:
 		return ctrlRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
@@ -308,6 +352,100 @@ func opGitStatus(req ctrlReq) ctrlRes {
 		})
 	}
 	return ctrlRes{ID: req.ID, OK: true, Result: map[string]interface{}{"files": files}}
+}
+
+// MARK: - Watch
+
+// fsevent push message — sent over the same NDJSON stream, distinguished
+// from req/res by lack of `id` field (and presence of `type`).
+type fsEvent struct {
+	Type    string `json:"type"`    // "fsevent"
+	WatchID string `json:"watchId"` // matches the id returned by `watch`
+	Path    string `json:"path"`    // absolute path of the changed entry
+	Kind    string `json:"kind"`    // create | modify | delete | rename | chmod
+}
+
+func opWatch(cs *connState, req ctrlReq) ctrlRes {
+	if req.Path == "" {
+		return errRes(req.ID, "path required")
+	}
+	p := expandHome(req.Path)
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return errRes(req.ID, "fsnotify init: "+err.Error())
+	}
+	if err := w.Add(p); err != nil {
+		_ = w.Close()
+		return errRes(req.ID, err.Error())
+	}
+	id := "w" + strconv.FormatInt(nextWatchID.Add(1), 10)
+	cs.watchesMu.Lock()
+	if cs.watches == nil {
+		cs.watches = map[string]*fsnotify.Watcher{}
+	}
+	cs.watches[id] = w
+	cs.watchesMu.Unlock()
+
+	// Pump events → push messages on the same connection. Goroutine exits
+	// when the watcher is closed (either via `unwatch` or connection shutdown).
+	go func(watchID string, watcher *fsnotify.Watcher) {
+		for {
+			select {
+			case ev, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				kind := mapFsKind(ev.Op)
+				if kind == "" {
+					continue
+				}
+				_ = cs.write(fsEvent{
+					Type:    "fsevent",
+					WatchID: watchID,
+					Path:    ev.Name,
+					Kind:    kind,
+				})
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				fmt.Fprintf(os.Stderr, "[belve-persist] watch err id=%s: %v\n", watchID, err)
+			}
+		}
+	}(id, w)
+
+	return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"watchId": id}}
+}
+
+func opUnwatch(cs *connState, req ctrlReq) ctrlRes {
+	if req.WatchID == "" {
+		return errRes(req.ID, "watchId required")
+	}
+	cs.watchesMu.Lock()
+	w := cs.watches[req.WatchID]
+	delete(cs.watches, req.WatchID)
+	cs.watchesMu.Unlock()
+	if w == nil {
+		return errRes(req.ID, "no such watch")
+	}
+	_ = w.Close()
+	return ctrlRes{ID: req.ID, OK: true}
+}
+
+// fsnotify Op → external "kind" string. Empty = ignore (e.g., chmod-only).
+func mapFsKind(op fsnotify.Op) string {
+	switch {
+	case op&fsnotify.Create != 0:
+		return "create"
+	case op&fsnotify.Write != 0:
+		return "modify"
+	case op&fsnotify.Remove != 0:
+		return "delete"
+	case op&fsnotify.Rename != 0:
+		return "rename"
+	default:
+		return "" // chmod is noisy & not useful for the file tree
+	}
 }
 
 // MARK: - Helpers
