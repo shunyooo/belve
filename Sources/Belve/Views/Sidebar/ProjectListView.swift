@@ -23,6 +23,11 @@ struct ProjectListView: View {
 	/// for a given project. Used to filter the session list to panes that still
 	/// exist in the UI.
 	var paneIdsForProject: ((UUID) -> Set<String>)?
+	/// 親 (= MainWindow) から `projectStore.projectLoadingStatus[id]` を
+	/// 取得する。ProjectListView 自身が projectStore を持つと、git 等の
+	/// 無関係な @Published 変更で全 row が再 render → 選択 animation
+	/// jank の元になるため、必要な値だけ closure で渡してもらう。
+	var loadingStatusFor: ((UUID) -> String?)? = nil
 
 	private static let pinnedKey = "__pinned__"
 
@@ -140,8 +145,11 @@ struct ProjectListView: View {
 				.padding(.top, 4)
 			}
 		}
-		.animation(.easeOut(duration: 0.12), value: selectedProject != nil)
-		.animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18), value: selectedProject)
+		// 注意: ScrollView 全体に .animation(value:) を当てると 12+ row
+		// の全 modifier が implicit animation 対象になる可能性がある。
+		// 選択 highlight の animation は ProjectRow 内で背景表示に
+		// .transition なり .animation で局所適用したい。
+		// → main area との同期感優先で sidebar 切替は即時化。
 		.onReceive(NotificationCenter.default.publisher(for: .belvePaneClosed)) { notif in
 			if let paneId = notif.userInfo?["paneId"] as? String {
 				notificationStore.archiveSessionsForPane(paneId)
@@ -362,7 +370,8 @@ struct ProjectListView: View {
 				isSelected: selectedProject == project,
 				isMultiSelected: selectedProjectIds.contains(project.id) && selectedProjectIds.count > 1,
 				agentState: notificationStore.agentStatus[project.id],
-				selectionNamespace: selectionNamespace
+				selectionNamespace: selectionNamespace,
+				loadingStatus: loadingStatusFor?(project.id)
 			)
 			.opacity(draggingProjectId == project.id ? 0.4 : 1.0)
 			.overlay(
@@ -1267,7 +1276,10 @@ struct ProjectRow: View {
 	var isMultiSelected: Bool = false
 	var agentState: AgentState?
 	var selectionNamespace: Namespace.ID?
-	@EnvironmentObject var projectStore: ProjectStore
+	/// 親から明示的に渡してもらう。`@EnvironmentObject projectStore` を
+	/// 観察してると git 更新など無関係な @Published 変更でも全 row が
+	/// 再 render されて、選択切替の animation がカクつく原因になる。
+	var loadingStatus: String? = nil
 	@State private var isHovering = false
 
 	private var subtitle: String {
@@ -1277,10 +1289,6 @@ struct ProjectRow: View {
 			return "~/\((path as NSString).lastPathComponent)"
 		}
 		return ""
-	}
-
-	private var loadingStatus: String? {
-		projectStore.projectLoadingStatus[project.id]
 	}
 
 	var body: some View {
@@ -1329,30 +1337,20 @@ struct ProjectRow: View {
 					RoundedRectangle(cornerRadius: Theme.radiusSm)
 						.fill(Theme.accent.opacity(0.18))
 				}
+				// 選択 highlight は animation 無しの即時切替に戻した。
+				// 経緯は `docs/notes/2026-04-22-sidebar-animation.md` 参照。
 				if isSelected {
-					if let ns = selectionNamespace {
-						RoundedRectangle(cornerRadius: Theme.radiusSm)
-							.fill(Theme.surfaceActive)
-							.matchedGeometryEffect(id: "selectionBackground", in: ns)
-					} else {
-						RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.surfaceActive)
-					}
+					RoundedRectangle(cornerRadius: Theme.radiusSm)
+						.fill(Theme.surfaceActive)
 				}
 			}
 		)
 		.overlay(
 			HStack {
 				if isSelected {
-					if let ns = selectionNamespace {
-						RoundedRectangle(cornerRadius: 1)
-							.fill(Theme.accent)
-							.frame(width: 2, height: 16)
-							.matchedGeometryEffect(id: "selectionBar", in: ns)
-					} else {
-						RoundedRectangle(cornerRadius: 1)
-							.fill(Theme.accent)
-							.frame(width: 2, height: 16)
-					}
+					RoundedRectangle(cornerRadius: 1)
+						.fill(Theme.accent)
+						.frame(width: 2, height: 16)
 				}
 				Spacer()
 			}

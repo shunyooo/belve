@@ -114,6 +114,10 @@ struct MainWindow: View {
 
 		let paletteHandlers = AnyView(
 			projectShortcuts
+				// Project 切替時のフォーカスは projectWorkspace の
+				// `.onChange(of: isSelected)` に任せる (= per-project ハンドラ)。
+				// ここで再度投げると race して editor クリック等を奪うので
+				// やらない。
 				.onChange(of: commandPaletteState.isPresented) {
 					if !commandPaletteState.isPresented {
 						paletteMode = .commands
@@ -238,6 +242,9 @@ struct MainWindow: View {
 				activeCommandState: commandAreaState(for: projectStore.selectedProject?.id ?? UUID()),
 				paneIdsForProject: { projectId in
 					Set(commandAreaState(for: projectId).orderedPaneIds().map { $0.uuidString.lowercased() })
+				},
+				loadingStatusFor: { projectId in
+					projectStore.projectLoadingStatus[projectId]
 				}
 			)
 			.frame(width: layoutState.sidebarWidth)

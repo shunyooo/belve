@@ -110,7 +110,12 @@ class ProjectStore: ObservableObject {
 	/// Select a project, resetting all project-scoped state.
 	func select(_ project: Project?) {
 		if selectedProject?.id == project?.id { return }
+		let t0 = Date()
 		selectedProject = project
+		defer {
+			let dt = Date().timeIntervalSince(t0) * 1000
+			if dt > 30 { NSLog("[Belve][select][slow] %.0fms project=%@", dt, project?.name ?? "nil") }
+		}
 		showDevContainerBanner = false
 		if project?.sshHost != nil && !(project?.isDevContainer ?? false) {
 			checkForDevContainer()
@@ -575,9 +580,20 @@ class ProjectStore: ObservableObject {
 		// (SwiftUI batches focus updates). Claim aggressively on multiple ticks so
 		// the terminal wins even if a sibling tries to reclaim.
 		let claim = {
-			webView.window?.makeFirstResponder(nil)
-			webView.window?.makeFirstResponder(webView)
+			guard let win = webView.window else {
+				NSLog("[Belve] refocusTerminal: webView has no window")
+				return
+			}
+			// Main window が key じゃないと typing が届かない (browser panel
+			// などが key を奪ってる場合)。makeKey 強制 + first responder 設定。
+			if !win.isKeyWindow { win.makeKeyAndOrderFront(nil) }
+			win.makeFirstResponder(nil)
+			let ok = win.makeFirstResponder(webView)
 			webView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
+			NSLog("[Belve] refocusTerminal claim isKey=%d ok=%d window=%@",
+			      win.isKeyWindow ? 1 : 0,
+			      ok ? 1 : 0,
+			      win.identifier?.rawValue ?? String(describing: type(of: win)))
 		}
 		claim()
 		DispatchQueue.main.async { claim() }
@@ -585,23 +601,54 @@ class ProjectStore: ObservableObject {
 	}
 
 	private func findTerminalWebView(paneId: String? = nil) -> WKWebView? {
-		guard let window = NSApp.keyWindow else { return nil }
 		let targetIdentifier = paneId.map { "BelveTerminalWebView:\($0)" }
 
-		func find(_ view: NSView) -> WKWebView? {
-			if let v = view as? WKWebView {
-				if let targetIdentifier {
-					if v.identifier?.rawValue == targetIdentifier { return v }
-				} else if v.identifier?.rawValue.hasPrefix("BelveTerminalWebView") == true {
+		// 全 windows を walk して terminal webview を探す。keyWindow が
+		// browser panel などに奪われてても main window 内の terminal を
+		// 見つけられる。
+		var all: [(String, NSWindow)] = []
+		func collect(_ view: NSView, in window: NSWindow) {
+			if let v = view as? WKWebView, let id = v.identifier?.rawValue,
+			   id.hasPrefix("BelveTerminalWebView") {
+				all.append((id, window))
+			}
+			for sub in view.subviews { collect(sub, in: window) }
+		}
+		for window in NSApp.windows where window.isVisible {
+			if let root = window.contentView {
+				collect(root, in: window)
+			}
+		}
+		// 見つかった webview の親 window を target に
+		let target: (NSWindow, NSView)? = {
+			if let id = targetIdentifier, let hit = all.first(where: { $0.0 == id }) {
+				return (hit.1, hit.1.contentView!)
+			}
+			if let any = all.first {
+				return (any.1, any.1.contentView!)
+			}
+			return nil
+		}()
+		guard let (_, root) = target else { return nil }
+
+		func find(_ view: NSView, requireTarget: Bool) -> WKWebView? {
+			if let v = view as? WKWebView, let id = v.identifier?.rawValue,
+			   id.hasPrefix("BelveTerminalWebView") {
+				if requireTarget {
+					if let targetIdentifier, id == targetIdentifier { return v }
+				} else {
 					return v
 				}
 			}
 			for sub in view.subviews {
-				if let found = find(sub) { return found }
+				if let found = find(sub, requireTarget: requireTarget) { return found }
 			}
 			return nil
 		}
-		return find(window.contentView ?? window.contentView!)
+		if targetIdentifier != nil {
+			if let hit = find(root, requireTarget: true) { return hit }
+		}
+		return find(root, requireTarget: false)
 	}
 
 	func focusEditor() {
