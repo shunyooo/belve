@@ -22,17 +22,22 @@ class ProjectStore: ObservableObject {
 	private var lastGitRefresh: Date = .distantPast
 
 	private var gitPollTimer: Timer?
+	/// fsevent push 購読済みの project ID。多重購読を防ぐ。
+	private var rpcSubscribed: Set<UUID> = []
+	/// fsevent → refresh の debounce タイマー (project ごと)。
+	private var fsRefreshTimers: [UUID: DispatchWorkItem] = [:]
 
 	init() {
 		loadProjects()
 		loadCollapsedGroups()
 		observePortDetections()
-		// Start git status polling
+		// Git status: backstop poll at 30s. Most updates flow via push (fsevent
+		// → debounced refresh in `subscribeRPCFsEvents`) so this is just a
+		// safety net for missed events / non-watched paths.
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
 			self?.refreshGitStatus(force: true)
-			self?.gitPollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+			self?.gitPollTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
 				self?.refreshGitStatus()
-				NotificationCenter.default.post(name: .belveRefreshFileTree, object: nil)
 			}
 		}
 
@@ -138,12 +143,52 @@ class ProjectStore: ObservableObject {
 						host: host, projectId: p.id, remoteAddr: controlRemoteAddr
 					)
 					RemoteRPCRegistry.shared.registerControlPort(projectId: p.id, localPort: UInt16(localPort))
+					// Push-driven refresh: fsevent on project root → debounced
+					// gitStatus + file tree refresh notification. Replaces 5s polling.
+					self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
 				} catch {
 					NSLog("[Belve] control channel setup failed project=%@ error=%@",
 						  String(p.id.uuidString.prefix(8)), error.localizedDescription)
 				}
 			}
 		}
+	}
+
+	/// 1度だけ subscribe して、project の root + .git を watch する。fsevent は
+	/// 250ms debounce の後 `refreshGitStatus()` + `belveRefreshFileTree`
+	/// notification をトリガする。多重購読は `rpcSubscribed` で防ぐ。
+	private func subscribeRPCFsEvents(projectId: UUID, rootPath: String) {
+		guard !rpcSubscribed.contains(projectId) else { return }
+		guard let client = RemoteRPCRegistry.shared.client(for: projectId) else { return }
+		rpcSubscribed.insert(projectId)
+		// 全 fsevent → debounced refresh。FileTreeState 側でも別購読してて
+		// そっちは個別 dir の即時 refresh を担当 (役割分担)。
+		client.subscribePush { [weak self] type, _ in
+			guard type == "fsevent" else { return }
+			DispatchQueue.main.async {
+				self?.scheduleFsRefresh(projectId: projectId)
+			}
+		}
+		// root + (もしあれば) .git を watch。git 操作は .git/HEAD / index の
+		// 更新で検出。これで commit / checkout / stage の状態変化が即反映される。
+		Task { @MainActor in
+			_ = try? await client.send(op: "watch", params: ["path": rootPath])
+			_ = try? await client.send(op: "watch", params: ["path": "\(rootPath)/.git"])
+		}
+	}
+
+	private func scheduleFsRefresh(projectId: UUID) {
+		// 既存の予約をキャンセル → 新しい 250ms タイマー。バースト fs 変更を
+		// 1 回の refresh に束ねる。
+		fsRefreshTimers[projectId]?.cancel()
+		let work = DispatchWorkItem { [weak self] in
+			guard let self else { return }
+			guard self.selectedProject?.id == projectId else { return }
+			self.refreshGitStatus(force: true)
+			NotificationCenter.default.post(name: .belveRefreshFileTree, object: nil)
+		}
+		fsRefreshTimers[projectId] = work
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
 	}
 
 	func refreshGitStatus(force: Bool = false) {
