@@ -116,11 +116,15 @@ class ProjectStore: ObservableObject {
 			checkForDevContainer()
 		}
 		refreshGitStatus()
+		NSLog("[Belve][select] project=%@ sshHost=%@",
+		      project?.name ?? "nil",
+		      project?.sshHost ?? "nil")
 		if let p = project, let host = p.sshHost {
 			let rh = remoteHostForForward(p)
 			let isDev = p.isDevContainer
 			let projShort = String(p.id.uuidString.prefix(8))
 			Task { @MainActor in
+				NSLog("[Belve][select] task start project=%@ host=%@ projShort=%@", p.name, host, projShort)
 				PortForwardManager.shared.sync(project: p, host: host, remoteHost: rh)
 				PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
 
@@ -130,7 +134,9 @@ class ProjectStore: ObservableObject {
 				// executeSSH に fallback する。
 				_ = isDev
 				do {
+					NSLog("[Belve][select] ensuring router forward for host=%@", host)
 					let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
+					NSLog("[Belve][select] router port=%d", routerLocalPort)
 					RemoteRPCRegistry.shared.registerControlPort(
 						projectId: p.id,
 						localPort: UInt16(routerLocalPort),
@@ -833,14 +839,29 @@ class ProjectStore: ObservableObject {
 		}
 		projects = decoded
 		selectedProject = decoded.first
-		// `selectedProject = ...` bypasses `select()`, so register the scanner
-		// explicitly for the initial project so auto-detect kicks in without
-		// requiring the user to switch projects first.
+		// `selectedProject = ...` bypasses `select()`, so manually run the same
+		// Phase B router setup here. Without this, the auto-restored initial
+		// project never gets an RPC client, providers fall back to executeSSH,
+		// and the SSH master gets exhausted by ls/git/stat bursts.
 		if let p = selectedProject, let host = p.sshHost {
 			let isDev = p.isDevContainer
+			let projShort = String(p.id.uuidString.prefix(8))
 			Task { @MainActor in
+				NSLog("[Belve][load] initial setup project=%@ host=%@", p.name, host)
 				PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
 				PortForwardManager.shared.sync(project: p, host: host, remoteHost: "127.0.0.1")
+				do {
+					let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
+					RemoteRPCRegistry.shared.registerControlPort(
+						projectId: p.id,
+						localPort: UInt16(routerLocalPort),
+						projShort: projShort
+					)
+					self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
+				} catch {
+					NSLog("[Belve][load] router channel setup failed project=%@ error=%@",
+						  String(p.id.uuidString.prefix(8)), error.localizedDescription)
+				}
 			}
 		}
 	}
