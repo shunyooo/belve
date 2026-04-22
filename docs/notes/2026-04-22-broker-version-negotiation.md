@@ -1,7 +1,13 @@
 # Broker protocol version negotiation (planned)
 
 作成日: 2026-04-22
-ステータス: 設計合意済み、実装未着手
+ステータス: **採用見送り** (2026-04-23)
+
+## 2026-04-23 追記: 結論
+
+実装負債 (cap flag, テストマトリクス N×M, major bump 判定) が大きい割に、Belve は単一ユーザー dev tool でメリットが薄い。代わりに **md5-mismatch-kill を復活** + **Go ビルドを deterministic 化** (`-trimpath -buildvcs=false`) する方針に倒した。詳細は memory `project_broker_kill.md`。
+
+以下、過去の検討記録として残す。
 
 ## 問題
 

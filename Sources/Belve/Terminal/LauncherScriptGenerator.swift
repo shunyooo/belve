@@ -96,10 +96,49 @@ enum LauncherScriptGenerator {
 
 		    belve_status "Connecting to $BELVE_SSH_HOST..."
 
-		    # Serialize deploy across all projects (mkdir-based lock)
-		    DEPLOY_LOCK="/tmp/belve-deploy.lock"
-		    while ! mkdir "$DEPLOY_LOCK" 2>/dev/null; do sleep 0.2; done
-		    trap "rmdir '$DEPLOY_LOCK' 2>/dev/null" EXIT
+		    # Per-host serialization for SSH-using setup phase。N pane が同時に open
+		    # した時に、(a) deploy_bundle の SCP/SSH と (b) belve-setup の `ssh host`
+		    # を全て直列化する。これをやらないと SSHD MaxSessions=10 を超えて
+		    # `Session open refused` で launcher が exit 1 → PTY 永久リトライ。
+		    #
+		    # PID file 付きで stale 検出。macOS は flock 不在なので mkdir + PID で同等。
+		    # lock holder が SIGKILL 等で trap を実行できずに死んだ場合、次の launcher
+		    # は PID を見て生存確認し、死んでいれば dir を消して乗っ取る。
+		    SETUP_LOCK="/tmp/belve-setup-$BELVE_SSH_HOST.lock"
+		    SETUP_LOCK_PID="$SETUP_LOCK/pid"
+		    setup_acquire() {
+		        local elapsed=0
+		        local max_iter=3000  # 3000 * 0.2s = 600s (= 10min)。初回起動で全 pane が
+		                            # 並ぶと O(N * Tsetup) かかる。timeout=120s だと
+		                            # キュー後尾の pane が落ちて exit 1 → PTY retry の
+		                            # 連鎖に入るので余裕を持たせる。
+		        while [ $elapsed -lt $max_iter ]; do
+		            if mkdir "$SETUP_LOCK" 2>/dev/null; then
+		                echo $$ > "$SETUP_LOCK_PID"
+		                return 0
+		            fi
+		            if [ -f "$SETUP_LOCK_PID" ]; then
+		                local holder
+		                holder=$(cat "$SETUP_LOCK_PID" 2>/dev/null)
+		                if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+		                    rm -rf "$SETUP_LOCK"
+		                    continue
+		                fi
+		            fi
+		            sleep 0.2
+		            elapsed=$((elapsed + 1))
+		        done
+		        return 1
+		    }
+		    setup_release() {
+		        rm -rf "$SETUP_LOCK" 2>/dev/null
+		    }
+		    if ! setup_acquire; then
+		        belve_status "setup lock timeout"
+		        echo "[belve] setup lock timeout (>120s)" >&2
+		        exit 1
+		    fi
+		    trap setup_release EXIT
 
 		    # Ensure ControlMaster is established (skip if already exists)
 		    if ! ssh -o ControlPath="$BELVE_SSH_CONTROL" -O check "$BELVE_SSH_HOST" 2>/dev/null; then
@@ -110,8 +149,6 @@ enum LauncherScriptGenerator {
 
 		    # Deploy all files in a single tar (1 SCP + 1 SSH)
 		    deploy_bundle "$BELVE_SSH_HOST"
-		    rmdir "$DEPLOY_LOCK" 2>/dev/null
-		    trap - EXIT
 
 		    # Always run belve-setup — it's idempotent. Fast path (container running) just
 		    # ensures the broker is alive; slow path (first connect / rebuilt) runs `devcontainer up`.
@@ -119,12 +156,14 @@ enum LauncherScriptGenerator {
 		        belve_status "Preparing DevContainer..."
 		        SETUP_ARGS="--devcontainer --workspace $BELVE_WORKDIR --project-short $PROJ_SHORT"
 		        $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup $SETUP_ARGS" \
-		            || { belve_status "Setup failed"; echo "Setup failed"; exit 1; }
+		            || { setup_release; belve_status "Setup failed"; echo "Setup failed"; exit 1; }
 		    else
 		        belve_status "Preparing remote broker..."
 		        $SETUP_SSH "$BELVE_SSH_HOST" "\$HOME/.belve/bin/belve-setup" \
-		            || { belve_status "Setup failed"; echo "Setup failed"; exit 1; }
+		            || { setup_release; belve_status "Setup failed"; echo "Setup failed"; exit 1; }
 		    fi
+		    setup_release
+		    trap - EXIT
 
 		    # --- Phase B: VM router forward ---
 		    # Swift (SSHTunnelManager.ensureRouterForward) pre-allocated

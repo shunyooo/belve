@@ -39,7 +39,30 @@ chmod +x "$HOME/.belve/session-bootstrap.sh" 2>/dev/null || true
 # connections to either container brokers (CIP:19222/19224) or the VM-local
 # broker (127.0.0.1:19223/19225). Mac forwards only this one port per VM,
 # regardless of project count.
+# Per-resource init を直列化するための共通ヘルパ。複数 belve-setup が
+# 同時に走った時 (= 複数ペインが並行で remote 接続を開いた瞬間) に、kill+respawn
+# のレースで `bind: address already in use` カスケードが起きるのを防ぐ。
+# flock は FD がクローズされた時点 (= 関数 return / スクリプト exit) で自動解放。
+with_lock() {
+    local lock_path="$1"; shift
+    local fn="$1"; shift
+    mkdir -p "$(dirname "$lock_path")"
+    (
+        # subshell を使って FD 9 のスコープを限定する (= ロックの寿命 = subshell の寿命)。
+        exec 9>"$lock_path"
+        if ! flock -w 30 9; then
+            echo "[belve-setup] WARN: lock timeout on $lock_path" >&2
+            exit 1
+        fi
+        "$fn" "$@"
+    )
+}
+
 ensure_vm_router() {
+    with_lock "$HOME/.belve/.router.lock" _ensure_vm_router
+}
+
+_ensure_vm_router() {
     local stamp="$HOME/.belve/.router-md5"
     local current_md5
     current_md5=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
@@ -57,9 +80,12 @@ ensure_vm_router() {
         pkill -9 -f 'belve-persist.*-router 127.0.0.1:19200' 2>/dev/null || true
         sleep 0.3
     fi
+    # `9>&-` で flock の FD を子プロセスから明示的に閉じる。これをやらないと
+    # router (長命) が FD を継承したまま flock を保持し続け、後続の belve-setup
+    # が永遠に lock を取れなくなる (10min runtime debug で発見した bug)。
     nohup "$HOME/.belve/bin/belve-persist" \
         -router 127.0.0.1:19200 \
-        >/dev/null 2>&1 &
+        >/dev/null 2>&1 9>&- &
     disown 2>/dev/null || true
     for i in 1 2 3 4 5 6 7 8 9 10; do
         bash -c 'echo > /dev/tcp/127.0.0.1/19200' 2>/dev/null && echo "$current_md5" > "$stamp" && return 0
@@ -74,9 +100,12 @@ ensure_vm_router() {
 # backward compat; router resolveTarget() falls back to those when projShort
 # is empty.
 ensure_vm_broker() {
-    # Router fronts everything. Spawn it first.
+    # Router fronts everything. Spawn it first (router has its own lock)。
     ensure_vm_router
+    with_lock "$HOME/.belve/.vm-broker.lock" _ensure_vm_broker
+}
 
+_ensure_vm_broker() {
     local stamp="$HOME/.belve/.broker-md5"
     local current_md5
     current_md5=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
@@ -88,19 +117,27 @@ ensure_vm_broker() {
         || netstat -tln 2>/dev/null | grep -q '127.0.0.1:19223'; then
         running=1
     fi
-    # 動いてれば触らない (md5 不一致でも生き残った broker は kill しない)。
-    # 新 binary は次回 broker 再起動時に反映。
-    if [ "$running" = "1" ]; then
-        echo "$current_md5" > "$stamp"
+    local old_md5=""
+    [ -f "$stamp" ] && old_md5=$(cat "$stamp")
+    # md5 一致 + 起動中ならノータッチ。md5 が違うのは broker code が実際に
+    # 変わった時だけ (`-trimpath -buildvcs=false` で deterministic build を
+    # 担保している)。 → kill + 新 binary で respawn。session は落ちるが、
+    # broker 再起動が必要な状況なので意図通り。
+    if [ "$running" = "1" ] && [ "$current_md5" = "$old_md5" ]; then
         return 0
     fi
-    # Legacy 19222 broker 残骸の掃除のみ (新規 19223 と被ったら困るので)。
+    if [ "$running" = "1" ]; then
+        pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19223' 2>/dev/null || true
+        sleep 0.3
+    fi
+    # Legacy 19222 broker 残骸の掃除も併せて (新規 19223 と被ったら困るので)。
     pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19222' 2>/dev/null || true
+    # `9>&-` で flock FD を子に継承させない (router の bug と同じ理由)。
     nohup "$HOME/.belve/bin/belve-persist" \
         -tcplisten 127.0.0.1:19223 \
         -controllisten 127.0.0.1:19225 \
         -command "$HOME/.belve/session-bootstrap.sh" \
-        >/dev/null 2>&1 &
+        >/dev/null 2>&1 9>&- &
     disown 2>/dev/null || true
     for i in 1 2 3 4 5 6 7 8 9 10; do
         bash -c 'echo > /dev/tcp/127.0.0.1/19223' 2>/dev/null && echo "$current_md5" > "$stamp" && return 0
@@ -111,6 +148,16 @@ ensure_vm_broker() {
 # DevContainer: ensure broker is running inside the container. Syncs scripts/binary first
 # (in case container was rebuilt by us but not since this belve-persist was updated).
 ensure_container_broker() {
+    local cid="$1"
+    local rws="$2"
+    local cip="$3"
+    # Per-container lock。複数 belve-setup が同じ container に並行入りすると
+    # md5 mismatch を全員が検知 → 全員 kill+spawn → 19222 bind 競合になるので、
+    # cid 単位 (短縮 ID) で直列化する。別 container 同士は並行可。
+    with_lock "$HOME/.belve/.container-${cid:0:12}.lock" _ensure_container_broker "$cid" "$rws" "$cip"
+}
+
+_ensure_container_broker() {
     local cid="$1"
     local rws="$2"
     local cip="$3"
@@ -128,25 +175,36 @@ ensure_container_broker() {
         fi
     done
 
-    # belve-persist: 新 binary を container に置く (= 次回起動時に効く)。
-    # ただし「broker が現在動いてれば kill しない」 — 以前は md5 不一致なら
-    # 必ず kill+respawn してたが、開発で頻繁にビルドすると broker churn の
-    # 元 (= 全 PTY 切断連鎖) になる。新 binary は次回 broker 再起動時 (= 手動 or
-    # router self-heal) に反映される。
+    # belve-persist: md5 を比較し、不一致なら新 binary をコピー + 既存 broker
+    # を kill して respawn。 `-trimpath -buildvcs=false` で deterministic build
+    # を担保しているので、source 不変なら md5 不変 → spurious kill は起きない。
+    # mismatch 時は session 落ちるが、broker code 自体が変わってる場合なので
+    # 意図通り (古い broker のまま動かす方が嘘の挙動になる)。
     local local_hash=""
     local remote_hash=""
     local_hash=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
     remote_hash=$(docker exec "$cid" md5sum /root/.belve/bin/belve-persist 2>/dev/null | awk '{print $1}' || true)
-    if [ "$local_hash" != "$remote_hash" ]; then
+    local mismatch=0
+    if [ -n "$local_hash" ] && [ "$local_hash" != "$remote_hash" ]; then
+        mismatch=1
         if ! docker cp "$HOME/.belve/bin/belve-persist" "$cid:/root/.belve/bin/belve-persist" 2>&1; then
             echo "[belve-setup] ERROR: docker cp belve-persist failed" >&2
         fi
     fi
     docker exec "$cid" chmod +x /root/.belve/bin/* /root/.belve/session-bootstrap.sh 2>/dev/null || true
 
-    # broker が listen してたら触らない (新 binary でも生きてれば再起動しない)
+    local broker_running=0
     if docker exec "$cid" sh -c 'ss -tln 2>/dev/null | grep -q :19222 || netstat -tln 2>/dev/null | grep -q :19222' 2>/dev/null; then
+        broker_running=1
+    fi
+    # md5 一致 + 起動中ならノータッチ。
+    if [ "$broker_running" = "1" ] && [ "$mismatch" = "0" ]; then
         return 0
+    fi
+    # mismatch 時は古い broker を kill して新 binary で起動し直す。
+    if [ "$broker_running" = "1" ]; then
+        docker exec "$cid" pkill -9 -f 'belve-persist.*tcplisten 0.0.0.0:19222' 2>/dev/null || true
+        sleep 0.3
     fi
     docker exec -d \
         -e BELVE_SESSION=1 \
