@@ -369,9 +369,37 @@ struct XTermTerminalView: NSViewRepresentable {
 					}
 					do {
 						let port = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
-						var envWithPort = env
-						envWithPort["BELVE_LOCAL_BROKER_PORT"] = String(port)
-						spawnPTY(launcherPath: launcherPath, env: envWithPort, cols: cols, rows: rows, project: project)
+						// Phase 4: launcher 廃止。belve-persist を直接 spawn する。
+						// `-tcpbackend` モードに attach-or-fork を内蔵化したので、
+						// この 1 個の Process が必要なら daemon を fork してから
+						// PTY client として attach する。
+						guard let belveBin = Self.belvePersistBinaryPath() else {
+							NSLog("[Belve] belve-persist binary not found")
+							postConnectionState(isLoading: false)
+							postConnectionStatus("belve-persist not found")
+							postDisconnectedState(isDisconnected: true)
+							return
+						}
+						let sessionName: String
+						if paneIndex != 0 {
+							sessionName = "belve-\(projShort)-\(paneIndex)"
+						} else {
+							sessionName = "belve-\(projShort)"
+						}
+						let sockPath = "/tmp/belve-shell/sessions/\(sessionName).sock"
+						try? FileManager.default.createDirectory(
+							atPath: "/tmp/belve-shell/sessions",
+							withIntermediateDirectories: true
+						)
+						let args = [
+							"-socket", sockPath,
+							"-cols", String(cols),
+							"-rows", String(rows),
+							"-tcpbackend", "127.0.0.1:\(port)",
+							"-session", sessionName,
+							"-route", projShort,
+						]
+						spawnPTY(launcherPath: belveBin, args: args, env: env, cols: cols, rows: rows, project: project)
 					} catch {
 						NSLog("[Belve] router forward failed: \(error)")
 						postConnectionState(isLoading: false)
@@ -393,13 +421,27 @@ struct XTermTerminalView: NSViewRepresentable {
 			}
 		}
 
-		private func spawnPTY(launcherPath: String, env: [String: String], cols: Int, rows: Int, project: Project) {
+		/// Resolve the path to the bundled `belve-persist-darwin-arm64` binary.
+		/// Used to spawn the local PTY client + tcpbackend daemon (Phase 4: replaces
+		/// the old bash launcher's path resolution).
+		static func belvePersistBinaryPath() -> String? {
+			if let resourcePath = Bundle.main.resourcePath {
+				let p = (resourcePath as NSString)
+					.appendingPathComponent("bin/belve-persist-darwin-arm64")
+				if FileManager.default.fileExists(atPath: p) { return p }
+			}
+			let dev = "/Users/s07309/src/dock-code/Belve.app/Contents/Resources/bin/belve-persist-darwin-arm64"
+			if FileManager.default.fileExists(atPath: dev) { return dev }
+			return nil
+		}
+
+		private func spawnPTY(launcherPath: String, args: [String] = [], env: [String: String], cols: Int, rows: Int, project: Project) {
 			do {
 				postConnectionState(isLoading: isWaitingForInitialOutput)
 				postDisconnectedState(isDisconnected: false)
 				let pty = try PTYService.spawn(
 					shell: launcherPath,
-					args: [],
+					args: args,
 					environment: env,
 					cols: cols,
 					rows: rows

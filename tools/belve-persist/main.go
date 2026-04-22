@@ -100,8 +100,31 @@ func main() {
 			fmt.Fprintln(os.Stderr, "tcpbackend requires -socket and -session")
 			os.Exit(1)
 		}
-		runMasterTCPBackend(*socketPath, *tcpBackend, *sessionName, *routeProjShort, uint16(*initCols), uint16(*initRows))
-		return
+		// `-daemon` 付きで来たら master 本体として起動 (= forked child)。
+		// それ以外は client として、必要なら daemon を spawn してから attach する
+		// (= 旧 belve-launcher.sh の per-pane orchestration を内蔵化、Phase 4)。
+		if *daemon {
+			runMasterTCPBackend(*socketPath, *tcpBackend, *sessionName, *routeProjShort, uint16(*initCols), uint16(*initRows))
+			return
+		}
+		// 1) 既存 master があれば attach
+		if tryAttach(*socketPath) {
+			return
+		}
+		// 2) 残骸 socket を消して self を daemon として fork
+		_ = os.Remove(*socketPath)
+		spawnTCPBackendDaemon(*socketPath, *tcpBackend, *sessionName, *routeProjShort, *initCols, *initRows)
+		// 3) socket が現れるまで待って attach
+		for i := 0; i < 50; i++ {
+			if _, err := os.Stat(*socketPath); err == nil {
+				if tryAttach(*socketPath) {
+					return
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		fmt.Fprintln(os.Stderr, "tcpbackend daemon did not become ready")
+		os.Exit(1)
 	}
 
 	if *socketPath == "" {
@@ -1046,6 +1069,35 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 }
 
 // spawnDaemon starts the master as a background process.
+// spawnTCPBackendDaemon: tcpbackend mode の self-fork。Mac launcher の `nohup ... &`
+// 相当を Go で内蔵化 (Phase 4)。fork 後 cmd.Process.Release で完全 detach。
+func spawnTCPBackendDaemon(socketPath, tcpAddr, sessName, routeProjShort string, cols, rows int) {
+	selfPath := os.Args[0]
+	args := []string{selfPath,
+		"-daemon",
+		"-socket", socketPath,
+		"-tcpbackend", tcpAddr,
+		"-session", sessName,
+	}
+	if routeProjShort != "" {
+		args = append(args, "-route", routeProjShort)
+	}
+	if cols > 0 && rows > 0 {
+		args = append(args, "-cols", fmt.Sprintf("%d", cols), "-rows", fmt.Sprintf("%d", rows))
+	}
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Env = os.Environ()
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "tcpbackend daemon spawn: %v\n", err)
+		os.Exit(1)
+	}
+	cmd.Process.Release()
+}
+
 func spawnDaemon(socketPath string, cmdArgs []string, cols, rows int) {
 	selfPath := os.Args[0]
 	// Use -daemon flag to run master directly
