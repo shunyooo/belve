@@ -195,12 +195,27 @@ big bang はリスク高い。**段階的に**:
 4. **既存 session の救済 (= phase 4)**: 切断してユーザー reattach。
    - PTY broker は VM/container 側にいるので session 内容は失われない。Mac 側の attach 状態だけ作り直し。
 
-## 進め方 (確定版)
+## 進め方 (実績)
 
-| Phase | 内容 | 規模 | 完了条件 |
+| Phase | 内容 | 状態 | コミット |
 |---|---|---|---|
-| 1 | master skeleton + ping op + Belve.app spawn/attach | 1-2h | `MasterClient.ping()` 通る |
-| 2+3+4 | ensureSetup + tunnel + session を master に集約、launcher 完全撤廃 | 7-10h | 既存機能フルカバー、bash launcher なし |
-| 5 | cleanup + dead code 削除 + ドキュメント | 1-2h | git diff で残骸ゼロ |
+| 1 | master skeleton + ping op + Belve.app spawn/attach | ✅ 完了 | `49f263f` |
+| 2 | ensureSetup を master に集約、launcher の deploy/setup 撤廃 | ✅ 完了 | `4e6469e` |
+| 3 | SSH tunnel 管理を master に集約、SSHTunnelManager.swift は wrapper のみ | ✅ 完了 | `098d01c` |
+| 4 | belve-persist tcpbackend に attach-or-spawn 内蔵、launcher 撤廃 (remote path) | ✅ 完了 | `51eed6c` |
+| 5 | cleanup + dead code 削除 + ドキュメント | 進行中 | - |
 
-合計 9-14 時間。複数 session 想定。各 phase 終了でアプリは動く状態をキープ。
+## 達成した事
+
+- Bash launcher は local pane 用にしか残っていない (remote は belve-persist 直接 spawn)
+- 全 SSH 操作 (ControlMaster spawn / port forward / belve-setup 実行) が Go の master に集約
+- per-host serialize は master の sync.Mutex で実装、bash mkdir-lock や flock とは無縁
+- Belve.app クラッシュしても master は生き続けるので、再起動時の reconnect が高速
+- Mac 側の Swift コードは UI + thin IPC client のみ
+- 接続の安定性: 22 panes 同時 restore で 0 retry を確認済み
+
+## まだ無いもの
+
+- master の自動再起動 (= panic recovery): 設計どおり、なし。死んだら次の Belve.app 起動時に蘇る
+- Session の永続化 (= master が dump して restart 時に restore): 未実装、必要に応じて
+- PortForwardManager の master 統合: 未着手 (今は Swift で動いてる、ssh 呼び出しは master の SSH master を経由して問題なし)
