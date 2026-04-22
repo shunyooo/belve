@@ -330,21 +330,30 @@ struct XTermTerminalView: NSViewRepresentable {
 			// Resolve launcher script path
 			let launcherPath = "/tmp/belve-shell/belve-launcher.sh"
 
-			// Remote projects: reserve a local port; the launcher establishes the actual
-			// `ssh -O forward` after deploy+setup populate ~/.belve/projects/<short>.env.
+			// Phase B: ensure the per-VM router forward is up. Returns the local
+			// port that the launcher uses for the broker connection. Mac sends
+			// a JSON preamble (with PROJ_SHORT) so the router dispatches to the
+			// right container/VM broker. 1 forward per VM, regardless of project.
 			if project.isRemote, let host = project.sshHost {
-				do {
-					let port = try SSHTunnelManager.shared.reservePort(host: host, projectId: project.id)
-					env["BELVE_LOCAL_BROKER_PORT"] = String(port)
-				} catch {
-					NSLog("[Belve] port reservation failed: \(error)")
-					postConnectionState(isLoading: false)
-					postConnectionStatus("Tunnel failed: \(error.localizedDescription)")
-					postDisconnectedState(isDisconnected: true)
-					return
+				let pid = project.id
+				Task { @MainActor in
+					do {
+						let port = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
+						var envWithPort = env
+						envWithPort["BELVE_LOCAL_BROKER_PORT"] = String(port)
+						spawnPTY(launcherPath: launcherPath, env: envWithPort, cols: cols, rows: rows, project: project)
+						_ = pid
+					} catch {
+						NSLog("[Belve] router forward failed: \(error)")
+						postConnectionState(isLoading: false)
+						postConnectionStatus("Tunnel failed: \(error.localizedDescription)")
+						postDisconnectedState(isDisconnected: true)
+						return
+					}
 				}
+			} else {
+				spawnPTY(launcherPath: launcherPath, env: env, cols: cols, rows: rows, project: project)
 			}
-			spawnPTY(launcherPath: launcherPath, env: env, cols: cols, rows: rows, project: project)
 
 			// Track active pane on focus
 			if let paneId, let paneUUID = UUID(uuidString: paneId) {

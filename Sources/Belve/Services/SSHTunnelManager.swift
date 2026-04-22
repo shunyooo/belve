@@ -30,6 +30,12 @@ final class SSHTunnelManager: @unchecked Sendable {
 	/// host → projectId → "LPORT:RADDR:RPORT" — needed for `ssh -O cancel -L`
 	/// (which requires the EXACT spec used at forward time).
 	private var controlSpecs: [String: [UUID: String]] = [:]
+	/// Phase B: VM router forward. host → local port. 1 forward per VM
+	/// regardless of project count (routing is done by the VM-side router
+	/// based on a JSON preamble each connection sends).
+	private var routerForwards: [String: Int] = [:]
+	private var routerSpecs: [String: String] = [:]
+	private var inflightRouterForwards: [String: Task<Int, Error>] = [:]
 	private let stateLock = NSLock()
 
 	private let basePort = 19222
@@ -90,6 +96,66 @@ final class SSHTunnelManager: @unchecked Sendable {
 			stateLock.withLock { _ = inflightMasters.removeValue(forKey: host) }
 		}
 		try await task.value
+	}
+
+	/// Phase B: ensure the per-VM router forward is up. Returns the local port
+	/// to which Mac connects for ALL projects on this host. The VM-side router
+	/// (`belve-persist -router`) demultiplexes based on a JSON preamble each
+	/// connection sends right after open. SSH session usage: 1 per VM total.
+	func ensureRouterForward(host: String, remotePort: Int = 19200) async throws -> Int {
+		if let existing = stateLock.withLock({ routerForwards[host] }) {
+			return existing
+		}
+		let task: Task<Int, Error> = stateLock.withLock {
+			if let inflight = inflightRouterForwards[host] { return inflight }
+			let new = Task<Int, Error> { [weak self] in
+				guard let self else { throw TunnelError.noPortAvailable }
+				try await SSHTunnelManager.shared.ensureControlMaster(host: host)
+				let port = try self.allocateRouterPort(host: host)
+				let spec = "\(port):127.0.0.1:\(remotePort)"
+				let ok = await Self.runForward(host: host, local: port, remoteHost: "127.0.0.1", remotePort: remotePort)
+				if !ok {
+					self.stateLock.withLock {
+						self.routerForwards[host] = nil
+						self.allocatedPorts.remove(port)
+					}
+					throw TunnelError.forwardFailed
+				}
+				self.stateLock.withLock {
+					self.routerSpecs[host] = spec
+				}
+				NSLog("[Belve][tunnel] router forward host=%@ local=%d → 127.0.0.1:%d",
+					  host, port, remotePort)
+				return port
+			}
+			inflightRouterForwards[host] = new
+			return new
+		}
+		defer {
+			stateLock.withLock { _ = inflightRouterForwards.removeValue(forKey: host) }
+		}
+		return try await task.value
+	}
+
+	/// Per-VM forward の local port を 1 個確保する。reservePort と allocatedPorts
+	/// を共有するので、project 用 forward と被らない。
+	private func allocateRouterPort(host: String) throws -> Int {
+		try stateLock.withLock {
+			if let existing = routerForwards[host] { return existing }
+			for port in basePort...maxPort {
+				guard !allocatedPorts.contains(port) else { continue }
+				guard Self.isPortFree(port) else { continue }
+				routerForwards[host] = port
+				allocatedPorts.insert(port)
+				return port
+			}
+			throw TunnelError.noPortAvailable
+		}
+	}
+
+	/// Returns the established router local port for `host`, or nil if not set up.
+	func routerPort(for host: String) -> Int? {
+		stateLock.withLock { routerForwards[host] }
 	}
 
 	/// Set up Mac → remote control-RPC forward for (host, project). Allocates a
@@ -191,7 +257,12 @@ final class SSHTunnelManager: @unchecked Sendable {
 	func teardownAll() {
 		stateLock.lock()
 		let snapshot = tunnels
+		let routerSnapshot = routerSpecs
 		tunnels.removeAll()
+		controlTunnels.removeAll()
+		controlSpecs.removeAll()
+		routerForwards.removeAll()
+		routerSpecs.removeAll()
 		allocatedPorts.removeAll()
 		stateLock.unlock()
 
@@ -199,6 +270,9 @@ final class SSHTunnelManager: @unchecked Sendable {
 			for (projectId, port) in projects {
 				Self.cancelForward(host: host, projectId: projectId, localPort: port)
 			}
+		}
+		for (host, spec) in routerSnapshot {
+			Self.cancelForwardSpec(host: host, spec: spec)
 		}
 		Self.killAllSSHMasters()
 		Self.clearAllSpecFiles()

@@ -126,81 +126,18 @@ enum LauncherScriptGenerator {
 		            || { belve_status "Setup failed"; echo "Setup failed"; exit 1; }
 		    fi
 
-		    # --- Establish SSH port forward to broker (ssh -O forward on existing ControlMaster) ---
-		    # Swift (SSHTunnelManager.reservePort) pre-allocated BELVE_LOCAL_BROKER_PORT and will
-		    # cancel the forward on project close / app exit.
+		    # --- Phase B: VM router forward ---
+		    # Swift (SSHTunnelManager.ensureRouterForward) pre-allocated
+		    # BELVE_LOCAL_BROKER_PORT pointing at the per-VM router (1 forward
+		    # per VM, regardless of project count). belve-persist tcpbackend
+		    # sends a JSON preamble containing PROJ_SHORT so the router knows
+		    # which container/VM-broker to dispatch to. No per-project ssh -O
+		    # forward needed in the launcher anymore.
 		    if [ -z "${BELVE_LOCAL_BROKER_PORT:-}" ]; then
-		        belve_status "Port not reserved"
-		        echo "[belve] ERROR: BELVE_LOCAL_BROKER_PORT not set" >&2
+		        belve_status "Router port not set"
+		        echo "[belve] ERROR: BELVE_LOCAL_BROKER_PORT not set (router forward should have been established by Swift side)" >&2
 		        exit 1
 		    fi
-
-		    if [ -n "$BELVE_DEVCONTAINER" ]; then
-		        # Read container IP from project env file on VM
-		        CIP=$($SETUP_SSH "$BELVE_SSH_HOST" ". ~/.belve/projects/${PROJ_SHORT}.env && echo \"\$CIP\"" 2>/dev/null | tr -d '\r\n')
-		        if [ -z "$CIP" ]; then
-		            belve_status "Container not ready"
-		            echo "[belve] ERROR: container IP not found in ~/.belve/projects/${PROJ_SHORT}.env" >&2
-		            exit 1
-		        fi
-		        FORWARD_TARGET="$CIP:19222"
-		    else
-		        FORWARD_TARGET="127.0.0.1:19222"
-		    fi
-
-		    # Add port forward. Serialize across concurrent panes of the same project
-		    # (second pane's forward would race with the first and fail otherwise) and
-		    # skip entirely if a forward is already listening on the chosen local port.
-		    SPEC_DIR="\#(tmpDir)/tunnels"
-		    mkdir -p "$SPEC_DIR"
-		    SPEC_FILE="$SPEC_DIR/${BELVE_PROJECT_ID}.spec"
-		    FORWARD_LOCK="$SPEC_DIR/${BELVE_PROJECT_ID}.lock"
-
-		    # Simple mkdir-based mutex with timeout.
-		    LOCK_WAITED=0
-		    while ! mkdir "$FORWARD_LOCK" 2>/dev/null; do
-		        LOCK_WAITED=$((LOCK_WAITED + 1))
-		        if [ "$LOCK_WAITED" -gt 100 ]; then
-		            # Stale lock (>10s) — take it anyway.
-		            rm -rf "$FORWARD_LOCK"
-		            mkdir "$FORWARD_LOCK" 2>/dev/null || true
-		            break
-		        fi
-		        sleep 0.1
-		    done
-		    trap "rmdir '$FORWARD_LOCK' 2>/dev/null" EXIT
-
-		    # Fast path: forward already up for the same target.
-		    EXISTING_SPEC=""
-		    [ -f "$SPEC_FILE" ] && EXISTING_SPEC=$(cat "$SPEC_FILE")
-		    FORWARD_ALREADY_UP=0
-		    if [ "$EXISTING_SPEC" = "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" ]; then
-		        # Verify the local port is actually listening before trusting the spec.
-		        if (exec 3<>/dev/tcp/127.0.0.1/$BELVE_LOCAL_BROKER_PORT) 2>/dev/null; then
-		            exec 3>&- 2>/dev/null || true
-		            FORWARD_ALREADY_UP=1
-		        fi
-		    fi
-
-		    if [ "$FORWARD_ALREADY_UP" != "1" ]; then
-		        # Cancel any stale / mismatched forward before setting up a fresh one.
-		        if [ -n "$EXISTING_SPEC" ] && [ "$EXISTING_SPEC" != "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" ]; then
-		            ssh -o ControlPath="$BELVE_SSH_CONTROL" -O cancel -L "$EXISTING_SPEC" "$BELVE_SSH_HOST" 2>/dev/null || true
-		        fi
-		        ssh -o ControlPath="$BELVE_SSH_CONTROL" -O cancel -L "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" "$BELVE_SSH_HOST" 2>/dev/null || true
-
-		        FORWARD_ERR=$(ssh -o ControlPath="$BELVE_SSH_CONTROL" -O forward -L "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" "$BELVE_SSH_HOST" 2>&1)
-		        if [ $? -ne 0 ]; then
-		            belve_status "Forward failed"
-		            echo "[belve] ERROR: ssh -O forward -L $BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET failed: $FORWARD_ERR" >&2
-		            rmdir "$FORWARD_LOCK" 2>/dev/null
-		            exit 1
-		        fi
-		        printf '%s' "$BELVE_LOCAL_BROKER_PORT:$FORWARD_TARGET" > "$SPEC_FILE"
-		    fi
-
-		    rmdir "$FORWARD_LOCK" 2>/dev/null
-		    trap - EXIT
 
 		    belve_status "Attaching session..."
 		    PERSIST_BIN="$BELVE_BIN_DIR/belve-persist-darwin-arm64"
@@ -227,11 +164,14 @@ enum LauncherScriptGenerator {
 		    fi
 		    echo "$CURRENT_VER" > "$VERFILE"
 
-		    # 1) Start tcpbackend daemon in the background (detached, no tty)
+		    # 1) Start tcpbackend daemon in the background (detached, no tty).
+		    #    -route X: send {"projShort":"X","kind":"pty"} preamble to the
+		    #    router so it can dispatch to the right container broker.
 		    nohup "$PERSIST_BIN" -socket "$PERSIST_SOCK" \
 		        -cols "${BELVE_COLS:-80}" -rows "${BELVE_ROWS:-24}" \
 		        -tcpbackend "127.0.0.1:$BELVE_LOCAL_BROKER_PORT" \
-		        -session "$SESSION_NAME" >/dev/null 2>&1 &
+		        -session "$SESSION_NAME" \
+		        -route "$PROJ_SHORT" >/dev/null 2>&1 &
 		    disown 2>/dev/null || true
 
 		    # 2) Wait for socket to appear, then attach as client (exec replaces this shell)

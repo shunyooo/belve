@@ -35,15 +35,17 @@ mkdir -p "$HOME/.belve/bin" "$HOME/.belve/sessions" "$HOME/.belve/zdotdir"
 chmod +x "$HOME/.belve/bin/"* 2>/dev/null || true
 chmod +x "$HOME/.belve/session-bootstrap.sh" 2>/dev/null || true
 
-# Plain SSH: ensure broker is listening on VM loopback. Restarts if the deployed
-# binary hash differs from the running one (so protocol changes take effect).
-ensure_vm_broker() {
-    local stamp="$HOME/.belve/.broker-md5"
+# VM router (Phase B): single TCP entry on 127.0.0.1:19200 that proxies Mac
+# connections to either container brokers (CIP:19222/19224) or the VM-local
+# broker (127.0.0.1:19223/19225). Mac forwards only this one port per VM,
+# regardless of project count.
+ensure_vm_router() {
+    local stamp="$HOME/.belve/.router-md5"
     local current_md5
     current_md5=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
     local running=0
-    if ss -tln 2>/dev/null | grep -q '127.0.0.1:19222' \
-        || netstat -tln 2>/dev/null | grep -q '127.0.0.1:19222'; then
+    if ss -tln 2>/dev/null | grep -q '127.0.0.1:19200' \
+        || netstat -tln 2>/dev/null | grep -q '127.0.0.1:19200'; then
         running=1
     fi
     local old_md5=""
@@ -51,19 +53,60 @@ ensure_vm_broker() {
     if [ "$running" = "1" ] && [ "$current_md5" = "$old_md5" ]; then
         return 0
     fi
-    # Binary changed or not running — kill old broker, start fresh
     if [ "$running" = "1" ]; then
-        pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19222' 2>/dev/null || true
-        sleep 0.5
+        pkill -9 -f 'belve-persist.*-router 127.0.0.1:19200' 2>/dev/null || true
+        sleep 0.3
     fi
     nohup "$HOME/.belve/bin/belve-persist" \
-        -tcplisten 127.0.0.1:19222 \
-        -controllisten 127.0.0.1:19224 \
+        -router 127.0.0.1:19200 \
+        >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        bash -c 'echo > /dev/tcp/127.0.0.1/19200' 2>/dev/null && echo "$current_md5" > "$stamp" && return 0
+        sleep 0.2
+    done
+}
+
+# Plain SSH: ensure VM-local broker is listening. Note: ports moved 19222 →
+# 19223 (PTY) and 19224 → 19225 (control) so the router can take 19222...
+# wait, router is on 19200. So broker still uses 19222/19224 — only when the
+# router is in front of it should we move. For now keep 19222/19224 for
+# backward compat; router resolveTarget() falls back to those when projShort
+# is empty.
+ensure_vm_broker() {
+    # Router fronts everything. Spawn it first.
+    ensure_vm_router
+
+    local stamp="$HOME/.belve/.broker-md5"
+    local current_md5
+    current_md5=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
+    local running=0
+    # Plain SSH broker now listens on 19223 (PTY) so it doesn't conflict with
+    # potential future router-on-19222 setups. Router's localPortFor("pty")
+    # returns 19223 too.
+    if ss -tln 2>/dev/null | grep -q '127.0.0.1:19223' \
+        || netstat -tln 2>/dev/null | grep -q '127.0.0.1:19223'; then
+        running=1
+    fi
+    local old_md5=""
+    [ -f "$stamp" ] && old_md5=$(cat "$stamp")
+    if [ "$running" = "1" ] && [ "$current_md5" = "$old_md5" ]; then
+        return 0
+    fi
+    if [ "$running" = "1" ]; then
+        pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19223' 2>/dev/null || true
+        sleep 0.5
+    fi
+    # Also clear legacy 19222 broker if it's still around from older deploys.
+    pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19222' 2>/dev/null || true
+    nohup "$HOME/.belve/bin/belve-persist" \
+        -tcplisten 127.0.0.1:19223 \
+        -controllisten 127.0.0.1:19225 \
         -command "$HOME/.belve/session-bootstrap.sh" \
         >/dev/null 2>&1 &
     disown 2>/dev/null || true
     for i in 1 2 3 4 5 6 7 8 9 10; do
-        bash -c 'echo > /dev/tcp/127.0.0.1/19222' 2>/dev/null && echo "$current_md5" > "$stamp" && return 0
+        bash -c 'echo > /dev/tcp/127.0.0.1/19223' 2>/dev/null && echo "$current_md5" > "$stamp" && return 0
         sleep 0.2
     done
 }
@@ -126,6 +169,10 @@ if [ "$DEVCONTAINER" != "1" ]; then
 fi
 
 # --- DevContainer branch ---
+# DevContainer projects も VM router 経由になるので、最初に router 起動を保証する。
+# (container broker は従来通り container 内で動かす)
+ensure_vm_router
+
 [ -n "$WORKSPACE" ] || { echo "[belve-setup] ERROR: --workspace required for --devcontainer" >&2; exit 1; }
 
 # Resolve ~ in workspace path

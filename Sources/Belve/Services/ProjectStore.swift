@@ -124,30 +124,23 @@ class ProjectStore: ObservableObject {
 				PortForwardManager.shared.sync(project: p, host: host, remoteHost: rh)
 				PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
 
-				// Set up control RPC channel: separate SSH port forward Mac → broker's
-				// control listener. The forward target depends on where the broker
-				// runs (VM loopback for plain SSH, container IP for DevContainer).
-				// Failure here is non-fatal — provider falls back to executeSSH.
+				// Phase B: VM router 経由で control RPC。Mac → router (per-VM) →
+				// container/VM broker。SSH session 1 本で全 project を捌くので
+				// MaxSessions 食い尽くしが起きない。失敗時は provider が
+				// executeSSH に fallback する。
+				_ = isDev
 				do {
-					let controlRemoteAddr: String
-					if isDev {
-						if let cip = await PortForwardManager.fetchContainerIP(host: host, projShort: projShort) {
-							controlRemoteAddr = cip
-						} else {
-							throw NSError(domain: "Belve", code: 1, userInfo: [NSLocalizedDescriptionKey: "container IP not available"])
-						}
-					} else {
-						controlRemoteAddr = "127.0.0.1"
-					}
-					let localPort = try await SSHTunnelManager.shared.ensureControlChannel(
-						host: host, projectId: p.id, remoteAddr: controlRemoteAddr
+					let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
+					RemoteRPCRegistry.shared.registerControlPort(
+						projectId: p.id,
+						localPort: UInt16(routerLocalPort),
+						projShort: projShort
 					)
-					RemoteRPCRegistry.shared.registerControlPort(projectId: p.id, localPort: UInt16(localPort))
 					// Push-driven refresh: fsevent on project root → debounced
 					// gitStatus + file tree refresh notification. Replaces 5s polling.
 					self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
 				} catch {
-					NSLog("[Belve] control channel setup failed project=%@ error=%@",
+					NSLog("[Belve] router channel setup failed project=%@ error=%@",
 						  String(p.id.uuidString.prefix(8)), error.localizedDescription)
 				}
 			}

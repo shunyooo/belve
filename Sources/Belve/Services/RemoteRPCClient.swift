@@ -23,6 +23,9 @@ import Network
 final class RemoteRPCClient: @unchecked Sendable {
 	let host: String
 	let port: UInt16
+	/// Phase B: VM router 経由で繋ぐときに送る preamble の projShort。空なら
+	/// preamble 送らない (= 直接 control listener に繋ぐ legacy 経路用)。
+	let routeProjShort: String
 
 	private var connection: NWConnection?
 	private var pending: [String: CheckedContinuation<RPCResponse, Error>] = [:]
@@ -36,10 +39,11 @@ final class RemoteRPCClient: @unchecked Sendable {
 	/// Push-event handlers (file watch etc.). Multiple subscribers allowed.
 	private var pushHandlers: [(String, [String: Any]) -> Void] = []
 
-	init(host: String, port: UInt16) {
+	init(host: String, port: UInt16, routeProjShort: String = "") {
 		self.host = host
 		self.port = port
-		self.queue = DispatchQueue(label: "belve.rpc.\(host)", qos: .userInitiated)
+		self.routeProjShort = routeProjShort
+		self.queue = DispatchQueue(label: "belve.rpc.\(host).\(port)", qos: .userInitiated)
 	}
 
 	// MARK: - Public API
@@ -148,6 +152,14 @@ final class RemoteRPCClient: @unchecked Sendable {
 			guard let self else { return }
 			switch state {
 			case .ready:
+				// Phase B: router 経由の場合、最初に routing preamble を送る。
+				// preamble がない場合 (legacy 直接接続) はスキップ。
+				if !self.routeProjShort.isEmpty {
+					let preamble = "{\"projShort\":\"\(self.routeProjShort)\",\"kind\":\"control\"}\n"
+					if let data = preamble.data(using: .utf8) {
+						conn.send(content: data, completion: .contentProcessed { _ in })
+					}
+				}
 				self.connectionReady = true
 				if !resumed { resumed = true; cont.resume() }
 				self.startReading(conn)
@@ -261,13 +273,17 @@ final class RemoteRPCRegistry: @unchecked Sendable {
 	/// Register the local port that's been forwarded to the project's control
 	/// listener. Called by `ProjectStore.select` after `SSHTunnelManager` sets
 	/// up the forward. Calling again with a different port replaces the client.
-	func registerControlPort(projectId: UUID, localPort: UInt16) {
+	///
+	/// `projShort`: Phase B router 経由の場合、connection 直後に送る preamble に
+	/// 入れる project 短縮 ID (UUID 先頭 8 文字)。空なら preamble なしで直接
+	/// control listener に繋ぐ legacy 経路。
+	func registerControlPort(projectId: UUID, localPort: UInt16, projShort: String = "") {
 		let oldClient: RemoteRPCClient? = lock.withLock {
 			if localPorts[projectId] == localPort { return nil }
 			let prev = clients[projectId]
 			localPorts[projectId] = localPort
 			// Bypass DNS — always loopback (the SSH forward terminates locally).
-			clients[projectId] = RemoteRPCClient(host: "127.0.0.1", port: localPort)
+			clients[projectId] = RemoteRPCClient(host: "127.0.0.1", port: localPort, routeProjShort: projShort)
 			return prev
 		}
 		oldClient?.disconnect()
