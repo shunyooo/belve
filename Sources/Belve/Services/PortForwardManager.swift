@@ -63,7 +63,9 @@ final class PortForwardManager: ObservableObject {
 
 	private init() {
 		startHealthTimer()
-		startScanTimer()
+		// startScanTimer()  // 一時無効化: 多 project だと SSH master 食って
+		// PTY 入力遅延の元になる。手動 scan API は残してるので将来 lazy
+		// trigger (active project だけ等) で復活可能。
 	}
 
 	// MARK: - Public API
