@@ -38,7 +38,24 @@ func main() {
 	tcpListen := flag.String("tcplisten", "", "TCP listen address for broker mode (e.g. 0.0.0.0:19222)")
 	tcpBackend := flag.String("tcpbackend", "", "TCP backend address (e.g. 172.17.0.2:19222)")
 	sessionName := flag.String("session", "", "session name for TCP multiplexing")
+	// Control RPC port (separate from PTY broker). Mac-side providers use this
+	// to do filesystem / git ops without spawning a fresh `ssh host cmd` per
+	// call (= eliminates 5s polling flicker / latency).
+	ctrlListen := flag.String("controllisten", "", "TCP listen address for control RPC (e.g. 0.0.0.0:19224)")
 	flag.Parse()
+
+	// Control listener runs as a background goroutine alongside whatever main
+	// mode (broker / tcpbackend / classic) is active. Crashes are isolated
+	// per-connection via defer-recover in `runControlServer`.
+	// Special case: if controllisten is the ONLY thing specified, run the
+	// control server in the foreground (= dedicated control-only process).
+	if *ctrlListen != "" {
+		if *tcpListen == "" && *tcpBackend == "" && *socketPath == "" {
+			runControlServer(*ctrlListen)
+			return
+		}
+		go runControlServer(*ctrlListen)
+	}
 
 	// TCP broker mode (container side)
 	if *tcpListen != "" {
