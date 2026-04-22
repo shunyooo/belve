@@ -309,6 +309,12 @@ class FileTreeState: ObservableObject {
 	func requestDelete(project: Project) {
 		let paths = effectiveSelection()
 		guard !paths.isEmpty else { return }
+		requestDelete(paths: paths, project: project)
+	}
+
+	/// 明示的に paths を指定する版 (= 右クリックメニューから 1 ファイル削除など)。
+	func requestDelete(paths: [String], project: Project) {
+		guard !paths.isEmpty else { return }
 		let names = paths.map { ($0 as NSString).lastPathComponent }
 		showStatus("Deleting \(names.joined(separator: ", "))...")
 		pendingDeletePaths = paths
@@ -569,6 +575,16 @@ class FileTreeState: ObservableObject {
 		newFileName = ""
 	}
 
+	/// 明示的に作成先を指定する版 (= 右クリックメニューから「ここに新規ファイル」)。
+	func startCreateFile(in directory: String) {
+		creatingInPath = directory
+		newFileName = ""
+		// 親ディレクトリが折りたたまれてれば展開して入力欄を見えるように。
+		if !expandedPaths.contains(directory) {
+			expandedPaths.insert(directory)
+		}
+	}
+
 	func commitCreateFile(project: Project) {
 		guard let dir = creatingInPath, !newFileName.isEmpty else {
 			cancelCreateFile()
@@ -630,10 +646,22 @@ struct FileTreeView: View {
 							depth: 0,
 							state: state,
 							project: project,
+							rootPath: rootPath,
 							onFileSelect: onFileSelect,
 							gitFileStatus: gitFileStatus
 						)
 					}
+					// Background catcher for "new file in root" context menu.
+					// Fills remaining vertical space so right-click on the empty
+					// area below the last row hits this view (and not a row).
+					Color.clear
+						.frame(minHeight: 80)
+						.contentShape(Rectangle())
+						.contextMenu {
+							Button("New File") {
+								state.startCreateFile(in: rootPath)
+							}
+						}
 				}
 				.padding(.vertical, 4)
 			}
@@ -828,6 +856,7 @@ struct FileTreeRow: View {
 	let depth: Int
 	@ObservedObject var state: FileTreeState
 	let project: Project
+	let rootPath: String
 	let onFileSelect: (String) -> Void
 	var gitFileStatus: [String: String] = [:]
 	@State private var isHovering = false
@@ -990,6 +1019,24 @@ struct FileTreeRow: View {
 			.onHover { hovering in
 				isHovering = hovering
 			}
+			.contextMenu {
+				Button("Copy Full Path") {
+					copyToClipboard(absolutePath(item.path))
+				}
+				Button("Copy Relative Path") {
+					copyToClipboard(relativePath(item.path))
+				}
+				if item.isDirectory {
+					Divider()
+					Button("New File") {
+						state.startCreateFile(in: item.path)
+					}
+				}
+				Divider()
+				Button("Delete", role: .destructive) {
+					state.requestDelete(paths: [item.path], project: project)
+				}
+			}
 			.id(item.path)
 			.accessibilityLabel(item.name)
 
@@ -1043,12 +1090,52 @@ struct FileTreeRow: View {
 						depth: depth + 1,
 						state: state,
 						project: project,
+						rootPath: rootPath,
 						onFileSelect: onFileSelect,
 						gitFileStatus: gitFileStatus
 					)
 				}
 			}
 		}
+	}
+
+	private func copyToClipboard(_ s: String) {
+		let pb = NSPasteboard.general
+		pb.clearContents()
+		pb.setString(s, forType: .string)
+	}
+
+	private func relativePath(_ absolute: String) -> String {
+		var p = absolute
+		let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+		if p.hasPrefix(prefix) {
+			p = String(p.dropFirst(prefix.count))
+		} else if p == rootPath {
+			p = ""
+		}
+		// DevContainer の effectivePath は "." なので "./tasks/..." 形式に
+		// なる。先頭の "./" を剥がしてピュアな相対パスにする。
+		if p.hasPrefix("./") {
+			p = String(p.dropFirst(2))
+		}
+		return p
+	}
+
+	/// Absolute path suitable for "Copy Full Path".
+	/// - Local / SSH: `item.path` is already absolute (effectivePath は実パス)。
+	/// - DevContainer: effectivePath が `.` のため `item.path = "./tasks/..."`。
+	///   `RemoteRPCRegistry.cwd(for:)` (broker から `pwd` op で取得) を prefix
+	///   して `/workspaces/.../tasks/...` に解決する。cwd 未取得なら剥がしただけ
+	///   の相対パスを返す (broker が pwd op に未対応な旧版でも壊れない)。
+	private func absolutePath(_ itemPath: String) -> String {
+		if !itemPath.hasPrefix("./") {
+			return itemPath
+		}
+		let rel = relativePath(itemPath)
+		if let cwd = RemoteRPCRegistry.shared.cwd(for: project.id), !cwd.isEmpty {
+			return (cwd as NSString).appendingPathComponent(rel)
+		}
+		return rel
 	}
 
 	private func fileIcon(_ name: String) -> String {

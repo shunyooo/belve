@@ -84,6 +84,10 @@ struct PaneLayout {
 
 class CommandAreaStateManager: ObservableObject {
 	private var states: [UUID: CommandAreaState] = [:]
+	// Coalesces persistence so divider drags (~60 ticks/sec) don't write
+	// JSON on every frame. Last write wins after `saveDebounce`.
+	private var pendingSaveTask: DispatchWorkItem?
+	private let saveDebounce: TimeInterval = 0.2
 
 	private static var saveURL: URL {
 		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -101,9 +105,16 @@ class CommandAreaStateManager: ObservableObject {
 			return existing
 		}
 		let state = CommandAreaState()
-		state.onLayoutChanged = { [weak self] in self?.save() }
+		state.onLayoutChanged = { [weak self] in self?.scheduleSave() }
 		states[projectId] = state
 		return state
+	}
+
+	func scheduleSave() {
+		pendingSaveTask?.cancel()
+		let task = DispatchWorkItem { [weak self] in self?.save() }
+		pendingSaveTask = task
+		DispatchQueue.main.asyncAfter(deadline: .now() + saveDebounce, execute: task)
 	}
 
 	func save() {
@@ -469,6 +480,7 @@ class CommandAreaState: ObservableObject {
 				if let node = self.findLayoutNode(nodeId, in: self.root) {
 					node.splitRatio = newValue
 					self.objectWillChange.send()
+					self.onLayoutChanged?()
 				}
 			}
 		)
