@@ -46,11 +46,23 @@ func setPtySize(fd uintptr, cols, rows uint16) {
 var childPid int // set by runMaster after cmd.Start()
 
 func setSysProcAttr(ttyFile *os.File) *syscall.SysProcAttr {
+	// Setctty で controlling terminal を持たせる事で、bash の
+	// "cannot set terminal process group / no job control in this shell"
+	// warning を抑制し、shell 内で job control も使えるようになる。
+	//
+	// Ctty=0 は STDIN_FILENO。daemon spawn 時に Stdin=ttyFile としてから
+	// 子プロセス側で dup2 で fd 0 に来る前提 (= Go の cmd.Run() 経路ではこの
+	// 流れが標準)。
+	//
+	// 注意: Go は SysProcAttr.Setctty を実装する際 `TIOCSCTTY arg=1` (= 強制
+	// 横取り) を hardcode してて、これは CAP_SYS_ADMIN が必要。非 privileged
+	// container では failure → 子プロセスごと exec 失敗するので、現状は
+	// privileged container (devcontainer の `--privileged` flag) を前提とする。
+	// 失敗する環境は Setctty を外す形に戻す必要がある。
 	return &syscall.SysProcAttr{
-		Setsid: true,
-		// Setctty requires CAP_SYS_ADMIN in non-privileged containers
-		// (Go hardcodes TIOCSCTTY arg=1). bash shows "cannot set terminal
-		// process group" but this is cosmetic — functionality is unaffected.
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    0,
 	}
 }
 

@@ -73,6 +73,25 @@ func (sm *setupManager) invalidate(projectID string) {
 	delete(sm.projects, projectID)
 }
 
+// markReady: rebuildSetup が成功した直後に呼ぶ。次回 ensureSetup を
+// 即返却 (fast-path) させる。runSetup 経由で同等の事をやってるが、
+// rebuildSetup は別経路 (= host lock 自前で取って belve-setup 直叩き) なので
+// state を明示的に揃える必要がある。
+func (sm *setupManager) markReady(projectID string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.projects[projectID] = &projectSetup{
+		state: setupReady,
+		done:  closedChan(),
+	}
+}
+
+func closedChan() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
 func (sm *setupManager) hostLock(host string) *sync.Mutex {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -199,6 +218,7 @@ func deployBundle(host, binDir string) error {
 		{filepath.Join(binDir, "belve"), filepath.Join(staging, "bin", "belve")},
 		{filepath.Join(binDir, "claude"), filepath.Join(staging, "bin", "claude")},
 		{filepath.Join(binDir, "codex"), filepath.Join(staging, "bin", "codex")},
+		{filepath.Join(binDir, "codex-hooks-install"), filepath.Join(staging, "bin", "codex-hooks-install")},
 		{filepath.Join(binDir, "belve-setup"), filepath.Join(staging, "bin", "belve-setup")},
 		{filepath.Join(binDir, "belve-persist-linux-amd64"), filepath.Join(staging, "bin", "belve-persist-linux-amd64")},
 		{filepath.Join(binDir, "belve-persist-linux-arm64"), filepath.Join(staging, "bin", "belve-persist-linux-arm64")},

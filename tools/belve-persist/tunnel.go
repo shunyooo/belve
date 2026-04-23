@@ -45,8 +45,94 @@ var globalTunnelManager = &tunnelManager{
 	forwardsSpawning: map[string]chan struct{}{},
 }
 
+func init() {
+	go globalTunnelManager.healthCheckLoop()
+}
+
+// healthCheckLoop: SSH master の再起動 / OS sleep 復帰 etc で forward が死んだ時に
+// 既存の belve-persist client の reconnect-loop を救うため、定期的に forward
+// を verify して死んでたら re-establish する。
+//
+// belve-persist client は master IPC を持たないので、自分から「forward 復旧して」
+// と頼めない。「local port に connect する」だけしかできず、master 側で勝手に
+// 復旧してくれることに依存する。
+func (tm *tunnelManager) healthCheckLoop() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		tm.mu.Lock()
+		snapshot := make(map[string]int, len(tm.routerForwards))
+		for k, v := range tm.routerForwards {
+			snapshot[k] = v
+		}
+		tm.mu.Unlock()
+		for host, port := range snapshot {
+			if isLocalPortReachable(port) {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "[belve-master] health-check: forward host=%s port=%d dead → re-establish\n", host, port)
+			tm.mu.Lock()
+			delete(tm.routerForwards, host)
+			delete(tm.routerSpecs, host)
+			delete(tm.allocatedPorts, port)
+			tm.mu.Unlock()
+			// 同じ port を再 allocate して同じ番号で復旧 (= 既存 client の retry が
+			// 同 port を叩き続けるので、新 port になると arrival しない)。
+			if _, err := tm.ensureRouterForwardOnPort(host, port, 19200); err != nil {
+				fmt.Fprintf(os.Stderr, "[belve-master] health-check: re-establish failed host=%s: %v\n", host, err)
+			}
+		}
+	}
+}
+
+// ensureRouterForwardOnPort: 特定 port 指定で forward を確立する。health check
+// 復旧用。allocateLocalPort は使わず、指定 port が空いていればそれを使う。
+func (tm *tunnelManager) ensureRouterForwardOnPort(host string, localPort, remotePort int) (int, error) {
+	if !isPortFreeMac(localPort) {
+		// 別プロセスが既に占有 → fallback で別 port を取って再 establish
+		return tm.ensureRouterForward(host, remotePort)
+	}
+	if err := tm.ensureControlMaster(host); err != nil {
+		return 0, err
+	}
+	spec := fmt.Sprintf("%d:127.0.0.1:%d", localPort, remotePort)
+	args := []string{
+		"-o", "ControlPath=" + sshControlPath(host),
+		"-O", "forward",
+		"-L", spec,
+		host,
+	}
+	c := exec.Command("ssh", args...)
+	if out, err := c.CombinedOutput(); err != nil {
+		return 0, fmt.Errorf("ssh -O forward: %v: %s", err, out)
+	}
+	tm.mu.Lock()
+	tm.routerForwards[host] = localPort
+	tm.routerSpecs[host] = spec
+	tm.allocatedPorts[localPort] = true
+	tm.mu.Unlock()
+	fmt.Fprintf(os.Stderr, "[belve-master] router forward (recovered) host=%s local=%d -> 127.0.0.1:%d\n", host, localPort, remotePort)
+	return localPort, nil
+}
+
+// isLocalPortReachable: 指定 local port に TCP 接続できるか。SSH forward が
+// 生きてるかの quick health check 用。
+func isLocalPortReachable(port int) bool {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
 // ensureRouterForward: host あたり 1 個の per-VM router 用 forward を保証する。
 // 既にあれば即返却、無ければ ControlMaster + forward を確立して新規 port を返す。
+//
+// 既存 entry は **必ず生存確認** してから返す。SSH master が再起動した等の理由で
+// 実際の forward が死んでいても master daemon の state は残ってしまう、
+// stale state バグへの保険。死んでたら再確立する。
 func (tm *tunnelManager) ensureRouterForward(host string, remotePort int) (int, error) {
 	if remotePort == 0 {
 		remotePort = 19200
@@ -54,7 +140,17 @@ func (tm *tunnelManager) ensureRouterForward(host string, remotePort int) (int, 
 	tm.mu.Lock()
 	if p, ok := tm.routerForwards[host]; ok {
 		tm.mu.Unlock()
-		return p, nil
+		if isLocalPortReachable(p) {
+			return p, nil
+		}
+		// stale: forward が死んでる。state を消して再確立に進む。
+		fmt.Fprintf(os.Stderr, "[belve-master] router forward host=%s port=%d is stale, re-establishing\n", host, p)
+		tm.mu.Lock()
+		delete(tm.routerForwards, host)
+		delete(tm.routerSpecs, host)
+		delete(tm.allocatedPorts, p)
+		tm.mu.Unlock()
+		tm.mu.Lock()
 	}
 	// in-flight な spawn があれば待つ
 	if ch, ok := tm.forwardsSpawning[host]; ok {

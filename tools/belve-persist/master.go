@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 )
@@ -37,6 +38,14 @@ type masterRes struct {
 	OK     bool        `json:"ok"`
 	Result interface{} `json:"result,omitempty"`
 	Error  string      `json:"error,omitempty"`
+}
+
+// Push event (no `id`, has `type`). 長時間 op の進捗を返信用 conn にストリーム
+// する用途で使う (rebuildSetup の belve-setup 出力等)。Belve.app 側はこの
+// `type` を見て payload を route する。
+type masterPush struct {
+	Type    string                 `json:"type"`
+	Payload map[string]interface{} `json:"payload,omitempty"`
 }
 
 type masterConn struct {
@@ -105,7 +114,16 @@ func handleMasterConn(mc *masterConn) {
 			_ = mc.write(masterRes{OK: false, Error: fmt.Sprintf("bad json: %v", err)})
 			continue
 		}
-		res := safeMasterDispatch(req)
+		// Long-running op (rebuildSetup) は別 goroutine で動かして reader を
+		// blocking しないようにする。短い op は逐次実行で OK。
+		if req.Op == "rebuildSetup" {
+			go func(req masterReq) {
+				res := safeMasterDispatch(mc, req)
+				_ = mc.write(res)
+			}(req)
+			continue
+		}
+		res := safeMasterDispatch(mc, req)
 		if err := mc.write(res); err != nil {
 			fmt.Fprintf(os.Stderr, "[belve-master] write: %v\n", err)
 			return
@@ -113,16 +131,16 @@ func handleMasterConn(mc *masterConn) {
 	}
 }
 
-func safeMasterDispatch(req masterReq) (res masterRes) {
+func safeMasterDispatch(mc *masterConn, req masterReq) (res masterRes) {
 	defer func() {
 		if r := recover(); r != nil {
 			res = masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("handler panic: %v", r)}
 		}
 	}()
-	return masterDispatch(req)
+	return masterDispatch(mc, req)
 }
 
-func masterDispatch(req masterReq) masterRes {
+func masterDispatch(mc *masterConn, req masterReq) masterRes {
 	switch req.Op {
 	case "ping":
 		return masterRes{ID: req.ID, OK: true, Result: map[string]string{"pong": "ok"}}
@@ -143,9 +161,106 @@ func masterDispatch(req masterReq) masterRes {
 		return opTunnelStatus(req)
 	case "teardownAllTunnels":
 		return opTeardownAllTunnels(req)
+	case "rebuildSetup":
+		return opRebuildSetup(mc, req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
+}
+
+// rebuildSetup params: {projectId, host, workspacePath, projShort, binDir, forceRebuild?}
+// devcontainer の setup を実行 + 進捗を `rebuildProgress` push event で stream する。
+// forceRebuild=true なら旧 container 破壊 (= belve-setup --rebuild)。false なら
+// 通常の belve-setup (cached .env あれば fast path、無ければ devcontainer up を新規実行)。
+//
+// 「Rebuild DevContainer」と「SSH → Open Remote DevContainer」両方の経路から
+// 同じ UX (overlay + ライブログ) を提供するために共通化。
+func opRebuildSetup(mc *masterConn, req masterReq) masterRes {
+	p := req.Params
+	projectID := strParam(p, "projectId")
+	host := strParam(p, "host")
+	workspacePath := strParam(p, "workspacePath")
+	projShort := strParam(p, "projShort")
+	binDir := strParam(p, "binDir")
+	forceRebuild := boolParam(p, "forceRebuild")
+	if projectID == "" || host == "" || projShort == "" || binDir == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "projectId/host/projShort/binDir required"}
+	}
+
+	// 1) Setup state を invalidate (= 次回 ensureSetup が再実行される)
+	globalSetupManager.invalidate(projectID)
+
+	// 2) Per-host lock 取って belve-setup を走らせる
+	//    出力は line-buffered で push event として返信
+	pushLine := func(phase, line string) {
+		_ = mc.write(masterPush{
+			Type: "rebuildProgress",
+			Payload: map[string]interface{}{
+				"projectId": projectID,
+				"phase":     phase,
+				"line":      line,
+			},
+		})
+	}
+	pushLine("starting", fmt.Sprintf("Acquiring host lock for %s…", host))
+
+	hl := globalSetupManager.hostLock(host)
+	hl.Lock()
+	defer hl.Unlock()
+	if forceRebuild {
+		pushLine("running", "Starting devcontainer rebuild (this can take 30-120s)…")
+	} else {
+		pushLine("running", "Preparing container (this can take 30-120s on first run)…")
+	}
+
+	// 3) Deploy bundle (binary / scripts)
+	if err := deployBundle(host, binDir); err != nil {
+		pushLine("failed", fmt.Sprintf("deploy_bundle failed: %v", err))
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("deploy: %v", err)}
+	}
+	pushLine("running", "Bundle deployed.")
+
+	// 4) belve-setup via SSH, stdout/stderr を line stream
+	rebuildFlag := ""
+	if forceRebuild {
+		rebuildFlag = "--rebuild "
+	}
+	cmd := fmt.Sprintf("$HOME/.belve/bin/belve-setup %s--devcontainer --workspace %s --project-short %s",
+		rebuildFlag, shellEscape(workspacePath), shellEscape(projShort))
+	args := append([]string{}, sshOpts(host)...)
+	args = append(args, host, cmd)
+	c := exec.Command("ssh", args...)
+	stdoutPipe, err := c.StdoutPipe()
+	if err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("stdout pipe: %v", err)}
+	}
+	stderrPipe, err := c.StderrPipe()
+	if err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("stderr pipe: %v", err)}
+	}
+	if err := c.Start(); err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("start: %v", err)}
+	}
+	streamLines := func(r io.Reader) {
+		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			pushLine("running", scanner.Text())
+		}
+	}
+	go streamLines(stdoutPipe)
+	go streamLines(stderrPipe)
+	waitErr := c.Wait()
+	if waitErr != nil {
+		pushLine("failed", fmt.Sprintf("Rebuild failed: %v", waitErr))
+		return masterRes{ID: req.ID, OK: false, Error: waitErr.Error()}
+	}
+	pushLine("success", "Container ready.")
+
+	// 5) Mark setup as ready in state manager so subsequent ensureSetup is fast-path
+	//    (= Belve.app が PTY 再 spawn する直前に ensureSetup → 即返却)
+	globalSetupManager.markReady(projectID)
+	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"projectId": projectID, "state": "ready"}}
 }
 
 // ensureSetup params: {projectId, host, isDevContainer, workspacePath, projShort, binDir}

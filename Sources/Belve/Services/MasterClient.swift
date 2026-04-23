@@ -152,6 +152,33 @@ final class MasterClient: @unchecked Sendable {
 		_ = try await send(op: "teardownAllTunnels", params: [:])
 	}
 
+	/// DevContainer の rebuild を master に依頼する。長時間 op (~30-120s)。
+	/// 進捗は別途 `subscribePush("rebuildProgress") { payload in ... }` で受ける
+	/// (= payload contains `projectId`, `phase`, `line`)。本メソッドは最終結果
+	/// (success/failure) を await で返す。
+	@discardableResult
+	func rebuildSetup(
+		projectId: UUID,
+		host: String,
+		workspacePath: String,
+		projShort: String,
+		binDir: String,
+		forceRebuild: Bool = true
+	) async throws -> Bool {
+		let res = try await send(op: "rebuildSetup", params: [
+			"projectId": projectId.uuidString,
+			"host": host,
+			"workspacePath": workspacePath,
+			"projShort": projShort,
+			"binDir": binDir,
+			"forceRebuild": forceRebuild,
+		])
+		if !res.ok {
+			throw MasterError.rebuildFailed(res.error ?? "unknown")
+		}
+		return true
+	}
+
 	// MARK: - Send
 
 	/// Send a request, await response. Reconnects + retries once on the first
@@ -272,11 +299,30 @@ final class MasterClient: @unchecked Sendable {
 		}
 	}
 
+	/// Push event subscribers, keyed by event type ("rebuildProgress" 等)。
+	/// Multiple closures per type allowed; callbacks fire on the IPC queue.
+	private var pushHandlers: [String: [(([String: Any]) -> Void)]] = [:]
+
+	/// Subscribe to a master push event (= response with no `id`, has `type`).
+	/// 例: rebuildSetup の進捗 stream を `subscribePush("rebuildProgress") { ... }` で受ける。
+	func subscribePush(type: String, handler: @escaping ([String: Any]) -> Void) {
+		stateLock.withLock {
+			pushHandlers[type, default: []].append(handler)
+		}
+	}
+
 	private func processBuffer() {
 		while let nlIndex = readBuffer.firstIndex(of: 0x0A) {
 			let line = readBuffer.prefix(upTo: nlIndex)
 			readBuffer.removeSubrange(0...nlIndex)
 			guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+			// Push event (no id, has type) → dispatch to subscribers
+			if obj["id"] == nil, let type = obj["type"] as? String {
+				let payload = obj["payload"] as? [String: Any] ?? [:]
+				let handlers = stateLock.withLock { pushHandlers[type] ?? [] }
+				for h in handlers { h(payload) }
+				continue
+			}
 			let id = obj["id"] as? String ?? ""
 			let ok = obj["ok"] as? Bool ?? false
 			let result = obj["result"] as? [String: Any]
@@ -388,6 +434,7 @@ enum MasterError: LocalizedError {
 	case malformedResponse(String)
 	case timeout
 	case setupFailed(String)
+	case rebuildFailed(String)
 
 	var errorDescription: String? {
 		switch self {
@@ -400,6 +447,7 @@ enum MasterError: LocalizedError {
 		case .malformedResponse(let m): return "malformed master response: \(m)"
 		case .timeout: return "master request timed out"
 		case .setupFailed(let m): return "project setup failed: \(m)"
+		case .rebuildFailed(let m): return "rebuild failed: \(m)"
 		}
 	}
 }
