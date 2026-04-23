@@ -155,6 +155,15 @@ class NotificationStore: ObservableObject {
 				sessions[idx].updatedAt = Date()
 				saveSessions()
 			}
+			// macOS 通知: belve hook の stop は (1) "Done" placeholder を即時送って
+			// sidebar dot を緑化、(2) transcript 抽出して実テキストを送る、の 2 段構え。
+			// 通知は **(2) 実テキストの時だけ** 出す。"Done" はただの即応用 placeholder
+			// で情報量ゼロなので通知して通信スパムにする価値がない。
+			// 抽出失敗時は (2) が来ないので通知も無し (= 体感の害はほぼ無い、UI 側
+			// の sidebar dot は (1) で既に更新されてる)。
+			if !message.isEmpty && message != "Done" {
+				sendDesktopNotification(title: "Claude Code — Done", body: message, projectId: projectId)
+			}
 
 		case .sessionEnd:
 			updateActiveSession(paneId: paneId) { session in

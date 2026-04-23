@@ -301,47 +301,103 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		Self.cleanupStaleBelveProcesses()
 	}
 
-	/// Kill lingering ssh processes that reference our ControlPath,
-	/// plus belve-connect / belve-setup invocations. Runs on app start/exit.
+	/// Stale process / socket cleanup. Runs on app start/exit.
 	///
-	/// Skipped if another Belve instance is running — those processes belong to it,
-	/// and killing them would break the other instance's terminals.
+	/// Important: **local persist daemons (= per-pane PTY holders) は kill しない**。
+	/// Belve.app を再起動した時に既存セッション (zsh + history + 起動中プロセス) を
+	/// 復元するため、これらは生かしたままにして launcher の tryAttach が拾う。
+	///
+	/// 代わりに **orphan reap** で対応: pane-layouts.json に登場しない (= もう
+	/// どの project も使ってない) socket だけを kill して、ゾンビ蓄積を防ぐ。
+	///
+	/// Skipped if another Belve instance is running — those processes belong to it.
 	static func cleanupStaleBelveProcesses() {
 		if otherBelveInstancesRunning() {
 			NSLog("[Belve] cleanupStaleBelveProcesses skipped — other Belve instance(s) active")
 			return
 		}
-		// Exit every existing ControlMaster cleanly before pkill, so its port-forward table
-		// is flushed. If we only kill the master, a stale forward entry can linger on the
-		// next run (different pane gets same local port → forward targets the wrong container).
-		// Order matters:
-		// 1. ssh -O exit closes ControlMasters cleanly (flushes their forward tables)
-		// 2. kill any remaining ssh/connect/setup processes (failsafe)
-		// 3. kill tcpbackend persist daemons — these cache the port they were launched
-		//    with, and on restart Swift may reassign that port to a different project;
-		//    if we leave them alive, the launcher's socket-reuse path attaches to a
-		//    daemon pointing at the wrong forward.
-		// 4. remove socket files and spec files so the next launcher run starts fresh.
-		// Master daemon 管理下の SSH master / control sockets は触らない。
-		// 残骸として消すのは local pane の belve-persist client + その socket file 系。
-		// Master 自体 (`belve-persist.*-mac-master`) も touch しない (= 別プロセスとして生存)。
-		let script = """
+		// 1. tcpbackend client (= remote pane の Mac 側 belve-persist client) は
+		//    新しい launcher が再 spawn するので kill。socket file も合わせて消す。
+		//    daemon は持たないので zombie 心配なし。
+		let purgeRemoteClients = """
 		pkill -f 'belve-persist-darwin.*tcpbackend' 2>/dev/null
-		# `-socket` を含む client (tcpbackend 経由ではない master 接続用 client) も掃除
-		pkill -f 'belve-persist-darwin.*-socket /tmp/belve-shell' 2>/dev/null
-		rm -f /tmp/belve-shell/sessions/belve-*.sock 2>/dev/null
-		rm -f /tmp/belve-shell/sessions/belve-*.ver 2>/dev/null
-		rm -f /tmp/belve-shell/sessions/belve-*.sock.pid 2>/dev/null
 		true
 		"""
-		let process = Process()
-		process.executableURL = URL(fileURLWithPath: "/bin/sh")
-		process.arguments = ["-c", script]
-		process.standardOutput = FileHandle.nullDevice
-		process.standardError = FileHandle.nullDevice
-		try? process.run()
-		process.waitUntilExit()
+		runShell(purgeRemoteClients)
+
+		// 2. Local daemon の orphan reap: pane-layouts.json と突き合わせて、
+		//    どの project からも参照されてない session sock だけを kill。
+		reapOrphanLocalDaemons()
+
 		NSLog("[Belve] cleanupStaleBelveProcesses done")
+	}
+
+	private static func runShell(_ script: String) {
+		let p = Process()
+		p.executableURL = URL(fileURLWithPath: "/bin/sh")
+		p.arguments = ["-c", script]
+		p.standardOutput = FileHandle.nullDevice
+		p.standardError = FileHandle.nullDevice
+		try? p.run()
+		p.waitUntilExit()
+	}
+
+	/// pane-layouts.json から「現在 project layout に存在する pane」 set を作り、
+	/// /tmp/belve-shell/sessions/belve-*.sock のうち未参照のものだけを kill する。
+	/// 残骸 .pid / .ver も合わせて掃除。
+	private static func reapOrphanLocalDaemons() {
+		let sessionsDir = "/tmp/belve-shell/sessions"
+		let fm = FileManager.default
+		guard let entries = try? fm.contentsOfDirectory(atPath: sessionsDir) else { return }
+		let expected = expectedLocalSessionNames()
+		for entry in entries where entry.hasPrefix("belve-") && entry.hasSuffix(".sock") {
+			let sessName = String(entry.dropLast(".sock".count))  // "belve-XXXXXXXX[-N]"
+			if expected.contains(sessName) {
+				continue  // 生かす — launcher が tryAttach で再利用する
+			}
+			NSLog("[Belve] reap orphan local daemon: %@", sessName)
+			let sockPath = "\(sessionsDir)/\(entry)"
+			// daemon プロセスを kill (= -socket で sockPath に紐づく persist procs)
+			runShell("pkill -f 'belve-persist-darwin.*\(sockPath)' 2>/dev/null; true")
+			try? fm.removeItem(atPath: sockPath)
+			try? fm.removeItem(atPath: sockPath + ".pid")
+			try? fm.removeItem(atPath: "\(sessionsDir)/\(sessName).ver")
+		}
+	}
+
+	/// pane-layouts.json (CommandAreaStateManager の永続化先) を読んで、
+	/// 全 project の全 leaf pane の (projShort, paneIndex) から期待される
+	/// session 名 set を組み立てる。
+	private static func expectedLocalSessionNames() -> Set<String> {
+		var result: Set<String> = []
+		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+		let layoutURL = appSupport?
+			.appendingPathComponent("Belve")
+			.appendingPathComponent("pane-layouts.json")
+		guard let url = layoutURL,
+		      let data = try? Data(contentsOf: url),
+		      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+		else { return result }
+		for (projectIDString, root) in json {
+			let projShort = String(projectIDString.prefix(8)).uppercased()
+			collectPaneSessions(node: root, projShort: projShort, into: &result)
+		}
+		return result
+	}
+
+	private static func collectPaneSessions(node: Any, projShort: String, into result: inout Set<String>) {
+		guard let dict = node as? [String: Any] else { return }
+		if let children = dict["children"] as? [Any] {
+			for c in children {
+				collectPaneSessions(node: c, projShort: projShort, into: &result)
+			}
+			return
+		}
+		// leaf node — 持ってる paneIndex で session 名を組む
+		if let idx = dict["paneIndex"] as? Int {
+			let name = idx == 0 ? "belve-\(projShort)" : "belve-\(projShort)-\(idx)"
+			result.insert(name)
+		}
 	}
 
 	/// True if at least one Belve executable other than us is currently running.

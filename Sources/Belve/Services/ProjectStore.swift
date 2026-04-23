@@ -2,6 +2,23 @@ import Foundation
 import SwiftUI
 import WebKit
 
+/// DevContainer rebuild の進捗状態。`ProjectStore.rebuildStates[projectId]` で
+/// CommandArea から観測される。Set されてる間はペインを隠して overlay 表示。
+struct RebuildState {
+	enum Phase { case running, success, failed }
+	var phase: Phase
+	var log: [String]
+	var startedAt: Date
+
+	mutating func appendLine(_ line: String) {
+		log.append(line)
+		// 直近 500 行だけ保持 (大量出力で memory 食わないように)
+		if log.count > 500 {
+			log.removeFirst(log.count - 500)
+		}
+	}
+}
+
 /// Manages project lifecycle: CRUD, persistence, selection, and state reset.
 /// Single source of truth for project state — all project mutations go through here.
 class ProjectStore: ObservableObject {
@@ -24,6 +41,12 @@ class ProjectStore: ObservableObject {
 	// notifications. Used by the sidebar to show a "Preparing DevContainer..." hint.
 	@Published var projectLoadingStatus: [UUID: String] = [:]
 	private var projectLoadingPanes: [UUID: Set<UUID>] = [:]
+	/// Per-project rebuild state. Set when `rebuildDevContainer` starts and
+	/// cleared on completion. While set, CommandArea hides panes and shows
+	/// `RebuildOverlayView` instead. Streaming `belve-setup --rebuild` output
+	/// is appended to `log` as it arrives via master push events.
+	@Published var rebuildStates: [UUID: RebuildState] = [:]
+	private var pushSubscribed = false
 	private var lastGitRefresh: Date = .distantPast
 
 	private var gitPollTimer: Timer?
@@ -676,7 +699,14 @@ class ProjectStore: ObservableObject {
 		if let index = indexOfSelected {
 			let oldProject = projects[index]
 			let name = oldProject.path == nil ? (host.components(separatedBy: ".").first ?? host) : oldProject.name
-			let newProject = Project(name: name, workspace: .ssh(host: host, path: oldProject.path))
+			// groupName / isPinned を継承しないと、サイドバーが known group の
+			// projects だけを描画する仕組みのため新 project が消える。
+			let newProject = Project(
+				name: name,
+				workspace: .ssh(host: host, path: oldProject.path),
+				isPinned: oldProject.isPinned,
+				groupName: oldProject.groupName
+			)
 			projects[index] = newProject
 			saveProjects()
 			select(newProject)
@@ -704,22 +734,30 @@ class ProjectStore: ObservableObject {
 			if let oldHost = projects[index].sshHost {
 				SSHTunnelManager.shared.teardownTunnel(host: oldHost, projectId: projects[index].id)
 			}
+			let oldProject = projects[index]
 			let replacement = Project(
-				name: baseName.isEmpty ? projects[index].name : baseName,
-				workspace: workspace
+				name: baseName.isEmpty ? oldProject.name : baseName,
+				workspace: workspace,
+				isPinned: oldProject.isPinned,
+				groupName: oldProject.groupName
 			).withNewId()
 			projects[index] = replacement
 			saveProjects()
 			select(replacement)
 			fetchContainerImageName(sshHost: host, remotePath: workspacePath)
+			// Master 経由の container setup を triggering (overlay + ライブログ表示)。
+			// rebuild と同じ UX で初回 `devcontainer up` の進捗が見える。
+			triggerInitialDevContainerSetup(replacement.id)
 			NSLog("[Belve] Reconfigured project \(replacement.name) @ \(host):\(workspacePath) as DevContainer")
 		} else {
 			let finalName = uniqueName(baseName.isEmpty ? host : baseName)
-			let project = Project(name: finalName, workspace: workspace)
+			// 新規 project は default group に入れる (= サイドバーで filter されない)
+			let project = Project(name: finalName, workspace: workspace, groupName: defaultGroupName)
 			projects.append(project)
 			saveProjects()
 			select(project)
 			fetchContainerImageName(sshHost: host, remotePath: workspacePath)
+			triggerInitialDevContainerSetup(project.id)
 			NSLog("[Belve] Added project \(finalName) @ \(host):\(workspacePath) as DevContainer")
 		}
 	}
@@ -739,56 +777,146 @@ class ProjectStore: ObservableObject {
 		saveProjects()
 		select(newProject)
 		fetchContainerImageName(sshHost: sshHost, remotePath: workspacePath)
+		triggerInitialDevContainerSetup(newProject.id)
 		NSLog("[Belve] DevContainer enabled for \(newProject.name)")
 	}
 
-	/// Rebuild DevContainer: stop/remove existing container on remote, then reload project.
-	/// Remote belve-setup --rebuild does the actual destroy+up.
+	/// Rebuild DevContainer: master daemon に依頼 + overlay UI 表示。
+	/// `runContainerSetup(forceRebuild: true)` のラッパー。
 	func rebuildDevContainer() {
 		guard let index = indexOfSelected,
-			  case .devContainer(let sshHost, let workspace) = projects[index].workspace else {
+		      case .devContainer(let sshHost, let workspace) = projects[index].workspace else {
 			NSLog("[Belve] rebuildDevContainer: no DevContainer selected")
 			return
 		}
-		let projId = projects[index].id
-		let projShort = String(projId.uuidString.prefix(8))
+		let p = projects[index]
+		runContainerSetup(
+			projectId: p.id, projectName: p.name,
+			sshHost: sshHost, workspacePath: workspace,
+			forceRebuild: true,
+			initialMessage: "Requesting rebuild of \(p.name)…"
+		)
+	}
 
-		// Teardown existing tunnel: container IP will change after rebuild
-		SSHTunnelManager.shared.teardownTunnel(host: sshHost, projectId: projId)
+	/// SSH → Open Remote DevContainer 等で初回 container 起動を triggering する時に呼ぶ。
+	/// `runContainerSetup(forceRebuild: false)` のラッパー。
+	/// (cached `.env` あれば belve-setup は fast path、無ければ devcontainer up 新規実行)
+	func triggerInitialDevContainerSetup(_ projectId: UUID) {
+		guard let index = projects.firstIndex(where: { $0.id == projectId }),
+		      case .devContainer(let sshHost, let workspace) = projects[index].workspace else {
+			return
+		}
+		let p = projects[index]
+		runContainerSetup(
+			projectId: p.id, projectName: p.name,
+			sshHost: sshHost, workspacePath: workspace,
+			forceRebuild: false,
+			initialMessage: "Preparing container for \(p.name)…"
+		)
+	}
 
-		// Run belve-setup --rebuild on remote (destroys existing container)
-		DispatchQueue.global().async {
-			let process = Process()
-			process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-			process.arguments = [
-				"-o", "StrictHostKeyChecking=accept-new",
-				"-o", "ConnectTimeout=10",
-				sshHost,
-				"$HOME/.belve/bin/belve-setup --rebuild --devcontainer --workspace \(workspace) --project-short \(projShort)"
-			]
-			process.standardOutput = FileHandle.nullDevice
-			process.standardError = FileHandle.nullDevice
+	/// Master 経由の container setup (rebuild / 初回共通)。
+	/// - per-host serialize (master 側 sync.Mutex)
+	/// - setup state invalidate → belve-setup → markReady
+	/// - 進捗を push event で受けて `rebuildStates[projId].log` に流す
+	/// - CommandArea が `rebuildStates[projId]` を観測してペインを隠して overlay 表示
+	private func runContainerSetup(
+		projectId: UUID,
+		projectName: String,
+		sshHost: String,
+		workspacePath: String,
+		forceRebuild: Bool,
+		initialMessage: String
+	) {
+		// 既に進行中なら無視 (二重起動防止)
+		if rebuildStates[projectId]?.phase == .running {
+			NSLog("[Belve] runContainerSetup: already running for \(projectName)")
+			return
+		}
+		subscribeMasterPushEventsIfNeeded()
+
+		let projShort = String(projectId.uuidString.prefix(8))
+
+		// 即座に state set → UI が overlay を出す + ペイン token bump で既存 PTY を teardown
+		rebuildStates[projectId] = RebuildState(
+			phase: .running,
+			log: [initialMessage],
+			startedAt: Date()
+		)
+		terminalReloadTokens[projectId, default: 0] += 1
+		objectWillChange.send()
+
+		guard let binDir = Self.belveBinDir() else {
+			rebuildStates[projectId]?.appendLine("ERROR: belve binary directory not found")
+			rebuildStates[projectId]?.phase = .failed
+			return
+		}
+
+		Task.detached(priority: .userInitiated) { [weak self] in
 			do {
-				try process.run()
-				process.waitUntilExit()
-				NSLog("[Belve] rebuildDevContainer: remote exit=\(process.terminationStatus)")
+				try await MasterClient.shared.rebuildSetup(
+					projectId: projectId,
+					host: sshHost,
+					workspacePath: workspacePath,
+					projShort: projShort,
+					binDir: binDir,
+					forceRebuild: forceRebuild
+				)
+				await MainActor.run {
+					self?.rebuildStates[projectId]?.phase = .success
+					self?.rebuildStates[projectId]?.appendLine("✓ Container ready. Reconnecting panes…")
+				}
+				try? await Task.sleep(nanoseconds: 1_500_000_000)
+				await MainActor.run {
+					self?.rebuildStates.removeValue(forKey: projectId)
+					self?.terminalReloadTokens[projectId, default: 0] += 1
+					self?.objectWillChange.send()
+				}
 			} catch {
-				NSLog("[Belve] rebuildDevContainer: failed: \(error)")
-			}
-			DispatchQueue.main.async { [weak self] in
-				self?.reloadProject(projId)
+				await MainActor.run {
+					self?.rebuildStates[projectId]?.phase = .failed
+					self?.rebuildStates[projectId]?.appendLine("ERROR: \(error.localizedDescription)")
+				}
 			}
 		}
-		NSLog("[Belve] rebuildDevContainer: started for \(projects[index].name)")
+		NSLog("[Belve] runContainerSetup: requested for \(projectName) forceRebuild=\(forceRebuild)")
+	}
+
+	/// `RebuildOverlayView` の "Dismiss" / "Retry" ボタンから呼ばれる。
+	func dismissRebuildState(_ projectId: UUID) {
+		rebuildStates.removeValue(forKey: projectId)
+		terminalReloadTokens[projectId, default: 0] += 1
+		objectWillChange.send()
+	}
+
+	private func subscribeMasterPushEventsIfNeeded() {
+		guard !pushSubscribed else { return }
+		pushSubscribed = true
+		MasterClient.shared.subscribePush(type: "rebuildProgress") { [weak self] payload in
+			guard let self else { return }
+			guard let pidStr = payload["projectId"] as? String,
+			      let projId = UUID(uuidString: pidStr) else { return }
+			let line = payload["line"] as? String ?? ""
+			DispatchQueue.main.async {
+				self.rebuildStates[projId]?.appendLine(line)
+			}
+		}
 	}
 
 	func disconnectSSH() {
 		guard let index = indexOfSelected else { return }
-		let name = projects[index].name
-		if let host = projects[index].sshHost {
-			SSHTunnelManager.shared.teardownTunnel(host: host, projectId: projects[index].id)
+		let oldProject = projects[index]
+		let name = oldProject.name
+		if let host = oldProject.sshHost {
+			SSHTunnelManager.shared.teardownTunnel(host: host, projectId: oldProject.id)
 		}
-		let newProject = Project(name: name, workspace: .local(path: nil))
+		// groupName / isPinned 継承で sidebar から消えないように。
+		let newProject = Project(
+			name: name,
+			workspace: .local(path: nil),
+			isPinned: oldProject.isPinned,
+			groupName: oldProject.groupName
+		)
 		projects[index] = newProject
 		saveProjects()
 		select(newProject)
@@ -802,7 +930,9 @@ class ProjectStore: ObservableObject {
 		SSHTunnelManager.shared.teardownTunnel(host: sshHost, projectId: old.id)
 		let newProject = Project(
 			name: old.name,
-			workspace: .ssh(host: sshHost, path: old.path)
+			workspace: .ssh(host: sshHost, path: old.path),
+			isPinned: old.isPinned,
+			groupName: old.groupName
 		)
 		projects[index] = newProject
 		saveProjects()
