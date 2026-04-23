@@ -579,18 +579,6 @@ private struct SessionRow: View {
 	var onDismiss: (() -> Void)? = nil
 	@State private var isHovering = false
 
-	private var statusColor: Color {
-		switch session.status {
-		case .running: return Theme.accent
-		case .waiting: return Theme.yellow
-		case .completed, .sessionEnd: return Theme.green
-		// `sessionStart` is the "claude launched, no prompt yet" state — show
-		// it as neutral/idle so it's visually distinct from actively running.
-		case .sessionStart: return Theme.textTertiary
-		case .idle: return Theme.textTertiary
-		}
-	}
-
 	/// Sessions in `.sessionStart` are idle (claude is waiting for user input
 	/// after launch); only `.running` and `.waiting` should look "live" in the
 	/// sidebar.
@@ -612,14 +600,7 @@ private struct SessionRow: View {
 		HStack(alignment: .top, spacing: 6) {
 			VStack {
 				Spacer().frame(height: 3)
-				if isActive {
-					PulsingDot(color: statusColor)
-				} else {
-					Circle()
-						.fill(statusColor.opacity(session.status == .completed ? 1 : 0.3))
-						.frame(width: 6, height: 6)
-						.frame(width: 10, height: 10)
-				}
+				StatusIndicator(status: session.status)
 			}
 
 			VStack(alignment: .leading, spacing: 2) {
@@ -688,32 +669,6 @@ private struct SessionRow: View {
 		}
 		.contentShape(Rectangle())
 		.onHover { isHovering = $0 }
-	}
-}
-
-// MARK: - Pulsing Dot
-
-private struct PulsingDot: View {
-	let color: Color
-	@State private var isPulsing = false
-
-	var body: some View {
-		Circle()
-			.fill(color)
-			.frame(width: 6, height: 6)
-			.overlay(
-				Circle()
-					.stroke(color.opacity(0.4), lineWidth: 1.5)
-					.frame(width: 10, height: 10)
-					.scaleEffect(isPulsing ? 1.3 : 1.0)
-					.opacity(isPulsing ? 0 : 0.6)
-			)
-			.frame(width: 10, height: 10)
-			.onAppear {
-				withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) {
-					isPulsing = true
-				}
-			}
 	}
 }
 

@@ -9,6 +9,11 @@ class AppConfig: ObservableObject {
 		".DS_Store", ".Trash", ".belve"
 	]
 
+	/// Sidebar の active session indicator アニメスタイル。
+	@Published var spinnerStyle: SpinnerStyle = .pulse {
+		didSet { if oldValue != spinnerStyle { save() } }
+	}
+
 	private static var configURL: URL {
 		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
 		let belveDir = appSupport.appendingPathComponent("Belve")
@@ -18,9 +23,14 @@ class AppConfig: ObservableObject {
 
 	private struct Persisted: Codable {
 		var fileTree: FileTreeConfig?
+		var ui: UIConfig?
 
 		struct FileTreeConfig: Codable {
 			var excludePatterns: [String]?
+		}
+
+		struct UIConfig: Codable {
+			var spinnerStyle: String?
 		}
 	}
 
@@ -34,11 +44,15 @@ class AppConfig: ObservableObject {
 		if let patterns = persisted.fileTree?.excludePatterns {
 			excludePatterns = patterns
 		}
+		if let raw = persisted.ui?.spinnerStyle, let style = SpinnerStyle(rawValue: raw) {
+			spinnerStyle = style
+		}
 	}
 
 	func save() {
 		let persisted = Persisted(
-			fileTree: .init(excludePatterns: excludePatterns)
+			fileTree: .init(excludePatterns: excludePatterns),
+			ui: .init(spinnerStyle: spinnerStyle.rawValue)
 		)
 		if let data = try? JSONEncoder().encode(persisted) {
 			try? data.write(to: Self.configURL)
