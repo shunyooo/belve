@@ -101,16 +101,21 @@ final class RemoteRPCClient: @unchecked Sendable {
 		return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<RPCResponse, Error>) in
 			stateLock.withLock { pending[id] = cont }
 			guard let conn = connection else {
-				stateLock.withLock { _ = pending.removeValue(forKey: id) }
-				cont.resume(throwing: RPCError.connectionLost)
+				let target = stateLock.withLock { () -> CheckedContinuation<RPCResponse, Error>? in
+					pending.removeValue(forKey: id)
+				}
+				target?.resume(throwing: RPCError.connectionLost)
 				return
 			}
 			conn.send(content: line, completion: .contentProcessed { [weak self] err in
-				guard let self else { return }
-				if let err {
-					self.stateLock.withLock { _ = self.pending.removeValue(forKey: id) }
-					cont.resume(throwing: err)
+				guard let self, let err else { return }
+				// pending[id] を atomic に take して、取れた時だけ resume する。
+				// timeout / response 到着パスとの race で double resume → crash を防ぐ
+				// (= 2026-04-24 SIGTRAP in CheckedContinuation.resume)。
+				let target = self.stateLock.withLock { () -> CheckedContinuation<RPCResponse, Error>? in
+					self.pending.removeValue(forKey: id)
 				}
+				target?.resume(throwing: err)
 			})
 			// Timeout: 5s. Long enough for slow SSH, short enough to fail loud.
 			self.queue.asyncAfter(deadline: .now() + 5.0) { [weak self] in

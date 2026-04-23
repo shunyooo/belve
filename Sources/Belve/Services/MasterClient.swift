@@ -222,15 +222,22 @@ final class MasterClient: @unchecked Sendable {
 		return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<MasterResponse, Error>) in
 			stateLock.withLock { pending[id] = cont }
 			guard let conn = connection else {
-				stateLock.withLock { _ = pending.removeValue(forKey: id) }
-				cont.resume(throwing: MasterError.connectionLost)
+				let target = stateLock.withLock { () -> CheckedContinuation<MasterResponse, Error>? in
+					pending.removeValue(forKey: id)
+				}
+				target?.resume(throwing: MasterError.connectionLost)
 				return
 			}
 			conn.send(content: line, completion: .contentProcessed { [weak self] err in
-				if let err {
-					self?.stateLock.withLock { _ = self?.pending.removeValue(forKey: id) }
-					cont.resume(throwing: MasterError.sendFailed(err.localizedDescription))
+				guard let self, let err else { return }
+				// pending[id] を atomic に take して、取れた時だけ resume する。
+				// processBuffer (response) や disconnect (connectionLost) と race して
+				// double resume → SIGSEGV in os_unfair_lock_lock を防ぐ
+				// (= 2026-04-24 belve.master queue crash)。
+				let target = self.stateLock.withLock { () -> CheckedContinuation<MasterResponse, Error>? in
+					self.pending.removeValue(forKey: id)
 				}
+				target?.resume(throwing: MasterError.sendFailed(err.localizedDescription))
 			})
 		}
 	}
@@ -243,6 +250,21 @@ final class MasterClient: @unchecked Sendable {
 	}
 
 	private func connect() async throws {
+		// 古い NWConnection が残っていたら明示的に cancel + nil してから新規 connect。
+		// 重ね張り (= bootstrap で probe → killExistingMaster → 再 connect の流れ) 時に
+		// 旧 connection の callback と新 connection の操作が race して
+		// Network framework 内部 lock が壊れて SIGSEGV するのを防ぐ
+		// (= 2026-04-24 belve.master queue crash in os_unfair_lock_lock)。
+		if let old = stateLock.withLock({ () -> NWConnection? in
+			let c = connection
+			connection = nil
+			connectionReady = false
+			return c
+		}) {
+			old.stateUpdateHandler = nil  // callback を切ってから cancel (再入抑制)
+			old.cancel()
+		}
+
 		try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
 			let endpoint = NWEndpoint.unix(path: Self.socketPath)
 			let params = NWParameters.tcp  // unix socket は SOCK_STREAM 相当
@@ -264,7 +286,7 @@ final class MasterClient: @unchecked Sendable {
 					break
 				}
 			}
-			self.connection = conn
+			stateLock.withLock { self.connection = conn }
 			conn.start(queue: self.queue)
 		}
 	}
@@ -283,16 +305,19 @@ final class MasterClient: @unchecked Sendable {
 	}
 
 	private func disconnect() {
-		stateLock.withLock { connectionReady = false }
-		connection?.cancel()
-		connection = nil
-		let conts = stateLock.withLock { () -> [CheckedContinuation<MasterResponse, Error>] in
+		// connect() と同じく callback を切ってから cancel して再入を防ぐ。
+		let (oldConn, conts) = stateLock.withLock { () -> (NWConnection?, [CheckedContinuation<MasterResponse, Error>]) in
+			let c = connection
+			connection = nil
+			connectionReady = false
 			let snapshot = Array(pending.values)
 			pending.removeAll()
-			return snapshot
+			readBuffer = Data()
+			return (c, snapshot)
 		}
+		oldConn?.stateUpdateHandler = nil
+		oldConn?.cancel()
 		for c in conts { c.resume(throwing: MasterError.connectionLost) }
-		readBuffer = Data()
 	}
 
 	private func startReader(on conn: NWConnection) {
