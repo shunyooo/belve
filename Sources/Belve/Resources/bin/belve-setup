@@ -164,7 +164,7 @@ _ensure_container_broker() {
 
     docker exec "$cid" mkdir -p /root/.belve/bin /root/.belve/sessions /root/.belve/zdotdir /root/.belve/panes 2>&1 || \
         echo "[belve-setup] ERROR: mkdir in container failed" >&2
-    for pair in "belve:bin/belve" "claude:bin/claude" "codex:bin/codex" "session-bootstrap.sh:session-bootstrap.sh"; do
+    for pair in "belve:bin/belve" "claude:bin/claude" "codex:bin/codex" "codex-hooks-install:bin/codex-hooks-install" "session-bootstrap.sh:session-bootstrap.sh"; do
         local src_name="${pair%%:*}"
         local dst_path="${pair##*:}"
         local src="$HOME/.belve/bin/$src_name"

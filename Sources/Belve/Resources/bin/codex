@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Belve codex wrapper - injects hooks that call `belve claude-hook`
-# Codex uses the same hooks API as Claude Code.
+# Belve codex wrapper. Codex は Claude Code と違い hooks を flag で渡せず
+# `~/.codex/hooks.json` (file-based) で設定するため、wrapper は実行直前に
+# `codex-hooks-install` を呼んで Belve エントリの merge を保証する。
+# 既存の他ツール (vibe-island 等) のエントリは保持される。
 
 set -euo pipefail
 
@@ -15,34 +17,22 @@ find_real_codex() {
     return 1
 }
 
-# Pass through if not in Belve
+REAL_CODEX="$(find_real_codex)" || { echo "Error: codex not found in PATH" >&2; exit 127; }
+
+# Belve session 外なら hooks 設定を触らずそのまま pass through
 if [[ -z "${BELVE_SESSION:-}" ]]; then
-    REAL_CODEX="$(find_real_codex)" || { echo "Error: codex not found in PATH" >&2; exit 127; }
     exec "$REAL_CODEX" "$@"
 fi
 
-REAL_CODEX="$(find_real_codex)" || { echo "Error: codex not found in PATH" >&2; exit 127; }
-
-# Pass through subcommands that don't support hooks
+# Hooks API を使わない subcommand は install を skip
 case "${1:-}" in
-    config|api-key) exec "$REAL_CODEX" "$@" ;;
+    config|api-key|completion|version|help|--help|-h|--version|-V)
+        exec "$REAL_CODEX" "$@" ;;
 esac
 
-# Find belve CLI (same directory as this wrapper)
-BELVE_BIN="$(cd "$(dirname "$0")" && pwd)/belve"
+# Belve hooks を ~/.codex/hooks.json に merge install (idempotent)。
+# 失敗しても codex 起動は止めない (= hooks 連携が無いだけで codex は使える)。
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+"$SELF_DIR/codex-hooks-install" 2>/dev/null || true
 
-# Build hooks JSON
-H="\\\"${BELVE_BIN}\\\" claude-hook"
-HOOKS_JSON="{\"hooks\":{\
-\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} session-start\",\"timeout\":5}]}],\
-\"SessionEnd\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} session-end\",\"timeout\":1}]}],\
-\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} prompt-submit\",\"timeout\":5}]}],\
-\"Notification\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} notification\",\"timeout\":5}]}],\
-\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} pre-tool-use\",\"timeout\":3}]}],\
-\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} post-tool-use\",\"timeout\":3}]}],\
-\"SubagentStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} subagent-start\",\"timeout\":3}]}],\
-\"SubagentStop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} subagent-stop\",\"timeout\":3}]}],\
-\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} stop\",\"timeout\":5}]}]\
-}}"
-
-exec "$REAL_CODEX" --settings "$HOOKS_JSON" "$@"
+exec "$REAL_CODEX" "$@"
