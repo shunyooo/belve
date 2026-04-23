@@ -46,9 +46,40 @@ struct PreviewArea: View {
 	@State private var searchWorkItem: DispatchWorkItem?
 	@FocusState private var isFileSearchFocused: Bool
 	@State private var isEditorFocused: Bool = false
+	/// Markdown ファイルの「編集モード」フラグ (ファイル切替で reset)。
+	/// false (default) = `MarkdownPreviewView` でレンダリング表示
+	/// true = `CodeEditorView` (CodeMirror) で plain text 編集
+	@State private var markdownEditMode = false
 
 	private var rootPath: String {
 		project.effectivePath
+	}
+
+	/// Markdown ファイル時に右下に出る Preview ⇄ Edit toggle ボタン。
+	private var markdownEditToggleButton: some View {
+		Button {
+			markdownEditMode.toggle()
+		} label: {
+			HStack(spacing: 4) {
+				Image(systemName: markdownEditMode ? "doc.text" : "pencil")
+					.font(.system(size: 11, weight: .medium))
+				Text(markdownEditMode ? "Preview" : "Edit")
+					.font(.system(size: 11, weight: .medium))
+			}
+			.padding(.horizontal, 10)
+			.padding(.vertical, 6)
+			.background(
+				RoundedRectangle(cornerRadius: 6)
+					.fill(Theme.surface.opacity(0.92))
+			)
+			.overlay(
+				RoundedRectangle(cornerRadius: 6)
+					.stroke(Theme.borderSubtle, lineWidth: 1)
+			)
+			.foregroundStyle(Theme.textPrimary)
+		}
+		.buttonStyle(.plain)
+		.help(markdownEditMode ? "Switch to preview" : "Edit raw markdown")
 	}
 
 	var body: some View {
@@ -233,13 +264,32 @@ struct PreviewArea: View {
 
 				Group {
 					switch FileType.detect(path: file.path) {
-					case .markdown:
-						MarkdownEditorView(projectId: project.id, content: file.content) { newContent in
-							editedContent = newContent
-							isDirty = newContent != savedContentReference
-						}
 					case .image, .video, .pdf:
 						MediaPreviewView(path: file.path, provider: project.provider)
+					case .markdown:
+						// Default は読みやすい preview レンダリング。Edit toggle で
+						// CodeMirror に切替えて plain text 編集できる。
+						ZStack(alignment: .bottomTrailing) {
+							if markdownEditMode {
+								CodeEditorView(
+									projectId: project.id,
+									project: project,
+									filename: file.path,
+									content: file.content,
+									line: file.line,
+									column: file.column,
+									onDefinitionRequest: handleDefinitionRequest,
+									onDefinitionHoverRequest: handleDefinitionHoverRequest
+								) { newContent in
+									editedContent = newContent
+									isDirty = newContent != savedContentReference
+								}
+							} else {
+								MarkdownPreviewView(content: file.content)
+							}
+							markdownEditToggleButton
+								.padding(12)
+						}
 					case .code, .unknown:
 						CodeEditorView(
 							projectId: project.id,
@@ -257,6 +307,10 @@ struct PreviewArea: View {
 					}
 				}
 				.id(file.path)
+				.onChange(of: file.path) { _, _ in
+					// ファイル切替時は Edit モードを reset (= 新ファイルは Preview で開く)
+					markdownEditMode = false
+				}
 			}
 			.overlay(alignment: .topLeading) {
 				if let loadingPath {
