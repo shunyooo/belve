@@ -651,6 +651,14 @@ struct FileTreeView: View {
 							gitFileStatus: gitFileStatus
 						)
 					}
+					// ルート直下に新規ファイル作成中なら最後尾に inline TextField を出す。
+					// FileTreeRow は自分の path に対応する row 内にしか TextField を
+					// 出さない (= ルートには row が無い) ので、ここで補完する。
+					// 「ファイル一覧の末尾に追加される」UX を意識して bottom 配置。
+					if state.creatingInPath == rootPath {
+						RootCreateFileRow(state: state, project: project)
+							.id("__root_create__")
+					}
 					// Background catcher for "new file in root" context menu.
 					// Fills remaining vertical space so right-click on the empty
 					// area below the last row hits this view (and not a row).
@@ -666,6 +674,15 @@ struct FileTreeView: View {
 				.padding(.vertical, 4)
 			}
 			.background(Theme.surface)
+			.onChange(of: state.creatingInPath) { _, newPath in
+				// 新規作成 trigger 時に対象 row まで自動 scroll。
+				guard let p = newPath else { return }
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+					withAnimation(.easeOut(duration: 0.15)) {
+						proxy.scrollTo(p == rootPath ? "__root_create__" : p, anchor: .center)
+					}
+				}
+			}
 			.overlay(FocusBorderOverlay(isActive: treeBorderActive))
 			// Drag-and-drop upload from Finder — drops land in the project root.
 			.onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -848,6 +865,45 @@ struct FileTreeView: View {
 				}
 			}
 		}
+	}
+}
+
+/// ルート直下に新規ファイル作成中だけ表示される TextField row。
+/// 通常の FileTreeRow はディレクトリ row 内に TextField を埋め込む形だが、
+/// ルートには対応する row が無い (= 子要素が直接トップレベルに並ぶ構造) ため、
+/// 別 view で補う。
+private struct RootCreateFileRow: View {
+	@ObservedObject var state: FileTreeState
+	let project: Project
+	@FocusState private var focused: Bool
+
+	var body: some View {
+		HStack(spacing: 4) {
+			Spacer().frame(width: 12)
+			Image(systemName: "doc")
+				.font(.system(size: 11))
+				.foregroundStyle(Theme.textSecondary)
+			TextField("New file name", text: $state.newFileName)
+				.textFieldStyle(.plain)
+				.font(.system(size: 12))
+				.foregroundStyle(Theme.textPrimary)
+				.focused($focused)
+				.onSubmit { state.commitCreateFile(project: project) }
+				.onExitCommand { state.cancelCreateFile() }
+				.onAppear { focused = true }
+				.onChange(of: focused) { _, isFocused in
+					// Focus が外れた時、入力空なら cancel (= UI 的に "捨てる")。
+					// 何か入力してた場合は確定したかったかもしれないので残す。
+					if !isFocused && state.newFileName.isEmpty {
+						state.cancelCreateFile()
+					}
+				}
+			Spacer()
+		}
+		.padding(.leading, 6)
+		.padding(.vertical, 3)
+		.padding(.trailing, 6)
+		.background(Theme.surfaceActive)
 	}
 }
 
@@ -1073,6 +1129,11 @@ struct FileTreeRow: View {
 						}
 						.onAppear {
 							newFileFocused = true
+						}
+						.onChange(of: newFileFocused) { _, isFocused in
+							if !isFocused && state.newFileName.isEmpty {
+								state.cancelCreateFile()
+							}
 						}
 					Spacer()
 				}
