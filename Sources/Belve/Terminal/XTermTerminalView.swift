@@ -742,8 +742,52 @@ struct XTermTerminalView: NSViewRepresentable {
 		}
 
 		func pasteFromPasteboard() {
-			guard let text = NSPasteboard.general.string(forType: .string) else { return }
+			let pb = NSPasteboard.general
+			// Finder 等でファイルコピーした場合は元パスをそのまま貼る (画像ファイルでも
+			// 元パス優先 — 画像 data 経由 temp 保存だと参照を失う)
+			if let paths = readClipboardFilePaths(pb), !paths.isEmpty {
+				ptyService?.send(paths.joined(separator: " ") + " ")
+				return
+			}
+			// スクショ等の image data は tmp に保存してパスを貼る
+			if let path = saveClipboardImageToTemp(pb) {
+				ptyService?.send(path + " ")
+				return
+			}
+			guard let text = pb.string(forType: .string) else { return }
 			ptyService?.send(text)
+		}
+
+		private func readClipboardFilePaths(_ pb: NSPasteboard) -> [String]? {
+			guard let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL] else { return nil }
+			let paths = urls.compactMap { $0.isFileURL ? $0.path : nil }
+			return paths.isEmpty ? nil : paths
+		}
+
+		// クリップボードに画像があれば NSTemporaryDirectory/belve-clipboard/ に保存して
+		// path を返す。OS が temp を定期的に掃除するので明示クリーンアップは不要。
+		private func saveClipboardImageToTemp(_ pb: NSPasteboard) -> String? {
+			let pngData: Data?
+			if let png = pb.data(forType: .png) {
+				pngData = png
+			} else if let tiff = pb.data(forType: .tiff),
+					  let rep = NSBitmapImageRep(data: tiff) {
+				pngData = rep.representation(using: .png, properties: [:])
+			} else {
+				return nil
+			}
+			guard let data = pngData else { return nil }
+			let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("belve-clipboard")
+			try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+			let ts = Int(Date().timeIntervalSince1970 * 1000)
+			let path = (dir as NSString).appendingPathComponent("img-\(ts).png")
+			do {
+				try data.write(to: URL(fileURLWithPath: path))
+				return path
+			} catch {
+				NSLog("[Belve] failed to save clipboard image: \(error)")
+				return nil
+			}
 		}
 
 		func sendLineDelete() {
