@@ -2,6 +2,11 @@ import SwiftUI
 import AppKit
 import UserNotifications
 
+/// Belve.app プロセス起動時刻。startup grace 用 (起動直後の自動 focus 抑制等)。
+enum BelveAppStart {
+	static let date = Date()
+}
+
 @main
 struct BelveApp: App {
 	@NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -316,14 +321,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			NSLog("[Belve] cleanupStaleBelveProcesses skipped — other Belve instance(s) active")
 			return
 		}
-		// 1. tcpbackend client (= remote pane の Mac 側 belve-persist client) は
-		//    新しい launcher が再 spawn するので kill。socket file も合わせて消す。
-		//    daemon は持たないので zombie 心配なし。
-		let purgeRemoteClients = """
-		pkill -f 'belve-persist-darwin.*tcpbackend' 2>/dev/null
+		// 1. 旧 Belve.app から残った client プロセスを全部 kill。daemon は
+		//    session/PTY 保持のため温存 (local も remote tcpbackend daemon も同じ役割)。
+		//    new Belve が tryAttach で再 spawn する。
+		//
+		//    背景: 旧 Belve.app が落ちると、その子 belve-persist client は
+		//    POSIX_SPAWN_SETSID で session leader になっているため SIGHUP が来ず
+		//    PID 1 に reparented されて生き残る。新 Belve が同じ socket に attach
+		//    すると 2 client が同じ daemon に同時接続して I/O が裂ける
+		//    (= meal-tracker pane が空になる事象。2026-04-24)。
+		let purgeAllClients = """
+		pgrep -fl 'belve-persist-darwin' | while read pid rest; do
+		    case "$rest" in
+		        *-daemon*) ;;            # daemon (local / remote 共に温存)
+		        *) kill "$pid" 2>/dev/null ;;
+		    esac
+		done
 		true
 		"""
-		runShell(purgeRemoteClients)
+		runShell(purgeAllClients)
 
 		// 2. Local daemon の orphan reap: pane-layouts.json と突き合わせて、
 		//    どの project からも参照されてない session sock だけを kill。

@@ -223,7 +223,14 @@ struct XTermTerminalView: NSViewRepresentable {
 				// Set flag and trigger fit after a short delay to ensure
 				// updateNSView has set the correct WKWebView frame.
 				isTerminalReady = true
-				focusTerminal()
+				// Belve.app 起動直後は全 pane が ~同時に ready になるため、
+				// 各々が makeFirstResponder を呼んで focus が激しくちらつく
+				// (= 起動中に user が click しても focus が奪われて local pane に
+				// 入力できなくなる事象。2026-04-24)。startup grace 期間中は
+				// auto-focus を skip し、user の明示クリックに任せる。
+				if Date().timeIntervalSince(BelveAppStart.date) > 2.0 {
+					focusTerminal()
+				}
 				// Delayed fit to get correct size after SwiftUI layout settles
 				DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
 					guard let self, let webView = self.webView, self.ptyService == nil else { return }
