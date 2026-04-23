@@ -819,6 +819,12 @@ struct MainWindow: View {
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
 			withAnimation(.easeOut(duration: 0.15)) { layoutState.showSidebar.toggle() }
 		})
+		// 緊急用: モニター変更で browser ウィンドウが画面外になった時に手動で
+		// 中央に戻す。通常は `didChangeScreenParameters` が拾って auto-clamp する
+		// が、スリープ復帰時のラグ等で取りこぼしたケース用。
+		cmds.append(PaletteCommand(title: "Recenter Browser Windows", icon: "rectangle.center.inset.filled") {
+			BrowserWindowManager.shared.recenterAllBrowserWindows()
+		})
 		cmds.append(PaletteCommand(title: "New Project", icon: "plus") {
 			let _ = projectStore.addProject()
 		})

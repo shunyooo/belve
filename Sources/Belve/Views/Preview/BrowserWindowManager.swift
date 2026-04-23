@@ -101,6 +101,17 @@ final class BrowserWindowManager: ObservableObject {
 				Task { @MainActor in self?.applyLevels(.normal) }
 			}
 		)
+		// モニター構成変更 (= 接続/切断、解像度変更) → 既存ウィンドウを clamp。
+		// これがないとモニター取り外し時にブラウザが画面外に取り残されて
+		// 操作不能になる。
+		appActiveObservers.append(
+			NotificationCenter.default.addObserver(
+				forName: NSApplication.didChangeScreenParametersNotification,
+				object: nil, queue: .main
+			) { [weak self] _ in
+				Task { @MainActor in self?.reclampAllToVisibleScreens() }
+			}
+		)
 	}
 
 	private func applyLevels(_ level: NSWindow.Level) {
@@ -167,7 +178,10 @@ final class BrowserWindowManager: ObservableObject {
 		// We store the full frame ourselves in `layoutState.browserFrame`.
 		window.identifier = NSUserInterfaceItemIdentifier(rawValue: frameName)
 		if let saved = layoutState.browserFrame {
-			window.setFrame(saved.rect, display: false)
+			// 別モニター環境で復元すると saved.rect が現在のスクリーン範囲外を
+			// 指してウィンドウが画面外 (= 操作不能) になる事故が起きるので、
+			// 必ず現存スクリーンに収まる範囲に clamp する。
+			window.setFrame(Self.clampedToVisibleScreens(saved.rect), display: false)
 		}
 		window.backgroundColor = NSColor(white: 0.12, alpha: 1.0)
 		window.hasShadow = true
@@ -327,6 +341,61 @@ final class BrowserWindowManager: ObservableObject {
 		guard let resizer = resizers[projectId], height > 0 else { return }
 		if abs(resizer.urlBarHeight - height) < 0.5 { return }
 		resizer.urlBarHeight = height
+	}
+
+	/// 現存するスクリーンと一切重ならない frame は main screen 中央寄りに、
+	/// 重なるが部分的にはみ出してる場合は重なってる screen の visibleFrame に
+	/// 収まるよう移動 + サイズ縮小する。restoreFrame の clamp と
+	/// `didChangeScreenParameters` の reclamp 両方で使う。
+	static func clampedToVisibleScreens(_ frame: CGRect) -> CGRect {
+		let screens = NSScreen.screens
+		guard !screens.isEmpty else { return frame }
+		// どの screen とも交差しない場合は main screen の中央寄りに置き直す。
+		let intersecting = screens.first(where: { $0.visibleFrame.intersects(frame) })
+		let target = intersecting?.visibleFrame ?? (NSScreen.main ?? screens[0]).visibleFrame
+		var bounded = frame
+		// サイズが target より大きい場合は target に収める
+		bounded.size.width = min(bounded.width, target.width)
+		bounded.size.height = min(bounded.height, target.height)
+		// 完全画面外なら中央配置
+		if intersecting == nil {
+			bounded.origin.x = target.midX - bounded.width / 2
+			bounded.origin.y = target.midY - bounded.height / 2
+		} else {
+			// 部分はみ出しは visibleFrame 内に押し込む
+			bounded.origin.x = max(target.minX, min(bounded.minX, target.maxX - bounded.width))
+			bounded.origin.y = max(target.minY, min(bounded.minY, target.maxY - bounded.height))
+		}
+		return bounded
+	}
+
+	/// モニター構成が変わった時に既存ウィンドウを clamp し直す。
+	/// `didChangeScreenParametersNotification` から呼ばれる。
+	private func reclampAllToVisibleScreens() {
+		for (_, window) in windows {
+			let current = window.frame
+			let clamped = Self.clampedToVisibleScreens(current)
+			if clamped != current {
+				window.setFrame(clamped, display: true, animate: true)
+			}
+		}
+	}
+
+	/// Cmd palette 等から呼ぶ「強制的にブラウザを画面内に戻す」コマンド。
+	/// モニター構成変更を Belve 側が察知できないケース (= スリープ復帰のラグ等)
+	/// の手動 fallback。
+	@MainActor
+	func recenterAllBrowserWindows() {
+		for (_, window) in windows {
+			let main = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1280, height: 800)
+			var f = window.frame
+			f.size.width = min(f.width, main.width)
+			f.size.height = min(f.height, main.height)
+			f.origin.x = main.midX - f.width / 2
+			f.origin.y = main.midY - f.height / 2
+			window.setFrame(f, display: true, animate: true)
+			window.makeKeyAndOrderFront(nil)
+		}
 	}
 
 	private func cleanup(projectId: UUID, persistOpen: Bool) {

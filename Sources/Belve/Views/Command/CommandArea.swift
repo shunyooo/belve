@@ -500,6 +500,7 @@ class CommandAreaState: ObservableObject {
 struct CommandArea: View {
 	let project: Project
 	@ObservedObject var state: CommandAreaState
+	@EnvironmentObject var projectStore: ProjectStore
 	@State private var dragState: PaneDragState?
 	@State private var connectionLoadingPanes: Set<UUID> = []
 	@State private var connectionStatusMessages: [UUID: String] = [:]
@@ -518,6 +519,24 @@ struct CommandArea: View {
 	}
 
 	var body: some View {
+		// Rebuild 中はペインを完全に隠して、その領域に進捗 overlay を出す
+		// (= ユーザー要望「プロジェクトを初期化するみたいな感じでペインの構成も
+		// 初期化、かつペイン部分にビルド状況」)。完了後 ProjectStore が
+		// state を消すと自動でペイン側に戻り、token bump で fresh PTY が spawn。
+		if let rb = projectStore.rebuildStates[project.id] {
+			RebuildOverlayView(
+				projectId: project.id,
+				projectName: project.name,
+				state: rb,
+				onRetry: { projectStore.rebuildDevContainer() },
+				onDismiss: { projectStore.dismissRebuildState(project.id) }
+			)
+		} else {
+			paneLayoutView
+		}
+	}
+
+	private var paneLayoutView: some View {
 		GeometryReader { geo in
 			let layout = state.calculateLayout(in: geo.size)
 			ZStack(alignment: .topLeading) {
