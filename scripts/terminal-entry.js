@@ -43,23 +43,35 @@ term.loadAddon(fitAddon);
 function buildFullUrl(buf, startY, urlStart) {
 	var url = urlStart;
 	var continuations = [];
-	// Only extend the URL across lines when xterm.js marked the next line as
-	// a soft-wrap continuation of this one. An explicit newline in the
-	// upstream output ends the URL — otherwise adjacent "Image: …" style
-	// key/value rows get glued onto the end.
-	var nextLineObj = buf.getLine(startY + 1);
-	if (!nextLineObj || !nextLineObj.isWrapped) return { url: url, continuations: continuations };
+	// Two paths to recognize a wrapped URL:
+	//   (a) xterm.js marked the next line as a soft-wrap continuation
+	//       (= kernel-style auto-wrap from a single long write)
+	//   (b) the URL filled the line right up to the last cell AND the next
+	//       line starts with URL-safe chars. This catches TUIs (Ink/React,
+	//       Claude Code login screen等) that pre-format output to terminal
+	//       width and emit explicit \n at each column edge — visually wrapped
+	//       but isWrapped=false.
+	var firstLine = buf.getLine(startY);
+	if (!firstLine) return { url: url, continuations: continuations };
+	var firstText = firstLine.translateToString(true);
+	var prevEndsAtEdge = firstText.endsWith(urlStart) && firstText.length >= term.cols;
 
 	var nextY = startY + 1;
 	while (nextY < buf.length) {
 		var nextLine = buf.getLine(nextY);
-		if (!nextLine || !nextLine.isWrapped) break;
+		if (!nextLine) break;
+		var isWrapped = nextLine.isWrapped;
+		if (!isWrapped && !prevEndsAtEdge) break;
 		var nextText = nextLine.translateToString(true);
 		var cont = nextText.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
+		// 次行が `https://...` で始まる = 別 URL なので止める。先頭が URL-safe
+		// じゃない (空白やボーダー文字) なら継続じゃない。
 		if (!cont || nextText.match(/^https?:\/\//)) break;
 		url += cont[1];
 		continuations.push({ y: nextY + 1, startX: 1, endX: cont[1].length });
 		if (cont[1].length < nextText.length) break;
+		// 次行も同じ判定で延ばす場合のために更新
+		prevEndsAtEdge = nextText.length >= term.cols;
 		nextY++;
 	}
 	return { url: url, continuations: continuations };
@@ -136,15 +148,18 @@ term.registerLinkProvider({
 			})(result.url, selfRange, result.continuations);
 		}
 
-		// Continuation of URL from previous line — only valid when xterm.js
-		// marked this line as soft-wrapped from the previous one. Indent-based
-		// heuristics falsely matched unrelated key/value rows.
-		if (links.length === 0 && y > 1 && line.isWrapped) {
+		// Continuation of URL from previous line. xterm.js's isWrapped flag
+		// catches kernel-style soft-wrap, but TUIs that hand-format to the
+		// terminal width (Ink/React 等) emit explicit \n so isWrapped=false.
+		// Fall back to checking that the previous line ends with a URL right
+		// at the column edge AND the current line starts with URL-safe chars.
+		if (links.length === 0 && y > 1) {
 			var prevLine = buf.getLine(y - 2);
 			if (prevLine) {
 				var prevText = prevLine.translateToString(true);
 				var prevMatch = prevText.match(/(https?:\/\/[^\s<>"'`)\]]+)$/);
-				if (prevMatch) {
+				var prevEndsAtEdge = prevMatch && prevText.length >= term.cols;
+				if (prevMatch && (line.isWrapped || prevEndsAtEdge)) {
 					var cont = text.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
 					if (cont && !text.match(/^https?:\/\//)) {
 						var result = buildFullUrl(buf, y - 2, prevMatch[1]);
