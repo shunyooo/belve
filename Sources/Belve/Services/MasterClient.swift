@@ -21,7 +21,7 @@ final class MasterClient: @unchecked Sendable {
 	/// MasterClient が要求する master version。`bootstrap` 時の version op で
 	/// これと違ったら master を kill → spawn し直して新版に attach する
 	/// (= broker version negotiation の Mac 版)。
-	static let expectedVersion = "1.0"
+	static let expectedVersion = "1.1"
 
 	private let queue = DispatchQueue(label: "belve.master", qos: .userInitiated)
 	private var connection: NWConnection?
@@ -150,6 +150,22 @@ final class MasterClient: @unchecked Sendable {
 
 	func teardownAllTunnels() async throws {
 		_ = try await send(op: "teardownAllTunnels", params: [:])
+	}
+
+	/// Mac 上の `localPath` (画像等) を SSH ControlMaster 経由で remote に
+	/// コピーし、remote 側のパス (`/tmp/belve-clipboard/<basename>`) を返す。
+	/// DevContainer の場合は VM 経由で `docker exec -i` でコンテナ内に書く。
+	func transferImage(host: String, isDevContainer: Bool, projShort: String, localPath: String) async throws -> String {
+		let res = try await send(op: "transferImage", params: [
+			"host": host,
+			"isDevContainer": isDevContainer,
+			"projShort": projShort,
+			"localPath": localPath,
+		])
+		guard let path = res.result?["remotePath"] as? String else {
+			throw MasterError.malformedResponse("remotePath missing from transferImage")
+		}
+		return path
 	}
 
 	/// DevContainer の rebuild を master に依頼する。長時間 op (~30-120s)。

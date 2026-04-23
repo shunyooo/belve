@@ -744,18 +744,48 @@ struct XTermTerminalView: NSViewRepresentable {
 		func pasteFromPasteboard() {
 			let pb = NSPasteboard.general
 			// Finder 等でファイルコピーした場合は元パスをそのまま貼る (画像ファイルでも
-			// 元パス優先 — 画像 data 経由 temp 保存だと参照を失う)
+			// 元パス優先 — 画像 data 経由 temp 保存だと参照を失う)。
+			// remote project の場合は Mac path を送っても remote agent は読めないので
+			// path だけ insert (= ユーザーが自分で対処)。今後ファイル転送に拡張可能。
 			if let paths = readClipboardFilePaths(pb), !paths.isEmpty {
 				ptyService?.send(paths.joined(separator: " ") + " ")
 				return
 			}
-			// スクショ等の image data は tmp に保存してパスを貼る
-			if let path = saveClipboardImageToTemp(pb) {
-				ptyService?.send(path + " ")
+			// スクショ等の image data は tmp に保存。remote project ならその先で
+			// master 経由で remote に転送して remote path を送る。local は Mac path 送る。
+			if let localPath = saveClipboardImageToTemp(pb) {
+				if let project, project.isRemote, let host = project.sshHost {
+					sendImageToRemote(localPath: localPath, host: host, project: project)
+				} else {
+					ptyService?.send(localPath + " ")
+				}
 				return
 			}
 			guard let text = pb.string(forType: .string) else { return }
 			ptyService?.send(text)
+		}
+
+		/// remote project 用: master 経由で SSH/DevContainer に画像転送。async なので
+		/// Task で投げて完了したら remote path を入力。失敗時はエラー path を入れない
+		/// (silent fallback 禁止 — ユーザーには NSLog で原因が見える)。
+		private func sendImageToRemote(localPath: String, host: String, project: Project) {
+			let isDC = project.isDevContainer
+			let projShort = String(project.id.uuidString.prefix(8))
+			Task { [weak self] in
+				do {
+					let remotePath = try await MasterClient.shared.transferImage(
+						host: host,
+						isDevContainer: isDC,
+						projShort: projShort,
+						localPath: localPath
+					)
+					await MainActor.run {
+						self?.ptyService?.send(remotePath + " ")
+					}
+				} catch {
+					NSLog("[Belve] transferImage failed: \(error.localizedDescription)")
+				}
+			}
 		}
 
 		private func readClipboardFilePaths(_ pb: NSPasteboard) -> [String]? {

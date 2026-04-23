@@ -25,7 +25,7 @@ import (
 // Master が公開する API のバージョン。Belve.app は handshake でこの値を
 // 確認し、想定と違ったら master を kill → spawn し直して新版に attach する
 // (= broker の version negotiation 議論を Mac 側に持ってきた版)。
-const macMasterVersion = "1.0"
+const macMasterVersion = "1.1"
 
 type masterReq struct {
 	ID     string                 `json:"id"`
@@ -163,9 +163,66 @@ func masterDispatch(mc *masterConn, req masterReq) masterRes {
 		return opTeardownAllTunnels(req)
 	case "rebuildSetup":
 		return opRebuildSetup(mc, req)
+	case "transferImage":
+		return opTransferImage(req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
+}
+
+// transferImage params: {host, isDevContainer, projShort, localPath}
+// Mac 上の localPath を ssh stdin で remote (VM) または DevContainer 内に
+// `/tmp/belve-clipboard/<basename>` として配置し remotePath を返す。
+//
+// SSH ControlMaster 経由なので新規 SSH session を消費しない (= MaxSessions
+// 影響なし、port forward と相乗り)。
+func opTransferImage(req masterReq) masterRes {
+	p := req.Params
+	host := strParam(p, "host")
+	localPath := strParam(p, "localPath")
+	if host == "" || localPath == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "host/localPath required"}
+	}
+	isDC := boolParam(p, "isDevContainer")
+	projShort := strParam(p, "projShort")
+	if isDC && projShort == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "projShort required for devcontainer"}
+	}
+
+	filename := filepath.Base(localPath)
+	remoteDir := "/tmp/belve-clipboard"
+	remotePath := remoteDir + "/" + filename
+
+	// remote 側で実行する shell command を組み立てる。
+	// DevContainer の場合は VM 側で .env source して CID を取り、docker exec -i に
+	// stdin をパイプ。Plain SSH は VM 側に直接書く。
+	var sshCmd string
+	if isDC {
+		sshCmd = fmt.Sprintf(
+			". $HOME/.belve/projects/%s.env && docker exec -i \"$CID\" sh -c %s",
+			projShort,
+			shellEscape(fmt.Sprintf("mkdir -p %s && cat > %s", remoteDir, remotePath)),
+		)
+	} else {
+		sshCmd = fmt.Sprintf("mkdir -p %s && cat > %s", remoteDir, remotePath)
+	}
+
+	args := append([]string{}, sshOpts(host)...)
+	args = append(args, host, sshCmd)
+	cmd := exec.Command("ssh", args...)
+
+	f, err := os.Open(localPath)
+	if err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("open local %s: %v", localPath, err)}
+	}
+	defer f.Close()
+	cmd.Stdin = f
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("ssh transfer: %v: %s", err, string(out))}
+	}
+	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"remotePath": remotePath}}
 }
 
 // rebuildSetup params: {projectId, host, workspacePath, projShort, binDir, forceRebuild?}
