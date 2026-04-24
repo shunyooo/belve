@@ -54,6 +54,25 @@ struct SettingsView: View {
 						}
 
 						StatusIndicatorMatrix()
+
+							// Live preview with current style + size
+							VStack(alignment: .leading, spacing: 6) {
+								Text("Preview")
+									.font(.system(size: 11, weight: .medium))
+									.foregroundStyle(Theme.textSecondary)
+								HStack(spacing: 16) {
+									previewItem(status: .running, label: "Running")
+									previewItem(status: .waiting, label: "Waiting")
+									previewItem(status: .completed, label: "Done")
+									previewItem(status: .idle, label: "Idle")
+								}
+								.padding(.vertical, 8)
+								.padding(.horizontal, 12)
+								.background(
+									RoundedRectangle(cornerRadius: 6)
+										.fill(Theme.surfaceActive)
+								)
+							}
 						}
 					}
 
@@ -100,6 +119,15 @@ struct SettingsView: View {
 		.background(Theme.bg)
 		.onAppear {
 			excludeText = config.excludePatterns.joined(separator: "\n")
+		}
+	}
+
+	private func previewItem(status: AgentStatus, label: String) -> some View {
+		VStack(spacing: 4) {
+			StatusIndicator(status: status)
+			Text(label)
+				.font(.system(size: 9))
+				.foregroundStyle(Theme.textTertiary)
 		}
 	}
 
