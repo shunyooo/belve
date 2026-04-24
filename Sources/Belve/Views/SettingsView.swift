@@ -3,7 +3,21 @@ import SwiftUI
 struct SettingsView: View {
 	@ObservedObject var config = AppConfig.shared
 	@State private var excludeText: String = ""
+	@State private var selectedTab: SettingsTab = .display
+	var onDismiss: (() -> Void)? = nil
 	@Environment(\.dismiss) private var dismiss
+
+	enum SettingsTab: String, CaseIterable {
+		case display = "Display"
+		case editor = "Editor"
+
+		var icon: String {
+			switch self {
+			case .display: return "paintbrush"
+			case .editor: return "doc.text"
+			}
+		}
+	}
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
@@ -14,7 +28,7 @@ struct SettingsView: View {
 					.foregroundStyle(Theme.textPrimary)
 				Spacer()
 				Button {
-					dismiss()
+					if let onDismiss { onDismiss() } else { dismiss() }
 				} label: {
 					Image(systemName: "xmark.circle.fill")
 						.font(.system(size: 16))
@@ -29,75 +43,25 @@ struct SettingsView: View {
 			.padding(.top, 18)
 			.padding(.bottom, 12)
 
+			// Tab bar
+			HStack(spacing: 0) {
+				ForEach(SettingsTab.allCases, id: \.self) { tab in
+					tabButton(tab)
+				}
+			}
+			.padding(.horizontal, 16)
+			.padding(.bottom, 8)
+
 			Theme.borderSubtle.frame(height: 1)
 
+			// Tab content
 			ScrollView {
 				VStack(alignment: .leading, spacing: 20) {
-					// Status indicator — style gallery
-					settingsSection(title: "Status indicator", icon: "circle.dotted") {
-						VStack(alignment: .leading, spacing: 8) {
-							Text("行 = スタイル、列 = 状態。クリックで選択。")
-								.font(.system(size: 10))
-								.foregroundStyle(Theme.textTertiary.opacity(0.7))
-								.fixedSize(horizontal: false, vertical: true)
-
-							StatusIndicatorMatrix()
-						}
-					}
-
-					// Status indicator — size & preview
-					settingsSection(title: "Size & Preview", icon: "slider.horizontal.3") {
-						VStack(alignment: .leading, spacing: 10) {
-							HStack(spacing: 12) {
-								Text("Size")
-									.font(.system(size: 11))
-									.foregroundStyle(Theme.textSecondary)
-								Slider(value: $config.spinnerSize, in: 6...24, step: 1)
-									.frame(maxWidth: 160)
-								Text("\(Int(config.spinnerSize))pt")
-									.font(.system(size: 11, design: .monospaced))
-									.foregroundStyle(Theme.textTertiary)
-									.frame(width: 30, alignment: .trailing)
-							}
-
-							mockSessionPreview()
-						}
-					}
-
-					// File Tree Exclusion
-					settingsSection(title: "File Tree", icon: "folder.badge.minus") {
-						VStack(alignment: .leading, spacing: 6) {
-							Text("Hidden patterns")
-								.font(.system(size: 11))
-								.foregroundStyle(Theme.textTertiary)
-
-							Text("One pattern per line. Files and folders matching these names will be hidden from the file tree.")
-								.font(.system(size: 10))
-								.foregroundStyle(Theme.textTertiary.opacity(0.7))
-								.fixedSize(horizontal: false, vertical: true)
-
-							TextEditor(text: $excludeText)
-								.font(.system(size: 12, design: .monospaced))
-								.foregroundStyle(Theme.textPrimary)
-								.scrollContentBackground(.hidden)
-								.padding(8)
-								.frame(minHeight: 140)
-								.background(
-									RoundedRectangle(cornerRadius: 6)
-										.fill(Theme.surfaceActive)
-								)
-								.overlay(
-									RoundedRectangle(cornerRadius: 6)
-										.strokeBorder(Theme.borderSubtle, lineWidth: 1)
-								)
-								.onChange(of: excludeText) { _, newValue in
-									let patterns = newValue.components(separatedBy: "\n")
-										.map { $0.trimmingCharacters(in: .whitespaces) }
-										.filter { !$0.isEmpty }
-									config.excludePatterns = patterns
-									config.save()
-								}
-						}
+					switch selectedTab {
+					case .display:
+						displayTab
+					case .editor:
+						editorTab
 					}
 				}
 				.padding(20)
@@ -109,6 +73,109 @@ struct SettingsView: View {
 			excludeText = config.excludePatterns.joined(separator: "\n")
 		}
 	}
+
+	// MARK: - Tab Button
+
+	private func tabButton(_ tab: SettingsTab) -> some View {
+		Button {
+			withAnimation(.easeOut(duration: 0.15)) {
+				selectedTab = tab
+			}
+		} label: {
+			HStack(spacing: 5) {
+				Image(systemName: tab.icon)
+					.font(.system(size: 11))
+				Text(tab.rawValue)
+					.font(.system(size: 12, weight: .medium))
+			}
+			.foregroundStyle(selectedTab == tab ? Theme.textPrimary : Theme.textTertiary)
+			.padding(.horizontal, 12)
+			.padding(.vertical, 6)
+			.background(
+				RoundedRectangle(cornerRadius: 6)
+					.fill(selectedTab == tab ? Theme.surfaceActive : Color.clear)
+			)
+		}
+		.buttonStyle(.plain)
+	}
+
+	// MARK: - Display Tab
+
+	private var displayTab: some View {
+		VStack(alignment: .leading, spacing: 20) {
+			settingsSection(title: "Status indicator", icon: "circle.dotted") {
+				VStack(alignment: .leading, spacing: 8) {
+					Text("行 = スタイル、列 = 状態。クリックで選択。")
+						.font(.system(size: 10))
+						.foregroundStyle(Theme.textTertiary.opacity(0.7))
+						.fixedSize(horizontal: false, vertical: true)
+
+					StatusIndicatorMatrix()
+				}
+			}
+
+			settingsSection(title: "Size & Preview", icon: "slider.horizontal.3") {
+				VStack(alignment: .leading, spacing: 10) {
+					HStack(spacing: 12) {
+						Text("Size")
+							.font(.system(size: 11))
+							.foregroundStyle(Theme.textSecondary)
+						Slider(value: $config.spinnerSize, in: 6...24, step: 1)
+							.frame(maxWidth: 160)
+						Text("\(Int(config.spinnerSize))pt")
+							.font(.system(size: 11, design: .monospaced))
+							.foregroundStyle(Theme.textTertiary)
+							.frame(width: 30, alignment: .trailing)
+					}
+
+					mockSessionPreview()
+				}
+			}
+		}
+	}
+
+	// MARK: - Editor Tab
+
+	private var editorTab: some View {
+		VStack(alignment: .leading, spacing: 20) {
+			settingsSection(title: "File Tree", icon: "folder.badge.minus") {
+				VStack(alignment: .leading, spacing: 6) {
+					Text("Hidden patterns")
+						.font(.system(size: 11))
+						.foregroundStyle(Theme.textTertiary)
+
+					Text("One pattern per line. Files and folders matching these names will be hidden from the file tree.")
+						.font(.system(size: 10))
+						.foregroundStyle(Theme.textTertiary.opacity(0.7))
+						.fixedSize(horizontal: false, vertical: true)
+
+					TextEditor(text: $excludeText)
+						.font(.system(size: 12, design: .monospaced))
+						.foregroundStyle(Theme.textPrimary)
+						.scrollContentBackground(.hidden)
+						.padding(8)
+						.frame(minHeight: 200)
+						.background(
+							RoundedRectangle(cornerRadius: 6)
+								.fill(Theme.surfaceActive)
+						)
+						.overlay(
+							RoundedRectangle(cornerRadius: 6)
+								.strokeBorder(Theme.borderSubtle, lineWidth: 1)
+						)
+						.onChange(of: excludeText) { _, newValue in
+							let patterns = newValue.components(separatedBy: "\n")
+								.map { $0.trimmingCharacters(in: .whitespaces) }
+								.filter { !$0.isEmpty }
+							config.excludePatterns = patterns
+							config.save()
+						}
+				}
+			}
+		}
+	}
+
+	// MARK: - Mock Session Preview
 
 	private func mockSessionPreview() -> some View {
 		VStack(spacing: 2) {
@@ -131,7 +198,7 @@ struct SettingsView: View {
 	@ViewBuilder
 	private func mockSessionRow(status: AgentStatus, prompt: String, tool: String? = nil, detail: String? = nil, waitingMessage: String? = nil) -> some View {
 		let isActive = status == .running || status == .waiting
-		return HStack(alignment: .top, spacing: 6) {
+		HStack(alignment: .top, spacing: 6) {
 			VStack {
 				Spacer().frame(height: 3)
 				StatusIndicator(status: status)
@@ -176,6 +243,8 @@ struct SettingsView: View {
 				.fill(isActive ? Theme.surfaceActive.opacity(0.3) : Color.clear)
 		)
 	}
+
+	// MARK: - Section Helper
 
 	private func settingsSection<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
 		VStack(alignment: .leading, spacing: 10) {

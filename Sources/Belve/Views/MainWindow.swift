@@ -43,8 +43,14 @@ struct MainWindow: View {
 	var body: some View {
 		configuredContent
 			.environment(\.focusBorderNamespace, focusNamespace)
-			.sheet(isPresented: $showSettings) {
-				SettingsView()
+			.overlay {
+				if showSettings {
+					Color.black.opacity(0.3)
+						.ignoresSafeArea()
+						.onTapGesture { showSettings = false }
+					SettingsView(onDismiss: { showSettings = false })
+						.shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+				}
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .belveOpenSettings)) { _ in
 				showSettings.toggle()
