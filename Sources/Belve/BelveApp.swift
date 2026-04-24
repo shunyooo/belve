@@ -188,10 +188,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Request notification permission
 		notificationStore.requestNotificationPermission()
 
-		// Global hotkey: Cmd+' to toggle app visibility
+		// Global hotkey: Cmd+Shift+. to toggle app visibility
 		NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
-			if event.modifierFlags.contains(.command),
-			   event.charactersIgnoringModifiers == "'" {
+			let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+			if flags == [.command, .shift],
+			   event.charactersIgnoringModifiers == ">" || event.charactersIgnoringModifiers == "." {
 				DispatchQueue.main.async {
 					if NSApp.isHidden {
 						NSApp.unhide(nil)
@@ -226,6 +227,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				return nil
 			case "b" where shift:
 				NotificationCenter.default.post(name: .belveToggleBrowser, object: nil)
+				return nil
+			case ".", ">" where shift:
+				NSApp.hide(nil)
 				return nil
 			case "\\" where !shift:
 				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
