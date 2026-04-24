@@ -24,6 +24,7 @@ enum Theme {
 	static let green = Color(red: 0.35, green: 0.75, blue: 0.45)
 	static let yellow = Color(red: 0.85, green: 0.70, blue: 0.30)
 	static let red = Color(red: 0.85, green: 0.35, blue: 0.35)
+	static let purple = Color(red: 0.72, green: 0.55, blue: 0.92)  // subagent-running 用
 
 	// Layout
 	static let titlebarHeight: CGFloat = 34     // sidebar top row & main header height

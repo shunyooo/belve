@@ -5,6 +5,7 @@ enum AgentStatus: String, Codable {
 	case idle
 	case sessionStart = "session_start"
 	case running
+	case runningSubagent = "running_subagent"  // 親 claude が subagent 完了待ち
 	case waiting
 	case completed
 	case sessionEnd = "session_end"
@@ -26,6 +27,9 @@ struct AgentSession: Identifiable, Codable {
 	var lastUserPrompt: String?
 	var lastAgentActivity: String?
 	var currentTool: String?
+	/// 走ってる subagent (Task tool) の数。0 < count なら表示上 .runningSubagent 優先。
+	/// session.status とは独立に管理し、subagent 終了時に親 status に戻る。
+	var subagentCount: Int = 0
 	let startedAt: Date
 	var updatedAt: Date
 	var isRead: Bool = false
@@ -119,7 +123,9 @@ class NotificationStore: ObservableObject {
 				} else if message.hasPrefix("subagent:") {
 					session.currentTool = "Agent"
 					session.lastAgentActivity = String(message.dropFirst(9))
+					session.subagentCount += 1
 				} else if message.hasPrefix("subagent-done:") {
+					session.subagentCount = max(0, session.subagentCount - 1)
 					// Only clear tool if the parent session is actively running.
 					// Otherwise leave prior terminal state intact.
 					if session.status == .running || session.status == .sessionStart {
@@ -182,6 +188,9 @@ class NotificationStore: ObservableObject {
 			self.agentStatus[projectId] = AgentState(status: .idle, message: "")
 
 		case .idle:
+			break
+		case .runningSubagent:
+			// hook event 由来では来ない (派生表示状態)。switch 網羅性のための case。
 			break
 		}
 	}

@@ -46,6 +46,7 @@ struct StatusIndicator: View {
 	private var color: Color {
 		switch status {
 		case .running: return Theme.accent
+		case .runningSubagent: return Theme.purple
 		case .waiting: return Theme.yellow
 		case .completed, .sessionEnd: return Theme.green
 		case .sessionStart, .idle: return Theme.textTertiary
@@ -60,13 +61,13 @@ struct StatusIndicator: View {
 		case .pulse:
 			PulseIndicator(status: status, color: color)
 		case .invader:
-			PixelSpriteIndicator(status: status, color: color, frames: PixelSprites.invader)
+			PixelSpriteIndicator(status: status, color: color, data: PixelSprites.invader)
 		case .ghost:
-			PixelSpriteIndicator(status: status, color: color, frames: PixelSprites.ghost)
+			PixelSpriteIndicator(status: status, color: color, data: PixelSprites.ghost)
 		case .cat:
-			PixelSpriteIndicator(status: status, color: color, frames: PixelSprites.cat)
+			PixelSpriteIndicator(status: status, color: color, data: PixelSprites.cat)
 		case .dog:
-			PixelSpriteIndicator(status: status, color: color, frames: PixelSprites.dog)
+			PixelSpriteIndicator(status: status, color: color, data: PixelSprites.dog)
 		case .braille:
 			TextSpinnerIndicator(status: status, color: color, frames: SpinnerFrames.braille, interval: 0.08, restFrame: "⠿")
 		case .dotsWave:
@@ -87,10 +88,10 @@ private struct PulseIndicator: View {
 	@State private var pulsePhase: CGFloat = 0
 
 	var body: some View {
-		let isActive = status == .running || status == .waiting
+		let isActive = status == .running || status == .runningSubagent || status == .waiting
 		let opacityFill = status == .completed || status == .sessionEnd ? 1.0 : (isActive ? 1.0 : 0.3)
-		let pulseScale: CGFloat = status == .running ? 1.4 : (status == .waiting ? 1.15 : 1.0)
-		let pulsePeriod: Double = status == .running ? 1.2 : 2.0
+		let pulseScale: CGFloat = status == .running || status == .runningSubagent ? 1.4 : (status == .waiting ? 1.15 : 1.0)
+		let pulsePeriod: Double = status == .runningSubagent ? 1.6 : (status == .running ? 1.2 : 2.0)
 
 		Circle()
 			.fill(color.opacity(opacityFill))
@@ -120,35 +121,56 @@ private struct PulseIndicator: View {
 
 // MARK: - Pixel sprite (汎用キャラクター描画)
 
-/// 8x8 grid の pixel sprite を status 駆動でアニメさせる共通コンポーネント。
-/// running: frame[0] / frame[1] を 400ms で alternate
-/// waiting: frame[0] のまま 600ms で y 方向に bob
-/// completed/sessionEnd: frame[0] static (色: green)
-/// sessionStart/idle: frame[0] static (薄)
+/// 8x8 grid の pixel sprite。`runFrames` を循環で running 表現、`restFrame` を
+/// 静止系 (waiting / completed / idle) に使う分離設計。
+/// `runFrames` が 2 frame でも 4 frame でもよい (= キャラごとに動きの粒度を変えられる)。
+struct PixelSpriteData {
+	let runFrames: [[[Bool]]]   // running 用の循環アニメ (length >= 1)
+	let restFrame: [[Bool]]     // waiting / completed / idle 用の静止 pose
+	let runInterval: TimeInterval  // frame 切替間隔。多 frame は 短く (= 脚が速く動く)
+}
+
+/// running: runFrames を runInterval で循環、subtle な y bob
+/// runningSubagent: 親が subagent 待ち、走らず seated pose で軽く bob
+/// waiting: restFrame で軽く bob (待機中の呼吸感)
+/// completed/sessionEnd: restFrame static
+/// sessionStart/idle: restFrame static (薄)
 private struct PixelSpriteIndicator: View {
 	let status: AgentStatus
 	let color: Color
-	let frames: [[[Bool]]]  // 最低 1 frame、running 時は最大 2 frame swap
+	let data: PixelSpriteData
 
 	var body: some View {
 		switch status {
 		case .running:
-			animated(interval: 0.4, bob: false)
+			running()
+		case .runningSubagent:
+			restingBob(interval: 0.7)
 		case .waiting:
-			animated(interval: 0.6, bob: true, useFirstFrameOnly: true)
+			restingBob(interval: 0.6)
 		case .completed, .sessionEnd:
-			SpriteCanvas(frame: frames[0], color: color)
+			SpriteCanvas(frame: data.restFrame, color: color)
 		case .sessionStart, .idle:
-			SpriteCanvas(frame: frames[0], color: color.opacity(0.4))
+			SpriteCanvas(frame: data.restFrame, color: color.opacity(0.4))
 		}
 	}
 
-	private func animated(interval: TimeInterval, bob: Bool, useFirstFrameOnly: Bool = false) -> some View {
+	private func running() -> some View {
+		TimelineView(.periodic(from: .now, by: data.runInterval)) { ctx in
+			let tick = Int(ctx.date.timeIntervalSinceReferenceDate / data.runInterval)
+			let frameIndex = tick % data.runFrames.count
+			// 走ってる時の body bob (1 frame ごとに少し上下)
+			let yOffset: CGFloat = (tick % 2 == 0) ? -0.4 : 0.4
+			SpriteCanvas(frame: data.runFrames[frameIndex], color: color)
+				.offset(y: yOffset)
+		}
+	}
+
+	private func restingBob(interval: TimeInterval) -> some View {
 		TimelineView(.periodic(from: .now, by: interval)) { ctx in
 			let tick = Int(ctx.date.timeIntervalSinceReferenceDate / interval)
-			let frameIndex = useFirstFrameOnly ? 0 : (tick % frames.count)
-			let yOffset: CGFloat = bob ? (tick % 2 == 0 ? -0.5 : 0.5) : 0
-			SpriteCanvas(frame: frames[frameIndex], color: color)
+			let yOffset: CGFloat = (tick % 2 == 0) ? -0.3 : 0.3
+			SpriteCanvas(frame: data.restFrame, color: color)
 				.offset(y: yOffset)
 		}
 	}
@@ -181,12 +203,33 @@ private struct SpriteCanvas: View {
 // MARK: - Sprite definitions
 
 private enum PixelSprites {
-	// 8x8。`1` = 塗る、`.` = 透明。
-	// 文字列 → bool grid に parse する helper を最後に定義。
+	// 8x8。`.` 以外を ON 扱い (`1` でも `#` でも OK)。
 
-	// Invader (元のスペースインベーダー風、足が左右で入れ替わる歩行)
-	static let invader: [[[Bool]]] = [
-		grid([
+	// Invader (元のスペースインベーダー風、足が左右で入れ替わる)
+	static let invader = PixelSpriteData(
+		runFrames: [
+			grid([
+				"..1..1..",
+				"...11...",
+				"..1111..",
+				".11..11.",
+				"11111111",
+				"1.1111.1",
+				"1.1..1.1",
+				"...11...",
+			]),
+			grid([
+				"..1..1..",
+				"1..11..1",
+				"1.1111.1",
+				"111..111",
+				"11111111",
+				".111111.",
+				"..1..1..",
+				".1....1.",
+			]),
+		],
+		restFrame: grid([
 			"..1..1..",
 			"...11...",
 			"..1111..",
@@ -196,21 +239,34 @@ private enum PixelSprites {
 			"1.1..1.1",
 			"...11...",
 		]),
-		grid([
-			"..1..1..",
-			"1..11..1",
-			"1.1111.1",
-			"111..111",
-			"11111111",
-			".111111.",
-			"..1..1..",
-			".1....1.",
-		]),
-	]
+		runInterval: 0.4
+	)
 
-	// Ghost (丸い頭、波打つ裾)
-	static let ghost: [[[Bool]]] = [
-		grid([
+	// Ghost (波打つ裾)
+	static let ghost = PixelSpriteData(
+		runFrames: [
+			grid([
+				".######.",
+				"########",
+				"##.##.##",
+				"##.##.##",
+				"########",
+				"########",
+				"########",
+				"##.##.##",
+			]),
+			grid([
+				".######.",
+				"########",
+				"##.##.##",
+				"##.##.##",
+				"########",
+				"########",
+				"########",
+				".##.##.#",
+			]),
+		],
+		restFrame: grid([
 			".######.",
 			"########",
 			"##.##.##",
@@ -220,78 +276,146 @@ private enum PixelSprites {
 			"########",
 			"##.##.##",
 		]),
-		grid([
-			".######.",
-			"########",
-			"##.##.##",
-			"##.##.##",
-			"########",
-			"########",
-			"########",
-			".##.##.#",
-		]),
-	]
+		runInterval: 0.4
+	)
 
 	// Cat (横向き全身、頭=右、尻尾=左、ピン耳、4 脚)
-	// frame1: 4 脚揃って立つ。frame2: 前後脚を前後に開いて running pose。
-	static let cat: [[[Bool]]] = [
-		grid([
-			"......##",  // ピン耳 (右側=頭)
-			"#....###",  // 尻尾の先 + 頭
-			"##..####",  // 尻尾 + 頭/背中
-			".#######",  // 体
-			".#######",  // 体
-			".#######",  // 腹
-			"#.#..#.#",  // 4 脚 (前2 + 後2)
-			"#.#..#.#",  // 足 (床)
+	// 4-frame walk cycle で脚が前後にしっかり動く。rest = 座り pose。
+	static let cat = PixelSpriteData(
+		runFrames: [
+			// frame 1: 全脚下 (=接地直前)
+			grid([
+				"......##",
+				"#....###",
+				"##.#####",
+				".#######",
+				".#######",
+				".#######",
+				"#.#..#.#",
+				"#.#..#.#",
+			]),
+			// frame 2: 前左+後右 上、前右+後左 下 (= 1/4 stride)
+			grid([
+				"......##",
+				"#....###",
+				"##.#####",
+				".#######",
+				".#######",
+				".#######",
+				".##..#.#",
+				"##....#.",
+			]),
+			// frame 3: 全脚開き (= mid-stride)
+			grid([
+				"......##",
+				"#....###",
+				"##.#####",
+				".#######",
+				".#######",
+				".#######",
+				"##....##",
+				"#......#",
+			]),
+			// frame 4: 前右+後左 上、前左+後右 下 (= 3/4 stride)
+			grid([
+				"......##",
+				"#....###",
+				"##.#####",
+				".#######",
+				".#######",
+				".#######",
+				"#.#..##.",
+				".#....##",
+			]),
+		],
+		// 止まった時は顔アップ (8x8 で全身座りは認識難)。両ピン耳 + 目 + 鼻口
+		// で「猫がこっち見てる」感を出す。
+		restFrame: grid([
+			"#......#",  // ピン耳の先 (両側に大きく)
+			"##....##",  // 耳本体
+			"########",  // 頭頂部
+			"##.##.##",  // 目 (両側、白目で gap)
+			"########",  // 鼻周り
+			"###..###",  // 口 (Y字 / 鼻下の隙間)
+			"########",  // 顎
+			".######.",  // 顎下
 		]),
-		grid([
-			"......##",
-			"#....###",
-			"##..####",
-			".#######",
-			".#######",
-			".#######",
-			"##....##",  // 前脚は後ろへ、後脚は前へ (走り pose)
-			"#......#",  // 足が伸びてる
-		]),
-	]
+		runInterval: 0.12  // 速いコマ送りで「走ってる」感
+	)
 
-	// Dog (横向き全身、頭=右、垂れ耳、尻尾=左ピン、4 脚)
-	// 猫より体ががっしり、耳が垂れてる、尻尾は短く真っ直ぐ。
-	static let dog: [[[Bool]]] = [
-		grid([
-			".....###",  // 頭 (耳含む)
-			"#...####",  // 尻尾の付け根 + 垂れ耳 + 頭
-			"########",  // 背中 + 体全長
-			"########",  // 体
-			"########",  // 体
-			"########",  // 腹
-			"##.##.##",  // 4 太脚
-			"##.##.##",  // 足
+	// Dog (横向き全身、頭=右、垂れ耳、尻尾=左、4 太脚)
+	// 4-frame walk cycle。猫より一回り大きい / どっしりした見た目。
+	static let dog = PixelSpriteData(
+		runFrames: [
+			// frame 1: 全脚下
+			grid([
+				".....###",
+				"#...####",
+				"########",
+				"########",
+				"########",
+				"########",
+				"##.##.##",
+				"##.##.##",
+			]),
+			// frame 2: 1/4 stride
+			grid([
+				".....###",
+				"#...####",
+				"########",
+				"########",
+				"########",
+				"########",
+				".##.##.#",
+				"##....#.",
+			]),
+			// frame 3: 全開
+			grid([
+				".....###",
+				"#...####",
+				"########",
+				"########",
+				"########",
+				"########",
+				"##....##",
+				"#......#",
+			]),
+			// frame 4: 3/4 stride
+			grid([
+				".....###",
+				"#...####",
+				"########",
+				"########",
+				"########",
+				"########",
+				"#.##.##.",
+				".#....##",
+			]),
+		],
+		// おすわり pose: 正面向き、垂れ耳 + 目 + 前脚。猫より太め。
+		restFrame: grid([
+			"##....##",  // 垂れ耳の上
+			"##....##",  // 垂れ耳
+			"########",  // 頭
+			"##.##.##",  // 目
+			"########",  // 鼻 / 顔下
+			"########",  // 胸 (太い)
+			".######.",  // 体下
+			"##....##",  // 前脚 (左右に外向き)
 		]),
-		grid([
-			".....###",
-			"#...####",
-			"########",
-			"########",
-			"########",
-			"########",
-			"##....##",  // 前脚後ろ、後脚前 (running)
-			"#......#",  // 足伸びる
-		]),
-	]
+		runInterval: 0.13
+	)
 
 	private static func grid(_ rows: [String]) -> [[Bool]] {
-		// `.` 以外を ON 扱い (`1` でも `#` でも何でも OK)。スプライト定義の自由度を上げる。
 		rows.map { $0.map { $0 != "." } }
 	}
 }
 
 // MARK: - Text spinner (CLI classic)
 
-/// running: 通常速度、waiting: ×2.5 でゆっくり、completed: restFrame で静止、
-/// その他: restFrame を opacity 落として静止。
+/// running: 通常速度、runningSubagent: ×2 でゆっくり (subagent 待ち感)、
+/// waiting / completed / sessionEnd: restFrame static (= 動かない、color で区別)
+/// sessionStart / idle: restFrame opacity 落として静止。
 private struct TextSpinnerIndicator: View {
 	let status: AgentStatus
 	let color: Color
@@ -303,9 +427,9 @@ private struct TextSpinnerIndicator: View {
 		switch status {
 		case .running:
 			animated(interval: interval)
-		case .waiting:
-			animated(interval: interval * 2.5)
-		case .completed, .sessionEnd:
+		case .runningSubagent:
+			animated(interval: interval * 2)
+		case .waiting, .completed, .sessionEnd:
 			Text(restFrame)
 				.font(.system(size: 10, weight: .medium, design: .monospaced))
 				.foregroundStyle(color)
@@ -337,28 +461,88 @@ private enum SpinnerFrames {
 
 // MARK: - Status gallery (settings preview)
 
-/// 選択中の style を全 status で並べて表示する settings 用ギャラリー row。
-/// 各 status の動き/色を見比べられる。
-struct StatusIndicatorGallery: View {
-	let style: SpinnerStyle
+/// 全 style × 全 status の matrix を一覧で表示する settings 用テーブル。
+/// 行 = style、列 = status。クリックで style を切替えられる。
+struct StatusIndicatorMatrix: View {
+	@ObservedObject var config = AppConfig.shared
 	private let states: [(AgentStatus, String)] = [
 		(.idle, "Idle"),
 		(.sessionStart, "Start"),
 		(.running, "Running"),
+		(.runningSubagent, "Subagent"),
 		(.waiting, "Waiting"),
 		(.completed, "Done"),
 	]
 
 	var body: some View {
-		HStack(alignment: .top, spacing: 14) {
-			ForEach(states, id: \.0) { (s, label) in
-				VStack(spacing: 4) {
-					StatusIndicator(status: s, styleOverride: style)
+		VStack(spacing: 0) {
+			// header row
+			HStack(spacing: 0) {
+				Text("Style")
+					.font(.system(size: 9, weight: .medium))
+					.foregroundStyle(Theme.textTertiary)
+					.frame(width: 110, alignment: .leading)
+					.padding(.horizontal, 8)
+				ForEach(states, id: \.0) { (_, label) in
 					Text(label)
-						.font(.system(size: 9))
+						.font(.system(size: 9, weight: .medium))
 						.foregroundStyle(Theme.textTertiary)
+						.frame(maxWidth: .infinity)
 				}
 			}
+			.padding(.vertical, 6)
+			.background(Theme.surfaceActive.opacity(0.5))
+
+			ForEach(SpinnerStyle.allCases, id: \.self) { style in
+				let selected = config.spinnerStyle == style
+				Button {
+					config.spinnerStyle = style
+				} label: {
+					HStack(spacing: 0) {
+						HStack(spacing: 6) {
+							if selected {
+								Image(systemName: "checkmark")
+									.font(.system(size: 9, weight: .semibold))
+									.foregroundStyle(Theme.accent)
+							} else {
+								Color.clear.frame(width: 9)
+							}
+							Text(style.displayName)
+								.font(.system(size: 11))
+								.foregroundStyle(Theme.textPrimary)
+							Spacer()
+						}
+						.frame(width: 110, alignment: .leading)
+						.padding(.horizontal, 8)
+						ForEach(states, id: \.0) { (s, _) in
+							StatusIndicator(status: s, styleOverride: style)
+								.frame(maxWidth: .infinity)
+						}
+					}
+					.padding(.vertical, 6)
+					.background(
+						selected ? Theme.surfaceActive : Color.clear
+					)
+				}
+				.buttonStyle(.plain)
+				Divider().background(Theme.borderSubtle)
+			}
 		}
+		.background(
+			RoundedRectangle(cornerRadius: 6)
+				.fill(Theme.surface)
+		)
+		.overlay(
+			RoundedRectangle(cornerRadius: 6)
+				.stroke(Theme.borderSubtle, lineWidth: 1)
+		)
+	}
+}
+
+/// 旧 API: 互換用に残す (= 既存呼び元が壊れないように)。新しい matrix UI 移行後は不要。
+struct StatusIndicatorGallery: View {
+	let style: SpinnerStyle
+	var body: some View {
+		StatusIndicatorMatrix()
 	}
 }

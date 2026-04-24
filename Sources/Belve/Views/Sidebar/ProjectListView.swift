@@ -600,7 +600,8 @@ private struct SessionRow: View {
 		HStack(alignment: .top, spacing: 6) {
 			VStack {
 				Spacer().frame(height: 3)
-				StatusIndicator(status: session.status)
+				// subagent 走行中は親 status (running/waiting/etc) より優先表示
+				StatusIndicator(status: session.subagentCount > 0 ? .runningSubagent : session.status)
 			}
 
 			VStack(alignment: .leading, spacing: 2) {
