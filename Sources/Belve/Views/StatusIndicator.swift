@@ -523,7 +523,7 @@ struct StatusIndicatorMatrix: View {
 					.frame(width: 110, alignment: .leading)
 					.padding(.horizontal, 8)
 					ForEach(states, id: \.0) { (s, _) in
-						StatusIndicator(status: s, styleOverride: style)
+						StatusIndicator(status: s, styleOverride: style, sizeOverride: 10)
 							.frame(maxWidth: .infinity)
 					}
 				}

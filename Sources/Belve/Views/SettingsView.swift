@@ -55,17 +55,18 @@ struct SettingsView: View {
 			Theme.borderSubtle.frame(height: 1)
 
 			// Tab content
-			ScrollView {
-				VStack(alignment: .leading, spacing: 20) {
-					switch selectedTab {
-					case .display:
-						displayTab
-					case .editor:
-						editorTab
-					}
+			TabView(selection: $selectedTab) {
+				ScrollView {
+					displayTab.padding(20)
 				}
-				.padding(20)
+				.tag(SettingsTab.display)
+
+				ScrollView {
+					editorTab.padding(20)
+				}
+				.tag(SettingsTab.editor)
 			}
+			.tabViewStyle(.automatic)
 		}
 		.frame(width: 460, height: 640)
 		.background(Theme.bg)
