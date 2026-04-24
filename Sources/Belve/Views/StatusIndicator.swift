@@ -495,36 +495,33 @@ struct StatusIndicatorMatrix: View {
 
 			ForEach(SpinnerStyle.allCases, id: \.self) { style in
 				let selected = config.spinnerStyle == style
-				Button {
-					config.spinnerStyle = style
-				} label: {
-					HStack(spacing: 0) {
-						HStack(spacing: 6) {
-							if selected {
-								Image(systemName: "checkmark")
-									.font(.system(size: 9, weight: .semibold))
-									.foregroundStyle(Theme.accent)
-							} else {
-								Color.clear.frame(width: 9)
-							}
-							Text(style.displayName)
-								.font(.system(size: 11))
-								.foregroundStyle(Theme.textPrimary)
-							Spacer()
+				HStack(spacing: 0) {
+					HStack(spacing: 6) {
+						if selected {
+							Image(systemName: "checkmark")
+								.font(.system(size: 9, weight: .semibold))
+								.foregroundStyle(Theme.accent)
+						} else {
+							Color.clear.frame(width: 9)
 						}
-						.frame(width: 110, alignment: .leading)
-						.padding(.horizontal, 8)
-						ForEach(states, id: \.0) { (s, _) in
-							StatusIndicator(status: s, styleOverride: style)
-								.frame(maxWidth: .infinity)
-						}
+						Text(style.displayName)
+							.font(.system(size: 11))
+							.foregroundStyle(Theme.textPrimary)
+						Spacer()
 					}
-					.padding(.vertical, 6)
-					.background(
-						selected ? Theme.surfaceActive : Color.clear
-					)
+					.frame(width: 110, alignment: .leading)
+					.padding(.horizontal, 8)
+					ForEach(states, id: \.0) { (s, _) in
+						StatusIndicator(status: s, styleOverride: style)
+							.frame(maxWidth: .infinity)
+					}
 				}
-				.buttonStyle(.plain)
+				.padding(.vertical, 6)
+				.background(selected ? Theme.surfaceActive : Color.clear)
+				.contentShape(Rectangle())
+				.onTapGesture {
+					config.spinnerStyle = style
+				}
 				Divider().background(Theme.borderSubtle)
 			}
 		}
