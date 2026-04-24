@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Carbon
 import UserNotifications
 
 /// Belve.app プロセス起動時刻。startup grace 用 (起動直後の自動 focus 抑制等)。
@@ -188,28 +189,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Request notification permission
 		notificationStore.requestNotificationPermission()
 
-		// Request Accessibility permission (needed for global hotkey)
-		let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-		AXIsProcessTrustedWithOptions(options)
-
 		// Global hotkey: Cmd+Shift+. to toggle app visibility
-		// keyCode 47 = "." on US/JIS keyboards
-		NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
-			let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-			if flags.contains(.command), flags.contains(.shift),
-			   event.keyCode == 47 {
-				DispatchQueue.main.async {
-					if NSApp.isHidden {
-						NSApp.unhide(nil)
-						NSApp.activate(ignoringOtherApps: true)
-					} else if NSApp.isActive {
-						NSApp.hide(nil)
-					} else {
-						NSApp.activate(ignoringOtherApps: true)
-					}
-				}
-			}
-		}
+		// Uses Carbon RegisterEventHotKey — no Accessibility permission needed.
+		registerGlobalHotkey()
 
 		// Cmd+1-9 handled via .onKeyPress in MainWindow (SwiftUI native)
 		localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -530,6 +512,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			try? msg.write(toFile: "/tmp/belve-crash-trace.log", atomically: true, encoding: .utf8)
 		}
 		NSLog("[Belve] Crash handlers installed")
+	}
+
+	// MARK: - Global Hotkey (Carbon, no Accessibility needed)
+
+	private var hotKeyRef: EventHotKeyRef?
+
+	private func registerGlobalHotkey() {
+		// keyCode 47 = "." key, cmdKey + shiftKey modifiers
+		let modifiers: UInt32 = UInt32(cmdKey | shiftKey)
+		let keyCode: UInt32 = 47
+		var hotKeyID = EventHotKeyID(signature: OSType(0x424C5645), id: 1) // "BLVE"
+
+		let handler: EventHandlerUPP = { _, event, _ -> OSStatus in
+			DispatchQueue.main.async {
+				if NSApp.isHidden {
+					NSApp.unhide(nil)
+					NSApp.activate(ignoringOtherApps: true)
+				} else if NSApp.isActive {
+					NSApp.hide(nil)
+				} else {
+					NSApp.activate(ignoringOtherApps: true)
+				}
+			}
+			return noErr
+		}
+
+		var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+		InstallEventHandler(GetApplicationEventTarget(), handler, 1, &eventType, nil, nil)
+		RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
 	}
 
 	private func binaryModificationDate() -> String {
