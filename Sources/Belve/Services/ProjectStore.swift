@@ -19,6 +19,58 @@ struct RebuildState {
 	}
 }
 
+/// Project の接続失敗状態。SSH host が落ちてる / network 不通等。
+/// `ProjectStore.connectionErrors[projectId]` で CommandArea から観測される。
+/// Set されてる間は pane を隠して overlay 表示。
+struct ConnectionError {
+	enum Kind {
+		case hostUnreachable  // ssh: connect to host ... timed out / Connection refused / Connection closed
+		case authFailed       // Permission denied (publickey)
+		case other(String)    // 上記に当てはまらない (raw error 表示)
+	}
+	let kind: Kind
+	let host: String
+	let detail: String       // 元 error 文字列 (debug 用に残す)
+	let occurredAt: Date
+
+	/// master.ensureSetup の error から ConnectionError を組み立てる。
+	/// マッチしない場合は `.other` で raw を保持。
+	static func classify(host: String, error: Error) -> ConnectionError {
+		let raw = error.localizedDescription
+		let lower = raw.lowercased()
+		let kind: Kind
+		if lower.contains("connection closed")
+			|| lower.contains("connection refused")
+			|| lower.contains("timed out")
+			|| lower.contains("no route to host")
+			|| lower.contains("operation timed out")
+			|| lower.contains("network is unreachable") {
+			kind = .hostUnreachable
+		} else if lower.contains("permission denied") || lower.contains("publickey") {
+			kind = .authFailed
+		} else {
+			kind = .other(raw)
+		}
+		return ConnectionError(kind: kind, host: host, detail: raw, occurredAt: Date())
+	}
+
+	var headline: String {
+		switch kind {
+		case .hostUnreachable: return "Host unreachable"
+		case .authFailed:      return "SSH authentication failed"
+		case .other:           return "Connection failed"
+		}
+	}
+
+	var hint: String {
+		switch kind {
+		case .hostUnreachable: return "VM が落ちている / network 不通の可能性。VM を起動するか接続を確認してください。"
+		case .authFailed:      return "SSH 鍵 or known_hosts を確認してください。"
+		case .other(let raw):  return raw
+		}
+	}
+}
+
 /// Manages project lifecycle: CRUD, persistence, selection, and state reset.
 /// Single source of truth for project state — all project mutations go through here.
 class ProjectStore: ObservableObject {
@@ -46,6 +98,9 @@ class ProjectStore: ObservableObject {
 	/// `RebuildOverlayView` instead. Streaming `belve-setup --rebuild` output
 	/// is appended to `log` as it arrives via master push events.
 	@Published var rebuildStates: [UUID: RebuildState] = [:]
+	/// Per-project connection error。SSH host 不通等。Set されてる間 pane を
+	/// 隠して `HostUnreachableOverlayView` を出す。retry 成功 or dismiss で消える。
+	@Published var connectionErrors: [UUID: ConnectionError] = [:]
 	private var pushSubscribed = false
 	private var lastGitRefresh: Date = .distantPast
 
@@ -106,6 +161,18 @@ class ProjectStore: ObservableObject {
 			} else {
 				self.projectLoadingStatus.removeValue(forKey: projectId)
 			}
+		}
+
+		// SSH host 不通等の接続失敗を XTermTerminalView から受け取り、
+		// connectionErrors に格納 → CommandArea が overlay 表示。
+		NotificationCenter.default.addObserver(
+			forName: .belveProjectConnectionError, object: nil, queue: .main
+		) { [weak self] notif in
+			guard let self,
+				  let projectId = notif.userInfo?["projectId"] as? UUID,
+				  let host = notif.userInfo?["host"] as? String,
+				  let error = notif.userInfo?["error"] as? Error else { return }
+			self.setConnectionError(projectId, host: host, error: error)
 		}
 	}
 
@@ -886,6 +953,36 @@ class ProjectStore: ObservableObject {
 	func dismissRebuildState(_ projectId: UUID) {
 		rebuildStates.removeValue(forKey: projectId)
 		terminalReloadTokens[projectId, default: 0] += 1
+		objectWillChange.send()
+	}
+
+	/// 接続失敗を記録 (= overlay 表示)。`XTermTerminalView` の startPTY で
+	/// master.ensureSetup が失敗した時に呼ぶ。
+	func setConnectionError(_ projectId: UUID, host: String, error: Error) {
+		connectionErrors[projectId] = ConnectionError.classify(host: host, error: error)
+	}
+
+	/// `HostUnreachableOverlayView` の "Retry" / "Dismiss" 両方から呼ぶ。
+	/// terminalReloadTokens を bump して PTY を再 spawn (= 再 ensureSetup)。
+	/// 同じ host に他に project がある場合はそれらの error も合わせてクリア
+	/// (= host が復旧してれば全部繋がるはず)。
+	func clearConnectionError(_ projectId: UUID) {
+		// host を取得して、master 側 cache + stale ControlMaster を reset
+		let host = projects.first(where: { $0.id == projectId })?.sshHost
+		if let host {
+			Task {
+				try? await MasterClient.shared.resetHostHealth(host: host)
+			}
+			// 同 host の他 project の error も全部消す
+			let sameHostIds = projects.filter { $0.sshHost == host }.map(\.id)
+			for id in sameHostIds {
+				connectionErrors.removeValue(forKey: id)
+				terminalReloadTokens[id, default: 0] += 1
+			}
+		} else {
+			connectionErrors.removeValue(forKey: projectId)
+			terminalReloadTokens[projectId, default: 0] += 1
+		}
 		objectWillChange.send()
 	}
 

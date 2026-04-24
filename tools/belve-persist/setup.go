@@ -157,17 +157,27 @@ func (sm *setupManager) runSetup(req setupReq) (setupState, string) {
 	if req.Host == "" || req.ProjectID == "" || req.BinDir == "" {
 		return setupFailed, "missing required field (host/projectId/binDir)"
 	}
+	// Host が直近 unreachable だった場合は SSH 打たず即 fail (= 10s SSH timeout を
+	// 何度も食らうのを防ぐ)。Cmd+R / Retry で reset されると次回はまた SSH 試行する。
+	if err := globalHostHealth.checkOrFail(req.Host); err != nil {
+		return setupFailed, err.Error()
+	}
 	// Per-host 直列化: 同 VM への SCP/SSH を 1 本に絞り MaxSessions 枯渇を防ぐ。
 	hl := sm.hostLock(req.Host)
 	hl.Lock()
 	defer hl.Unlock()
 
 	if err := deployBundle(req.Host, req.BinDir); err != nil {
-		return setupFailed, fmt.Sprintf("deploy: %v", err)
+		errStr := fmt.Sprintf("deploy: %v", err)
+		_ = globalHostHealth.markFailed(req.Host, errStr)
+		return setupFailed, errStr
 	}
 	if err := runBelveSetup(req); err != nil {
-		return setupFailed, fmt.Sprintf("belve-setup: %v", err)
+		errStr := fmt.Sprintf("belve-setup: %v", err)
+		_ = globalHostHealth.markFailed(req.Host, errStr)
+		return setupFailed, errStr
 	}
+	globalHostHealth.markHealthy(req.Host)
 	return setupReady, ""
 }
 

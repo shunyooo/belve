@@ -135,6 +135,10 @@ class CommandAreaStateManager: ObservableObject {
 				state.root = root
 				state.restoreNextPaneIndex()
 				state.onLayoutChanged = { [weak self] in self?.save() }
+				// Project の最初の leaf pane を default で activePaneId にしておく。
+				// XTermTerminalView は state-driven focus なので、これが set
+				// されてないと どの pane も focus されない (構造改善 C)。
+				state.activePaneId = state.firstLeafPublic()?.paneId
 				states[uuid] = state
 			}
 		}
@@ -304,6 +308,9 @@ class CommandAreaState: ObservableObject {
 		}
 		return nil
 	}
+
+	/// Public alias for `firstLeaf(root)` used by CommandAreaStateManager.load().
+	func firstLeafPublic() -> PaneNode? { firstLeaf(root) }
 
 	private func firstLeaf(_ node: PaneNode) -> PaneNode? {
 		if node.isLeaf { return node }
@@ -530,6 +537,13 @@ struct CommandArea: View {
 				state: rb,
 				onRetry: { projectStore.rebuildDevContainer() },
 				onDismiss: { projectStore.dismissRebuildState(project.id) }
+			)
+		} else if let ce = projectStore.connectionErrors[project.id] {
+			HostUnreachableOverlayView(
+				projectName: project.name,
+				error: ce,
+				onRetry: { projectStore.clearConnectionError(project.id) },
+				onDismiss: { projectStore.clearConnectionError(project.id) }
 			)
 		} else {
 			paneLayoutView

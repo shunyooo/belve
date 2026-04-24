@@ -21,7 +21,7 @@ final class MasterClient: @unchecked Sendable {
 	/// MasterClient が要求する master version。`bootstrap` 時の version op で
 	/// これと違ったら master を kill → spawn し直して新版に attach する
 	/// (= broker version negotiation の Mac 版)。
-	static let expectedVersion = "1.1"
+	static let expectedVersion = "1.2"
 
 	private let queue = DispatchQueue(label: "belve.master", qos: .userInitiated)
 	private var connection: NWConnection?
@@ -152,6 +152,12 @@ final class MasterClient: @unchecked Sendable {
 		_ = try await send(op: "teardownAllTunnels", params: [:])
 	}
 
+	/// Host の failure cache を即時クリア + stale ControlMaster socket を掃除。
+	/// Cmd+R / overlay の Retry ボタン経由で呼ぶ。次の ensureSetup で SSH 再試行。
+	func resetHostHealth(host: String) async throws {
+		_ = try await send(op: "resetHostHealth", params: ["host": host])
+	}
+
 	/// Mac 上の `localPath` (画像等) を SSH ControlMaster 経由で remote に
 	/// コピーし、remote 側のパス (`/tmp/belve-clipboard/<basename>`) を返す。
 	/// DevContainer の場合は VM 経由で `docker exec -i` でコンテナ内に書く。
@@ -197,16 +203,67 @@ final class MasterClient: @unchecked Sendable {
 
 	// MARK: - Send
 
-	/// Send a request, await response. Reconnects + retries once on the first
-	/// transient failure (master died / restarted) so callers don't have to.
+	/// Send a request, await response. Auto-recover on transient failures:
+	/// - connectionLost (= connection.cancel was called or peer EOF):
+	///     disconnect + retry (もう一度 connect 試行)
+	/// - connectFailed (= /tmp/belve-master.sock に listener がいない、master が
+	///     死んでる): bootstrap 走らせて master を respawn → retry
+	///   無限再帰にならないよう、再帰中の bootstrap 失敗はそのまま throw。
 	func send(op: String, params: [String: Any]) async throws -> MasterResponse {
 		do {
 			return try await sendOnce(op: op, params: params)
 		} catch MasterError.connectionLost {
 			NSLog("[Belve][master] reconnect after lost connection")
 			disconnect()
-			return try await sendOnce(op: op, params: params)
+			return try await sendOnceOrRespawn(op: op, params: params)
+		} catch MasterError.connectFailed(let m) {
+			NSLog("[Belve][master] connect failed (%@) — respawning master", m)
+			disconnect()
+			return try await respawnAndSend(op: op, params: params)
 		}
+	}
+
+	/// 1 回 sendOnce 試して、connectFailed なら respawn してから再試行 (1 回だけ)。
+	/// disconnect 直後の retry path で master が既に死んでた場合のフォールバック。
+	private func sendOnceOrRespawn(op: String, params: [String: Any]) async throws -> MasterResponse {
+		do {
+			return try await sendOnce(op: op, params: params)
+		} catch MasterError.connectFailed(let m) {
+			NSLog("[Belve][master] reconnect failed (%@) — respawning master", m)
+			disconnect()
+			return try await respawnAndSend(op: op, params: params)
+		}
+	}
+
+	/// 並行 respawn を防ぐための直列化 task。複数 send() が同時に connectFailed を
+	/// 食らった時、各々が killExistingMaster → spawn を独立に走らせると新 master が
+	/// 互いに kill し合ってループする。先頭 1 個が respawn を実行、残りはその完了を待つ。
+	private var respawnTask: Task<Void, Error>? = nil
+
+	/// killExistingMaster + spawnMaster + waitUntilReady を直列に実行してから再 send。
+	private func respawnAndSend(op: String, params: [String: Any]) async throws -> MasterResponse {
+		let task: Task<Void, Error> = stateLock.withLock {
+			if let existing = respawnTask {
+				return existing
+			}
+			let newTask = Task<Void, Error> { [weak self] in
+				guard let self else { return }
+				try? FileManager.default.removeItem(atPath: Self.socketPath)
+				self.killExistingMaster()
+				try self.spawnMaster()
+				_ = try await self.waitUntilReady(maxRetries: 25, intervalSeconds: 0.2)
+			}
+			respawnTask = newTask
+			return newTask
+		}
+		do {
+			try await task.value
+		} catch {
+			stateLock.withLock { respawnTask = nil }
+			throw error
+		}
+		stateLock.withLock { respawnTask = nil }
+		return try await sendOnce(op: op, params: params)
 	}
 
 	private func sendOnce(op: String, params: [String: Any]) async throws -> MasterResponse {
@@ -416,6 +473,12 @@ final class MasterClient: @unchecked Sendable {
 		proc.standardInput = FileHandle.nullDevice
 		proc.standardOutput = logHandle
 		proc.standardError = logHandle
+		// Master daemon は Belve.app 終了後も生きて欲しい (= 次の起動で再 attach
+		// できるように)。BELVE_PARENT_PID を継承すると watchParent で自殺するので
+		// 明示的に取り除く。
+		var env = ProcessInfo.processInfo.environment
+		env.removeValue(forKey: "BELVE_PARENT_PID")
+		proc.environment = env
 		try proc.run()
 		NSLog("[Belve][master] spawned pid=%d bin=%@", proc.processIdentifier, bin)
 		stateLock.withLock { self.spawnedMasterProcess = proc }

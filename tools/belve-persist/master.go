@@ -25,7 +25,7 @@ import (
 // Master が公開する API のバージョン。Belve.app は handshake でこの値を
 // 確認し、想定と違ったら master を kill → spawn し直して新版に attach する
 // (= broker の version negotiation 議論を Mac 側に持ってきた版)。
-const macMasterVersion = "1.1"
+const macMasterVersion = "1.2"
 
 type masterReq struct {
 	ID     string                 `json:"id"`
@@ -165,6 +165,8 @@ func masterDispatch(mc *masterConn, req masterReq) masterRes {
 		return opRebuildSetup(mc, req)
 	case "transferImage":
 		return opTransferImage(req)
+	case "resetHostHealth":
+		return opResetHostHealth(req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
@@ -176,6 +178,18 @@ func masterDispatch(mc *masterConn, req masterReq) masterRes {
 //
 // SSH ControlMaster 経由なので新規 SSH session を消費しない (= MaxSessions
 // 影響なし、port forward と相乗り)。
+// resetHostHealth params: {host}
+// Cmd+R / Retry ボタン経由で呼ばれる。host failure cache を即時クリア + stale な
+// ControlMaster socket を `ssh -O exit` で掃除する。次回 ensureSetup で SSH 再試行。
+func opResetHostHealth(req masterReq) masterRes {
+	host := strParam(req.Params, "host")
+	if host == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "host required"}
+	}
+	globalHostHealth.reset(host)
+	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"host": host}}
+}
+
 func opTransferImage(req masterReq) masterRes {
 	p := req.Params
 	host := strParam(p, "host")
