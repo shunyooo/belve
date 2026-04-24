@@ -189,10 +189,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		notificationStore.requestNotificationPermission()
 
 		// Global hotkey: Cmd+Shift+. to toggle app visibility
+		// keyCode 47 = "." on US/JIS keyboards
 		NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
 			let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-			if flags == [.command, .shift],
-			   event.charactersIgnoringModifiers == ">" || event.charactersIgnoringModifiers == "." {
+			if flags.contains(.command), flags.contains(.shift),
+			   event.keyCode == 47 {
 				DispatchQueue.main.async {
 					if NSApp.isHidden {
 						NSApp.unhide(nil)
