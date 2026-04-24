@@ -188,6 +188,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Request notification permission
 		notificationStore.requestNotificationPermission()
 
+		// Request Accessibility permission (needed for global hotkey)
+		let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+		AXIsProcessTrustedWithOptions(options)
+
 		// Global hotkey: Cmd+Shift+. to toggle app visibility
 		// keyCode 47 = "." on US/JIS keyboards
 		NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
