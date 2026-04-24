@@ -37,10 +37,16 @@ struct StatusIndicator: View {
 	let status: AgentStatus
 	/// 設定を無視して特定スタイルで描画したい時 (settings の preview 等) に渡す。
 	var styleOverride: SpinnerStyle? = nil
+	/// サイズを上書きしたい時 (settings preview 等)。nil = config の値。
+	var sizeOverride: CGFloat? = nil
 	@ObservedObject private var config = AppConfig.shared
 
 	private var resolvedStyle: SpinnerStyle {
 		styleOverride ?? config.spinnerStyle
+	}
+
+	var resolvedSize: CGFloat {
+		sizeOverride ?? config.spinnerSize
 	}
 
 	private var color: Color {
@@ -54,27 +60,32 @@ struct StatusIndicator: View {
 	}
 
 	var body: some View {
+		let scale = resolvedSize / 10.0
 		// 9 分岐 (≤ ViewBuilder の switch 限界) を直接 return。AnyView で wrap すると
 		// 子の TimelineView の view identity が安定せず SwiftUI AG::Graph::update で
 		// SIGBUS する事象あり (2026-04-24)。
-		switch resolvedStyle {
-		case .pulse:
-			PulseIndicator(status: status, color: color)
-		case .invader:
-			PixelSpriteIndicator(status: status, color: color, data: PixelSprites.invader)
-		case .ghost:
-			PixelSpriteIndicator(status: status, color: color, data: PixelSprites.ghost)
-		case .cat:
-			PixelSpriteIndicator(status: status, color: color, data: PixelSprites.cat)
-		case .dog:
-			PixelSpriteIndicator(status: status, color: color, data: PixelSprites.dog)
-		case .braille:
-			TextSpinnerIndicator(status: status, color: color, frames: SpinnerFrames.braille, interval: 0.08, restFrame: "⠿")
-		case .dotsWave:
-			TextSpinnerIndicator(status: status, color: color, frames: SpinnerFrames.dotsWave, interval: 0.18, restFrame: "•")
-		case .bar:
-			TextSpinnerIndicator(status: status, color: color, frames: SpinnerFrames.bar, interval: 0.10, restFrame: "█")
+		Group {
+			switch resolvedStyle {
+			case .pulse:
+				PulseIndicator(status: status, color: color)
+			case .invader:
+				PixelSpriteIndicator(status: status, color: color, data: PixelSprites.invader)
+			case .ghost:
+				PixelSpriteIndicator(status: status, color: color, data: PixelSprites.ghost)
+			case .cat:
+				PixelSpriteIndicator(status: status, color: color, data: PixelSprites.cat)
+			case .dog:
+				PixelSpriteIndicator(status: status, color: color, data: PixelSprites.dog)
+			case .braille:
+				TextSpinnerIndicator(status: status, color: color, frames: SpinnerFrames.braille, interval: 0.08, restFrame: "⠿")
+			case .dotsWave:
+				TextSpinnerIndicator(status: status, color: color, frames: SpinnerFrames.dotsWave, interval: 0.18, restFrame: "•")
+			case .bar:
+				TextSpinnerIndicator(status: status, color: color, frames: SpinnerFrames.bar, interval: 0.10, restFrame: "█")
+			}
 		}
+		.scaleEffect(scale)
+		.frame(width: resolvedSize, height: resolvedSize)
 	}
 }
 

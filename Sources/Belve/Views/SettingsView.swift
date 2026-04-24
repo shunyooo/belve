@@ -41,7 +41,19 @@ struct SettingsView: View {
 								.foregroundStyle(Theme.textTertiary.opacity(0.7))
 								.fixedSize(horizontal: false, vertical: true)
 
-							StatusIndicatorMatrix()
+							HStack(spacing: 12) {
+							Text("Size")
+								.font(.system(size: 11))
+								.foregroundStyle(Theme.textSecondary)
+							Slider(value: $config.spinnerSize, in: 6...24, step: 1)
+								.frame(maxWidth: 160)
+							Text("\(Int(config.spinnerSize))pt")
+								.font(.system(size: 11, design: .monospaced))
+								.foregroundStyle(Theme.textTertiary)
+								.frame(width: 30, alignment: .trailing)
+						}
+
+						StatusIndicatorMatrix()
 						}
 					}
 

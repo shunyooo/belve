@@ -14,6 +14,11 @@ class AppConfig: ObservableObject {
 		didSet { if oldValue != spinnerStyle { save() } }
 	}
 
+	/// Indicator のサイズ (pt)。デフォルト 10。
+	@Published var spinnerSize: CGFloat = 10 {
+		didSet { if oldValue != spinnerSize { save() } }
+	}
+
 	private static var configURL: URL {
 		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
 		let belveDir = appSupport.appendingPathComponent("Belve")
@@ -31,6 +36,7 @@ class AppConfig: ObservableObject {
 
 		struct UIConfig: Codable {
 			var spinnerStyle: String?
+			var spinnerSize: CGFloat?
 		}
 	}
 
@@ -47,12 +53,15 @@ class AppConfig: ObservableObject {
 		if let raw = persisted.ui?.spinnerStyle, let style = SpinnerStyle(rawValue: raw) {
 			spinnerStyle = style
 		}
+		if let size = persisted.ui?.spinnerSize {
+			spinnerSize = size
+		}
 	}
 
 	func save() {
 		let persisted = Persisted(
 			fileTree: .init(excludePatterns: excludePatterns),
-			ui: .init(spinnerStyle: spinnerStyle.rawValue)
+			ui: .init(spinnerStyle: spinnerStyle.rawValue, spinnerSize: spinnerSize)
 		)
 		if let data = try? JSONEncoder().encode(persisted) {
 			try? data.write(to: Self.configURL)
