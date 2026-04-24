@@ -54,21 +54,7 @@ struct SettingsView: View {
 							}
 
 							// Live preview — mock session rows
-							VStack(spacing: 2) {
-								mockSessionRow(status: .running, prompt: "API のエラーハンドリングを修正して", tool: "Edit", detail: "src/api/handler.ts")
-								mockSessionRow(status: .waiting, prompt: "テストを書いて", waitingMessage: "Claude is waiting for your input")
-								mockSessionRow(status: .completed, prompt: "ドキュメントを更新", detail: "Done")
-								mockSessionRow(status: .idle, prompt: "Ready", detail: nil)
-							}
-							.padding(6)
-							.background(
-								RoundedRectangle(cornerRadius: 6)
-									.fill(Theme.bg)
-							)
-							.overlay(
-								RoundedRectangle(cornerRadius: 6)
-									.stroke(Theme.borderSubtle, lineWidth: 1)
-							)
+							mockSessionPreview()
 
 							StatusIndicatorMatrix()
 						}
@@ -120,6 +106,25 @@ struct SettingsView: View {
 		}
 	}
 
+	private func mockSessionPreview() -> some View {
+		VStack(spacing: 2) {
+			mockSessionRow(status: .running, prompt: "API のエラーハンドリングを修正して", tool: "Edit", detail: "src/api/handler.ts")
+			mockSessionRow(status: .waiting, prompt: "テストを書いて", waitingMessage: "Claude is waiting for your input")
+			mockSessionRow(status: .completed, prompt: "ドキュメントを更新", detail: "Done")
+			mockSessionRow(status: .idle, prompt: "Ready", detail: nil)
+		}
+		.padding(6)
+		.background(
+			RoundedRectangle(cornerRadius: 6)
+				.fill(Theme.bg)
+		)
+		.overlay(
+			RoundedRectangle(cornerRadius: 6)
+				.stroke(Theme.borderSubtle, lineWidth: 1)
+		)
+	}
+
+	@ViewBuilder
 	private func mockSessionRow(status: AgentStatus, prompt: String, tool: String? = nil, detail: String? = nil, waitingMessage: String? = nil) -> some View {
 		let isActive = status == .running || status == .waiting
 		return HStack(alignment: .top, spacing: 6) {
