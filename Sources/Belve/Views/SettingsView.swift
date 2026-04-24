@@ -42,37 +42,32 @@ struct SettingsView: View {
 								.fixedSize(horizontal: false, vertical: true)
 
 							HStack(spacing: 12) {
-							Text("Size")
-								.font(.system(size: 11))
-								.foregroundStyle(Theme.textSecondary)
-							Slider(value: $config.spinnerSize, in: 6...24, step: 1)
-								.frame(maxWidth: 160)
-							Text("\(Int(config.spinnerSize))pt")
-								.font(.system(size: 11, design: .monospaced))
-								.foregroundStyle(Theme.textTertiary)
-								.frame(width: 30, alignment: .trailing)
-						}
-
-						StatusIndicatorMatrix()
+								Text("Size")
+									.font(.system(size: 11))
+									.foregroundStyle(Theme.textSecondary)
+								Slider(value: $config.spinnerSize, in: 6...24, step: 1)
+									.frame(maxWidth: 160)
+								Text("\(Int(config.spinnerSize))pt")
+									.font(.system(size: 11, design: .monospaced))
+									.foregroundStyle(Theme.textTertiary)
+									.frame(width: 30, alignment: .trailing)
+							}
 
 							// Live preview with current style + size
-							VStack(alignment: .leading, spacing: 6) {
-								Text("Preview")
-									.font(.system(size: 11, weight: .medium))
-									.foregroundStyle(Theme.textSecondary)
-								HStack(spacing: 16) {
-									previewItem(status: .running, label: "Running")
-									previewItem(status: .waiting, label: "Waiting")
-									previewItem(status: .completed, label: "Done")
-									previewItem(status: .idle, label: "Idle")
-								}
-								.padding(.vertical, 8)
-								.padding(.horizontal, 12)
-								.background(
-									RoundedRectangle(cornerRadius: 6)
-										.fill(Theme.surfaceActive)
-								)
+							HStack(spacing: 16) {
+								previewItem(status: .running, label: "Running")
+								previewItem(status: .waiting, label: "Waiting")
+								previewItem(status: .completed, label: "Done")
+								previewItem(status: .idle, label: "Idle")
 							}
+							.padding(.vertical, 8)
+							.padding(.horizontal, 12)
+							.background(
+								RoundedRectangle(cornerRadius: 6)
+									.fill(Theme.surfaceActive)
+							)
+
+							StatusIndicatorMatrix()
 						}
 					}
 
