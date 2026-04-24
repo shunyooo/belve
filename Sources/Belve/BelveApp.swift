@@ -92,6 +92,7 @@ extension Notification.Name {
 	static let belvePresentFileSearch = Notification.Name("belvePresentFileSearch")
 	static let belveTerminalConnectionState = Notification.Name("belveTerminalConnectionState")
 	static let belveTerminalConnectionStatus = Notification.Name("belveTerminalConnectionStatus")
+	static let belveProjectConnectionError = Notification.Name("belveProjectConnectionError")
 	static let belveTerminalRefit = Notification.Name("belveTerminalRefit")
 	static let belvePaneClosed = Notification.Name("belvePaneClosed")
 	static let belveRefreshFileTree = Notification.Name("belveRefreshFileTree")
@@ -321,31 +322,41 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			NSLog("[Belve] cleanupStaleBelveProcesses skipped — other Belve instance(s) active")
 			return
 		}
-		// 1. 旧 Belve.app から残った client プロセスを全部 kill。daemon は
-		//    session/PTY 保持のため温存 (local も remote tcpbackend daemon も同じ役割)。
-		//    new Belve が tryAttach で再 spawn する。
-		//
-		//    背景: 旧 Belve.app が落ちると、その子 belve-persist client は
-		//    POSIX_SPAWN_SETSID で session leader になっているため SIGHUP が来ず
-		//    PID 1 に reparented されて生き残る。新 Belve が同じ socket に attach
-		//    すると 2 client が同じ daemon に同時接続して I/O が裂ける
-		//    (= meal-tracker pane が空になる事象。2026-04-24)。
-		let purgeAllClients = """
-		pgrep -fl 'belve-persist-darwin' | while read pid rest; do
-		    case "$rest" in
-		        *-daemon*) ;;            # daemon (local / remote 共に温存)
-		        *) kill "$pid" 2>/dev/null ;;
-		    esac
-		done
-		true
-		"""
-		runShell(purgeAllClients)
-
-		// 2. Local daemon の orphan reap: pane-layouts.json と突き合わせて、
-		//    どの project からも参照されてない session sock だけを kill。
+		// belve-persist は env BELVE_PARENT_PID に従って自分で parent (Belve.app)
+		// 死活監視 → 自殺するようになった (構造改善 A)。なのでここでは念のため
+		// 残ってる client プロセスを kill する程度で良い。
+		// - mac-master は除外 (Belve 死後も生きて欲しい、MasterClient.bootstrap が
+		//   version 確認して必要なら kill+respawn する)
+		// - 万一 watchParent loop がまだ 1s ポーリングを終えてない瞬間でも
+		//   ここで client が掃除されるので belt-and-suspenders。
+		// - daemon (-daemon flag) は触らない。layout に紐づく session 保持のため。
+		//   layout から外れたものだけ reapOrphanLocalDaemons が掃除する。
+		killOrphanClients()
 		reapOrphanLocalDaemons()
-
 		NSLog("[Belve] cleanupStaleBelveProcesses done")
+	}
+
+	/// Daemon でも mac-master でもない belve-persist プロセス (= client) を kill。
+	/// 新 Belve.app が tryAttach で再 spawn する。watchParent が動いてれば自殺
+	/// するはずだが、そのポーリング間隔 (1s) より早く新 Belve が起動した時の保険。
+	private static func killOrphanClients() {
+		let proc = Process()
+		proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+		proc.arguments = ["-fl", "belve-persist-darwin"]
+		let pipe = Pipe()
+		proc.standardOutput = pipe
+		proc.standardError = FileHandle.nullDevice
+		do { try proc.run() } catch { return }
+		proc.waitUntilExit()
+		guard let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) else { return }
+		for line in raw.split(separator: "\n") {
+			let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+			guard parts.count == 2, let pid = Int32(parts[0]) else { continue }
+			let cmd = String(parts[1])
+			if cmd.contains("-mac-master") { continue }
+			if cmd.contains(" -daemon ") { continue }
+			kill(pid, SIGTERM)
+		}
 	}
 
 	private static func runShell(_ script: String) {

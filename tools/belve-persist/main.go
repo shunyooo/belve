@@ -17,11 +17,67 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
+
+// withSpawnLock: 同 socket への spawn-on-demand を排他化する。複数 client が
+// 同時に「daemon 不在 → spawn」を実行して複数 daemon が立ち上がる TOCTOU
+// race を防ぐ。lockFn 内で tryAttach を re-check することで、待ってる間に
+// 他クライアントが spawn し終えてた場合は重複 spawn を skip できる。
+//
+// 取れない場合 (= flock サポートしてない FS 等) は best effort で fn を実行。
+func withSpawnLock(socketPath string, fn func()) {
+	lockPath := socketPath + ".lock"
+	// 親 dir 作成 (socketPath が /tmp/foo/bar.sock の時)
+	_ = os.MkdirAll(filepath.Dir(lockPath), 0o755)
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		fn()
+		return
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		fn()
+		return
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	fn()
+}
+
+// watchParent: env var BELVE_PARENT_PID にセットされてる PID が消えたら自分も exit。
+// Belve.app から spawn された daemon / client が、parent (Belve.app) のクラッシュ後
+// orphan として残り続ける問題を構造的に解消する。
+//
+// セットされてない場合 (= 自前で起動された container broker / mac-master 等) は
+// no-op。明示的に opt-in する設計なので予期しない自殺はしない。
+//
+// 1s 周期で kill(pid, 0) を打って ESRCH が返れば parent 消滅と判定。
+func watchParent() {
+	pidStr := os.Getenv("BELVE_PARENT_PID")
+	if pidStr == "" {
+		return
+	}
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 1 {
+		return
+	}
+	go func() {
+		for {
+			if err := syscall.Kill(pid, 0); err != nil {
+				// ESRCH (no such process) or EPERM — どちらも即 exit して問題なし
+				// (= parent 消滅 or PID 再利用で別所有者になってる)。
+				fmt.Fprintf(os.Stderr, "[belve-persist] parent pid=%d gone (%v); exiting\n", pid, err)
+				os.Exit(0)
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}()
+}
 
 const (
 	msgData    byte = 0
@@ -55,6 +111,11 @@ func main() {
 	// tunnel / session を一元管理する。詳細は docs/notes/2026-04-23-mac-master-design.md。
 	macMaster := flag.String("mac-master", "", "Unix socket path for Mac master mode (e.g. /tmp/belve-master.sock)")
 	flag.Parse()
+
+	// Parent 死活監視 (env BELVE_PARENT_PID 必要)。spawn 元が exit したら自分も exit。
+	// orphan 累積を構造的に防ぐ。Belve.app から spawn される client / daemon は env
+	// 渡される、container broker や mac-master は env 渡されないので no-op。
+	watchParent()
 
 	// Mac master mode is foreground (= 単一責務、別 mode と組まない)。
 	if *macMaster != "" {
@@ -111,9 +172,15 @@ func main() {
 		if tryAttach(*socketPath) {
 			return
 		}
-		// 2) 残骸 socket を消して self を daemon として fork
-		_ = os.Remove(*socketPath)
-		spawnTCPBackendDaemon(*socketPath, *tcpBackend, *sessionName, *routeProjShort, *initCols, *initRows)
+		// 2) Spawn を flock で排他。複数クライアント同時起動でも daemon は 1 個だけ。
+		withSpawnLock(*socketPath, func() {
+			// re-check: 待ってる間に他 client が spawn し終えた可能性
+			if tryAttach(*socketPath) {
+				return
+			}
+			_ = os.Remove(*socketPath)
+			spawnTCPBackendDaemon(*socketPath, *tcpBackend, *sessionName, *routeProjShort, *initCols, *initRows)
+		})
 		// 3) socket が現れるまで待って attach
 		for i := 0; i < 50; i++ {
 			if _, err := os.Stat(*socketPath); err == nil {
@@ -161,7 +228,13 @@ func main() {
 	} else {
 		cmdArgs = append([]string{*command}, args...)
 	}
-	spawnDaemon(*socketPath, cmdArgs, *initCols, *initRows)
+	withSpawnLock(*socketPath, func() {
+		// re-check: 待ってる間に他 client が spawn し終えた可能性
+		if tryAttach(*socketPath) {
+			return
+		}
+		spawnDaemon(*socketPath, cmdArgs, *initCols, *initRows)
+	})
 
 	// Wait for socket, then attach
 	for i := 0; i < 50; i++ {

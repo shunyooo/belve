@@ -1,6 +1,15 @@
 import SwiftUI
 import WebKit
 
+/// Auto-focus 制御の global 状態。
+/// - `lastAutoFocusAt`: 直前 auto-focus 時刻 (debounce 用)。
+/// - `didAutoFocusSinceLaunch`: Belve 起動後に 1 度でも auto-focus したか。
+///   起動直後の集中 spawn 期間中は「先着 1 個だけ」focus してそれ以降は奪わない。
+enum TerminalFocusGate {
+	static var lastAutoFocusAt: Date = .distantPast
+	static var didAutoFocusSinceLaunch: Bool = false
+}
+
 final class TerminalWebView: WKWebView {
 	var onCopyCommand: (() -> Void)?
 	var onPasteCommand: (() -> Void)?
@@ -164,6 +173,20 @@ struct XTermTerminalView: NSViewRepresentable {
 			}
 			context.coordinator.resizeTerminal(width: viewWidth, height: viewHeight)
 		}
+		// Focus は CommandAreaState.activePaneId が source of truth (構造改善 C)。
+		// ペインが「自分が active」と認識した時だけ focus を要求する。各ペインが
+		// 独立に first-output 等で auto-focus すると複数 pane で focus 戦争が起きる
+		// (= 2026-04-24 ちらつき問題)。ここでは set されたら focus、そうでなければ
+		// 何もしない (= 既存 focus を奪わない) シンプル設計。
+		if let paneId, let active = commandAreaState.activePaneId,
+		   active.uuidString == paneId,
+		   nsView.window?.firstResponder !== nsView,
+		   context.coordinator.isTerminalReady {
+			DispatchQueue.main.async {
+				nsView.window?.makeFirstResponder(nsView)
+				nsView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
+			}
+		}
 	}
 
 	func makeCoordinator() -> Coordinator {
@@ -211,8 +234,12 @@ struct XTermTerminalView: NSViewRepresentable {
 		private var statusScanBuffer = Data()
 		private var flushTimer: Timer?
 		private var isWaitingForInitialOutput = false
-		private var isTerminalReady = false
+		var isTerminalReady = false
 		private var isShowingTransientStatus = false
+		/// xterm 起動 (ready) 時点で auto-focus を保留しておくフラグ。
+		/// 「first PTY output 到着 = 接続確立」のタイミングまで focus を遅延し、
+		/// 接続前のペインに focus が奪われて入力が消える事象を防ぐ。
+		private var pendingAutoFocus = false
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let body = message.body as? [String: Any],
@@ -220,17 +247,12 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			switch type {
 			case "ready":
-				// Set flag and trigger fit after a short delay to ensure
-				// updateNSView has set the correct WKWebView frame.
+				// xterm.js が起動した。ただしこの時点で PTY は未接続の可能性 (= remote
+				// なら SSH setup 中)。focus は「first PTY output 到着」(= 真に接続確立)
+				// まで保留して bufferOutput 側で発火させる。これで未接続ペインに focus
+				// が奪われる問題を解消。
 				isTerminalReady = true
-				// Belve.app 起動直後は全 pane が ~同時に ready になるため、
-				// 各々が makeFirstResponder を呼んで focus が激しくちらつく
-				// (= 起動中に user が click しても focus が奪われて local pane に
-				// 入力できなくなる事象。2026-04-24)。startup grace 期間中は
-				// auto-focus を skip し、user の明示クリックに任せる。
-				if Date().timeIntervalSince(BelveAppStart.date) > 2.0 {
-					focusTerminal()
-				}
+				pendingAutoFocus = true
 				// Delayed fit to get correct size after SwiftUI layout settles
 				DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
 					guard let self, let webView = self.webView, self.ptyService == nil else { return }
@@ -324,6 +346,10 @@ struct XTermTerminalView: NSViewRepresentable {
 			env["BELVE_SESSION"] = "1"
 			env["BELVE_COLS"] = "\(cols)"
 			env["BELVE_ROWS"] = "\(rows)"
+			// belve-persist が parent (= Belve.app) の死活監視に使う。Belve 終了で
+			// orphan 化した belve-persist client / daemon が自動 exit する。
+			// container broker や mac-master は self-spawn なので env を継承しない。
+			env["BELVE_PARENT_PID"] = "\(ProcessInfo.processInfo.processIdentifier)"
 
 			// Add Belve's bin directory to PATH
 			if let execDir = Bundle.main.executableURL?.deletingLastPathComponent() {
@@ -371,6 +397,16 @@ struct XTermTerminalView: NSViewRepresentable {
 							postConnectionState(isLoading: false)
 							postConnectionStatus("Setup failed: \(error.localizedDescription)")
 							postDisconnectedState(isDisconnected: true)
+							// ProjectStore に分類済み error を渡して overlay 出させる。
+							NotificationCenter.default.post(
+								name: .belveProjectConnectionError,
+								object: nil,
+								userInfo: [
+									"projectId": pid,
+									"host": host,
+									"error": error
+								]
+							)
 							return
 						}
 					}
@@ -534,6 +570,10 @@ struct XTermTerminalView: NSViewRepresentable {
 				postConnectionState(isLoading: false)
 				postConnectionStatus(nil)
 			}
+			// Focus は構造改善 C で CommandAreaState.activePaneId に集約済み。
+			// ここでは触らない。pendingAutoFocus は ready 経路と歩調を合わせるために
+			// 保持してるだけで実害なし (= 後段で参照されない)。
+			pendingAutoFocus = false
 			outputBuffer.append(cleanData)
 			if resizeHoldUntil != nil {
 				// Measure data arrival
@@ -660,6 +700,24 @@ struct XTermTerminalView: NSViewRepresentable {
 				self?.webView?.window?.makeFirstResponder(self?.webView)
 				self?.webView?.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
 			}
+		}
+
+		/// アクティブな key window の first responder が既に terminal WebView なら true。
+		/// 接続後 auto-focus が「ユーザーが既に選んでる pane」を奪うのを防ぐ判定に使う。
+		static func someTerminalAlreadyFocused() -> Bool {
+			guard let fr = NSApp.keyWindow?.firstResponder as? NSView else { return false }
+			// TerminalWebView 自身、もしくはその子孫なら true。
+			return fr is TerminalWebView || fr.enclosingScrollView?.documentView is TerminalWebView ||
+				findAncestor(fr, ofType: TerminalWebView.self) != nil
+		}
+
+		private static func findAncestor<T: NSView>(_ view: NSView, ofType: T.Type) -> T? {
+			var v: NSView? = view
+			while let cur = v {
+				if let match = cur as? T { return match }
+				v = cur.superview
+			}
+			return nil
 		}
 
 		func performRefit() {
