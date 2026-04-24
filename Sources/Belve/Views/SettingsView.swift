@@ -33,14 +33,21 @@ struct SettingsView: View {
 
 			ScrollView {
 				VStack(alignment: .leading, spacing: 20) {
-					// Status indicator style
+					// Status indicator — style gallery
 					settingsSection(title: "Status indicator", icon: "circle.dotted") {
 						VStack(alignment: .leading, spacing: 8) {
-							Text("行 = スタイル、列 = 状態。クリックで選択。色が状態 (running/waiting/done 等) を表します。")
+							Text("行 = スタイル、列 = 状態。クリックで選択。")
 								.font(.system(size: 10))
 								.foregroundStyle(Theme.textTertiary.opacity(0.7))
 								.fixedSize(horizontal: false, vertical: true)
 
+							StatusIndicatorMatrix()
+						}
+					}
+
+					// Status indicator — size & preview
+					settingsSection(title: "Size & Preview", icon: "slider.horizontal.3") {
+						VStack(alignment: .leading, spacing: 10) {
 							HStack(spacing: 12) {
 								Text("Size")
 									.font(.system(size: 11))
@@ -53,10 +60,7 @@ struct SettingsView: View {
 									.frame(width: 30, alignment: .trailing)
 							}
 
-							// Live preview — mock session rows
 							mockSessionPreview()
-
-							StatusIndicatorMatrix()
 						}
 					}
 
