@@ -589,6 +589,28 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 
 	logf("broker started on %s", listenAddr)
 
+	// Self-health: 30s 周期で自分の listener に dial して accept ループが生きてるか
+	// 確認。死んでたら exit して上位 (belve-setup / docker exec -d) が新 broker を
+	// spawn できるようにする。「process alive だが listener 死んでる」half-bind
+	// 状態 (container で観測) を構造的に防ぐ (= 構造改善 E)。
+	go func() {
+		// dial する宛先は listenAddr の port 部分。0.0.0.0 → 127.0.0.1 に変える。
+		probeAddr := listenAddr
+		if strings.HasPrefix(probeAddr, "0.0.0.0:") {
+			probeAddr = "127.0.0.1:" + strings.TrimPrefix(probeAddr, "0.0.0.0:")
+		}
+		for {
+			time.Sleep(30 * time.Second)
+			c, err := net.DialTimeout("tcp", probeAddr, 2*time.Second)
+			if err != nil {
+				logf("self-health dial failed (%v) — exiting so orchestrator can respawn", err)
+				fmt.Fprintf(os.Stderr, "[belve-persist] broker self-health failed: %v; exiting\n", err)
+				os.Exit(2)
+			}
+			c.Close()
+		}
+	}()
+
 	getOrCreateSession := func(name string, initCols, initRows uint16, extraEnv []string) *tcpSession {
 		mu.Lock()
 		defer mu.Unlock()

@@ -106,6 +106,10 @@ struct XTermTerminalView: NSViewRepresentable {
 	var paneIndex: Int = 0
 	var viewWidth: CGFloat = 0
 	var viewHeight: CGFloat = 0
+	/// この project が現在 sidebar で選択中か。非選択時は auto-focus を抑制する
+	/// (= 全 project が ZStack で同時 mount されてるので、非選択 project の
+	/// updateNSView が触ると現在の active pane から focus を奪う事象を防ぐ)。
+	var isProjectSelected: Bool = true
 	@EnvironmentObject var notificationStore: NotificationStore
 	@EnvironmentObject var commandAreaState: CommandAreaState
 
@@ -174,11 +178,10 @@ struct XTermTerminalView: NSViewRepresentable {
 			context.coordinator.resizeTerminal(width: viewWidth, height: viewHeight)
 		}
 		// Focus は CommandAreaState.activePaneId が source of truth (構造改善 C)。
-		// ペインが「自分が active」と認識した時だけ focus を要求する。各ペインが
-		// 独立に first-output 等で auto-focus すると複数 pane で focus 戦争が起きる
-		// (= 2026-04-24 ちらつき問題)。ここでは set されたら focus、そうでなければ
-		// 何もしない (= 既存 focus を奪わない) シンプル設計。
-		if let paneId, let active = commandAreaState.activePaneId,
+		// 加えて isProjectSelected で「現在 sidebar で選択中の project」のみ focus
+		// 取得対象にする (= 全 project ZStack 同時 mount による誤 focus 奪取を防ぐ)。
+		if isProjectSelected,
+		   let paneId, let active = commandAreaState.activePaneId,
 		   active.uuidString == paneId,
 		   nsView.window?.firstResponder !== nsView,
 		   context.coordinator.isTerminalReady {

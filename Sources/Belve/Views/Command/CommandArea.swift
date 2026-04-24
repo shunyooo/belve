@@ -593,7 +593,10 @@ struct CommandArea: View {
 								paneId: pane.paneId.uuidString,
 								paneIndex: pane.paneIndex,
 								viewWidth: max(1, pane.rect.width),
-								viewHeight: max(1, pane.rect.height - paneHeaderHeight)
+								viewHeight: max(1, pane.rect.height - paneHeaderHeight),
+								// 全 project が ZStack で同時 mount される構造上、
+								// 自分が選択中の project の時だけ auto-focus 取得を許可。
+								isProjectSelected: projectStore.selectedProject?.id == project.id
 							)
 							.frame(
 								width: max(1, pane.rect.width),

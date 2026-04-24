@@ -109,27 +109,22 @@ _ensure_vm_broker() {
     local stamp="$HOME/.belve/.broker-md5"
     local current_md5
     current_md5=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
-    local running=0
-    # Plain SSH broker now listens on 19223 (PTY) so it doesn't conflict with
-    # potential future router-on-19222 setups. Router's localPortFor("pty")
-    # returns 19223 too.
-    if ss -tln 2>/dev/null | grep -q '127.0.0.1:19223' \
-        || netstat -tln 2>/dev/null | grep -q '127.0.0.1:19223'; then
-        running=1
+    local healthy=0
+    # 「listen socket 存在」ではなく「TCP 接続できる」で健全性判定 (= 構造改善 E)。
+    # half-bind 状態 (= bind 失敗で listener 無いのに process だけ alive) でも正しく
+    # 検出して respawn できる。
+    if bash -c "exec 3<>/dev/tcp/127.0.0.1/19223" 2>/dev/null; then
+        healthy=1
     fi
     local old_md5=""
     [ -f "$stamp" ] && old_md5=$(cat "$stamp")
-    # md5 一致 + 起動中ならノータッチ。md5 が違うのは broker code が実際に
-    # 変わった時だけ (`-trimpath -buildvcs=false` で deterministic build を
-    # 担保している)。 → kill + 新 binary で respawn。session は落ちるが、
-    # broker 再起動が必要な状況なので意図通り。
-    if [ "$running" = "1" ] && [ "$current_md5" = "$old_md5" ]; then
+    # md5 一致 + 接続できる状態なら何もしない (= fast path)。
+    if [ "$healthy" = "1" ] && [ "$current_md5" = "$old_md5" ]; then
         return 0
     fi
-    if [ "$running" = "1" ]; then
-        pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19223' 2>/dev/null || true
-        sleep 0.3
-    fi
+    # それ以外は全部 pkill して spawn し直す。
+    pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19223' 2>/dev/null || true
+    sleep 0.3
     # Legacy 19222 broker 残骸の掃除も併せて (新規 19223 と被ったら困るので)。
     pkill -9 -f 'belve-persist.*tcplisten 127.0.0.1:19222' 2>/dev/null || true
     # `9>&-` で flock FD を子に継承させない (router の bug と同じ理由)。
@@ -193,19 +188,21 @@ _ensure_container_broker() {
     fi
     docker exec "$cid" chmod +x /root/.belve/bin/* /root/.belve/session-bootstrap.sh 2>/dev/null || true
 
-    local broker_running=0
-    if docker exec "$cid" sh -c 'ss -tln 2>/dev/null | grep -q :19222 || netstat -tln 2>/dev/null | grep -q :19222' 2>/dev/null; then
-        broker_running=1
+    # broker の「健全性」を listen socket 存在ではなく「TCP 接続できるか」で判定
+    # (= 構造改善 E)。process alive でも half-bind 状態 (= bind 失敗で 19222
+    # listener 無いのに process 残ってる事象、container で観測) では reconnect
+    # ループになるので、connect テストで本当に accept する状態を確認する。
+    local broker_healthy=0
+    if docker exec "$cid" bash -c "exec 3<>/dev/tcp/127.0.0.1/19222" 2>/dev/null; then
+        broker_healthy=1
     fi
-    # md5 一致 + 起動中ならノータッチ。
-    if [ "$broker_running" = "1" ] && [ "$mismatch" = "0" ]; then
+    # md5 一致 + 接続できる状態なら何もしない (= fast path)。
+    if [ "$broker_healthy" = "1" ] && [ "$mismatch" = "0" ]; then
         return 0
     fi
-    # mismatch 時は古い broker を kill して新 binary で起動し直す。
-    if [ "$broker_running" = "1" ]; then
-        docker exec "$cid" pkill -9 -f 'belve-persist.*tcplisten 0.0.0.0:19222' 2>/dev/null || true
-        sleep 0.3
-    fi
+    # それ以外 (md5 mismatch / half-bind / 全く居ない) は全て pkill して spawn し直す。
+    docker exec "$cid" pkill -9 -f 'belve-persist.*tcplisten 0.0.0.0:19222' 2>/dev/null || true
+    sleep 0.3
     docker exec -d \
         -e BELVE_SESSION=1 \
         -e TERM=xterm-256color \
