@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import Carbon
+import Carbon.HIToolbox
 import UserNotifications
 
 /// Belve.app プロセス起動時刻。startup grace 用 (起動直後の自動 focus 抑制等)。
