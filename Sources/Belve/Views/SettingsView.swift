@@ -53,18 +53,21 @@ struct SettingsView: View {
 									.frame(width: 30, alignment: .trailing)
 							}
 
-							// Live preview with current style + size
-							HStack(spacing: 16) {
-								previewItem(status: .running, label: "Running")
-								previewItem(status: .waiting, label: "Waiting")
-								previewItem(status: .completed, label: "Done")
-								previewItem(status: .idle, label: "Idle")
+							// Live preview — mock session rows
+							VStack(spacing: 2) {
+								mockSessionRow(status: .running, prompt: "API のエラーハンドリングを修正して", tool: "Edit", detail: "src/api/handler.ts")
+								mockSessionRow(status: .waiting, prompt: "テストを書いて", waitingMessage: "Claude is waiting for your input")
+								mockSessionRow(status: .completed, prompt: "ドキュメントを更新", detail: "Done")
+								mockSessionRow(status: .idle, prompt: "Ready", detail: nil)
 							}
-							.padding(.vertical, 8)
-							.padding(.horizontal, 12)
+							.padding(6)
 							.background(
 								RoundedRectangle(cornerRadius: 6)
-									.fill(Theme.surfaceActive)
+									.fill(Theme.bg)
+							)
+							.overlay(
+								RoundedRectangle(cornerRadius: 6)
+									.stroke(Theme.borderSubtle, lineWidth: 1)
 							)
 
 							StatusIndicatorMatrix()
@@ -117,13 +120,52 @@ struct SettingsView: View {
 		}
 	}
 
-	private func previewItem(status: AgentStatus, label: String) -> some View {
-		VStack(spacing: 4) {
-			StatusIndicator(status: status)
-			Text(label)
-				.font(.system(size: 9))
-				.foregroundStyle(Theme.textTertiary)
+	private func mockSessionRow(status: AgentStatus, prompt: String, tool: String? = nil, detail: String? = nil, waitingMessage: String? = nil) -> some View {
+		let isActive = status == .running || status == .waiting
+		return HStack(alignment: .top, spacing: 6) {
+			VStack {
+				Spacer().frame(height: 3)
+				StatusIndicator(status: status)
+			}
+			VStack(alignment: .leading, spacing: 2) {
+				Text(prompt)
+					.font(.system(size: 11, weight: isActive ? .medium : .regular))
+					.foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
+					.lineLimit(2)
+				if let tool {
+					HStack(spacing: 3) {
+						Image(systemName: "wrench.and.screwdriver")
+							.font(.system(size: 8))
+						Text(tool)
+							.lineLimit(1)
+					}
+					.font(.system(size: 9))
+					.foregroundStyle(Theme.accent)
+				}
+				if let detail {
+					Text(detail)
+						.font(.system(size: 9))
+						.foregroundStyle(status == .completed ? Theme.green : Theme.textTertiary)
+						.lineLimit(1)
+				}
+				if let waitingMessage {
+					Text(waitingMessage)
+						.font(.system(size: 9))
+						.foregroundStyle(Theme.yellow)
+						.lineLimit(1)
+				}
+				Text("now")
+					.font(.system(size: 9))
+					.foregroundStyle(Theme.textTertiary.opacity(0.6))
+			}
+			Spacer(minLength: 0)
 		}
+		.padding(.horizontal, 8)
+		.padding(.vertical, 5)
+		.background(
+			RoundedRectangle(cornerRadius: 4)
+				.fill(isActive ? Theme.surfaceActive.opacity(0.3) : Color.clear)
+		)
 	}
 
 	private func settingsSection<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
