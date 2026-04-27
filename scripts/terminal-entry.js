@@ -339,6 +339,13 @@ function buildFullPath(buf, startY, pathStart) {
 	// Only bother extending if the path ends at / near the end of the line
 	// or the next line is a soft-wrap continuation.
 	if (pathEndPos < text.length - 2 && !isNextWrapped) return { path: path, continuations: continuations };
+	// Path がすでに .ext で終わっている (= 完成形のファイル名) なら次行に
+	// 繋げない。Claude Code の "Wrote N lines to FOO.md\n    1 # ..." のような
+	// 出力で line number "1" を pathに連結して "FOO.md1" にしてしまうのを防ぐ。
+	// soft-wrap (= 行幅で折り返された場合) は中断されてないので例外。
+	if (!isNextWrapped && /\.[A-Za-z0-9]{1,8}(?::\d+)?(?::\d+)?$/.test(pathStart)) {
+		return { path: path, continuations: continuations };
+	}
 
 	var nextY = startY + 1;
 	while (nextY < buf.length) {
@@ -393,7 +400,11 @@ function ensurePathLinkProvider() {
 						const prevStart = lastMatch.index + lastMatch[0].lastIndexOf(prevPath);
 						const prevEnd = prevStart + prevPath.length;
 						const endsAtEdge = prevEnd >= prevText.length - 1;
-						if (endsAtEdge || isSoftWrapped) {
+						// 拡張子付き完成 path を line-number prefix (= "    1 # ...")
+						// と繋いで誤った link にしないためのガード。soft-wrap は除外
+						// (term width で強制改行されてるので途中で切れている可能性あり)。
+						const prevAlreadyComplete = !isSoftWrapped && /\.[A-Za-z0-9]{1,8}(?::\d+)?(?::\d+)?$/.test(prevPath);
+						if ((endsAtEdge || isSoftWrapped) && !prevAlreadyComplete) {
 							const trimmed = isSoftWrapped ? text : text.replace(/^\s+/, '');
 							const indent = text.length - trimmed.length;
 							const cont = trimmed.match(/^([A-Za-z0-9_~\/][A-Za-z0-9_\-\.\/~:]*)/);
