@@ -337,6 +337,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			background: #252534;
 			border-bottom: 1px solid #313244;
 			cursor: pointer;
+			-webkit-user-select: none;
 			user-select: none;
 			position: sticky;
 			top: 0;
@@ -393,6 +394,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			text-align: right;
 			padding: 0 6px;
 			color: #45475a;
+			-webkit-user-select: none;
 			user-select: none;
 			border-right: 1px solid #252530;
 			font-size: 11px;
