@@ -132,11 +132,16 @@ private func executeLocal(_ command: String) -> CommandResult? {
 	return CommandResult(output: output, status: process.terminationStatus)
 }
 
-/// 同時 `ssh host cmd` 実行数を絞るための semaphore。RPC が一時的に死んだ時
-/// (router 経由の container :19224 が旧 broker で listen してない等) に
-/// provider fallback が殺到して SSH MaxSessions を食い尽くすのを防ぐ。
-/// 3 並列まで。残りは順番待ち。RPC 経路に乗る steady state ではほぼ通らない。
+/// 同時 `ssh host cmd` 実行数を絞るための semaphore。No-fallback 化後でも
+/// resolveContainerInfo / findDevContainerDirs 等の直接 caller が残るため
+/// 万一 SSH 大量起動が起きても sshd の MaxSessions を食い尽くさない上限。
 private let executeSSHSemaphore = DispatchSemaphore(value: 3)
+
+/// SSH 1 コマンドあたりのハード timeout。SSH コマンドが (broker 詰まり / docker
+/// exec hang 等で) 永久に返らないと semaphore が枯渇して全 SSH 経路が止まる。
+/// 10 秒で kill して semaphore を解放する。10s は対話的 op の感覚的な上限
+/// (= ChangesView polling 3s に対して 3 倍超なら明らかに異常)。
+private let executeSSHTimeoutSeconds: TimeInterval = 10
 
 private func executeSSH(host: String, _ command: String) -> CommandResult? {
 	executeSSHSemaphore.wait()
@@ -151,9 +156,34 @@ private func executeSSH(host: String, _ command: String) -> CommandResult? {
 
 	do {
 		try process.run()
-		process.waitUntilExit()
 	} catch {
 		NSLog("[Belve] ssh run failed: \(error)")
+		return nil
+	}
+
+	// Hard-timeout: 10s 以内に終わらなければ SIGTERM → 0.5s 待って SIGKILL。
+	// process.waitUntilExit() を直接呼ぶと永久 block するので timer 経由で kill。
+	let timeoutTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+	let timedOutLock = NSLock()
+	var timedOut = false
+	timeoutTimer.schedule(deadline: .now() + executeSSHTimeoutSeconds)
+	timeoutTimer.setEventHandler {
+		timedOutLock.withLock { timedOut = true }
+		process.terminate()
+		// SIGTERM 受けても無視するケースに備えて 0.5s 後に SIGKILL。
+		DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+			if process.isRunning {
+				kill(process.processIdentifier, SIGKILL)
+			}
+		}
+	}
+	timeoutTimer.activate()
+	process.waitUntilExit()
+	timeoutTimer.cancel()
+
+	let wasTimedOut = timedOutLock.withLock { timedOut }
+	if wasTimedOut {
+		NSLog("[Belve] ssh timed out (host=%@): %@", host, command.prefix(80) as CVarArg)
 		return nil
 	}
 
@@ -180,27 +210,26 @@ extension WorkspaceProvider {
 	// MARK: Git (shared via run())
 
 	func gitBranch(_ path: String) -> String? {
-		// Try RPC first (if this provider is associated with an active
-		// project that has an RPC client). For Local / providers without
-		// projectId, this returns nil and we fall through.
-		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
-		   let client = RemoteRPCRegistry.shared.client(for: pid),
-		   let res = syncRPC(client: client, op: "gitBranch", params: ["path": path]),
-		   let result = res.result,
-		   let branch = result["branch"] as? String
-		{
-			return branch.isEmpty ? nil : branch
+		// Remote (= RemoteProjectScoped) は RPC ONLY。No silent fallback to SSH
+		// (= 主経路失敗時の旧経路 fallback は禁止、CLAUDE.md の設計原則)。
+		// Local は run = 直接 exec で SSH を消費しないので run のみで OK。
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC {
+			guard let client = RemoteRPCRegistry.shared.client(for: pid),
+			      let res = syncRPC(client: client, op: "gitBranch", params: ["path": path]),
+			      let branch = res.result?["branch"] as? String,
+			      !branch.isEmpty
+			else { return nil }
+			return branch
 		}
 		return run("cd \(shellQuote(path)) && git rev-parse --abbrev-ref HEAD 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines)
 	}
 
 	func gitStatus(_ path: String) -> [String: String] {
-		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
-		   let client = RemoteRPCRegistry.shared.client(for: pid),
-		   let res = syncRPC(client: client, op: "gitStatus", params: ["path": path]),
-		   let result = res.result,
-		   let files = result["files"] as? [[String: Any]]
-		{
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC {
+			guard let client = RemoteRPCRegistry.shared.client(for: pid),
+			      let res = syncRPC(client: client, op: "gitStatus", params: ["path": path]),
+			      let files = res.result?["files"] as? [[String: Any]]
+			else { return [:] }
 			var out: [String: String] = [:]
 			for f in files {
 				guard let status = f["status"] as? String,
@@ -221,13 +250,11 @@ extension WorkspaceProvider {
 	}
 
 	func gitDiffHunks(_ path: String, file: String) -> [GitDiffHunk] {
-		// RPC fast path
-		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
-		   let client = RemoteRPCRegistry.shared.client(for: pid),
-		   let res = syncRPC(client: client, op: "gitDiff", params: ["path": path, "file": file]),
-		   let result = res.result,
-		   let diff = result["diff"] as? String
-		{
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC {
+			guard let client = RemoteRPCRegistry.shared.client(for: pid),
+			      let res = syncRPC(client: client, op: "gitDiff", params: ["path": path, "file": file]),
+			      let diff = res.result?["diff"] as? String
+			else { return [] }
 			return Self.parseDiffHunks(diff)
 		}
 		guard let output = run("cd \(shellQuote(path)) && git diff -U0 -- \(shellQuote(file)) 2>/dev/null") else { return [] }
@@ -257,13 +284,11 @@ extension WorkspaceProvider {
 
 	func gitCheckIgnore(_ repoPath: String, paths: [String]) -> Set<String> {
 		guard !paths.isEmpty else { return [] }
-		// RPC fast path
-		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
-		   let client = RemoteRPCRegistry.shared.client(for: pid),
-		   let res = syncRPC(client: client, op: "gitCheckIgnore", params: ["path": repoPath, "paths": paths]),
-		   let result = res.result,
-		   let ignored = result["ignored"] as? [String]
-		{
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC {
+			guard let client = RemoteRPCRegistry.shared.client(for: pid),
+			      let res = syncRPC(client: client, op: "gitCheckIgnore", params: ["path": repoPath, "paths": paths]),
+			      let ignored = res.result?["ignored"] as? [String]
+			else { return [] }
 			return Set(ignored)
 		}
 		let quotedPaths = paths.map { shellQuote($0) }.joined(separator: " ")
@@ -273,16 +298,15 @@ extension WorkspaceProvider {
 	}
 
 	func gitFullDiff(_ path: String, file: String, args: [String]) -> String? {
-		// RPC fast path
-		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
-		   let client = RemoteRPCRegistry.shared.client(for: pid) {
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC {
 			var params: [String: Any] = ["path": path, "file": file]
 			if !args.isEmpty { params["args"] = args }
-			if let res = syncRPC(client: client, op: "gitDiff", params: params),
-			   let result = res.result,
-			   let diff = result["diff"] as? String {
-				return diff.isEmpty ? nil : diff
-			}
+			guard let client = RemoteRPCRegistry.shared.client(for: pid),
+			      let res = syncRPC(client: client, op: "gitDiff", params: params),
+			      let diff = res.result?["diff"] as? String,
+			      !diff.isEmpty
+			else { return nil }
+			return diff
 		}
 		let quotedArgs = args.joined(separator: " ")
 		let cmd = "cd \(shellQuote(path)) && git diff \(quotedArgs) -- \(shellQuote(file)) 2>/dev/null"
@@ -291,37 +315,33 @@ extension WorkspaceProvider {
 
 	/// Bulk diff for all files (single git command). Returns raw unified diff.
 	func gitDiffBulk(_ path: String, args: [String]) -> String? {
-		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
-		   let client = RemoteRPCRegistry.shared.client(for: pid) {
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC {
 			var params: [String: Any] = ["path": path]
 			if !args.isEmpty { params["args"] = args }
-			if let res = syncRPC(client: client, op: "gitDiffBulk", params: params),
-			   let result = res.result,
-			   let diff = result["diff"] as? String {
-				return diff
-			}
+			guard let client = RemoteRPCRegistry.shared.client(for: pid),
+			      let res = syncRPC(client: client, op: "gitDiffBulk", params: params),
+			      let diff = res.result?["diff"] as? String
+			else { return nil }
+			return diff
 		}
 		let quotedArgs = args.joined(separator: " ")
 		return run("cd \(shellQuote(path)) && git diff \(quotedArgs) 2>/dev/null")
 	}
 
 	func gitChangedFiles(_ path: String, args: [String]) -> [(status: String, file: String)] {
-		// RPC fast path
-		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
-		   let client = RemoteRPCRegistry.shared.client(for: pid) {
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC {
 			var params: [String: Any] = ["path": path]
 			if !args.isEmpty { params["args"] = args }
-			if let res = syncRPC(client: client, op: "gitChangedFiles", params: params),
-			   let result = res.result,
-			   let files = result["files"] as? [[String: Any]] {
-				return files.compactMap { f in
-					guard let status = f["status"] as? String,
-						  let file = f["file"] as? String else { return nil }
-					return (status, file)
-				}
+			guard let client = RemoteRPCRegistry.shared.client(for: pid),
+			      let res = syncRPC(client: client, op: "gitChangedFiles", params: params),
+			      let files = res.result?["files"] as? [[String: Any]]
+			else { return [] }
+			return files.compactMap { f in
+				guard let status = f["status"] as? String,
+				      let file = f["file"] as? String else { return nil }
+				return (status, file)
 			}
 		}
-		// Shell fallback
 		let cmd: String
 		if args.isEmpty {
 			cmd = "cd \(shellQuote(path)) && git status --porcelain 2>/dev/null"
@@ -679,55 +699,39 @@ struct SSHProvider: WorkspaceProvider, RemoteProjectScoped {
 
 	func listDirectory(_ path: String) -> [FileItem] { listDirectoryRemote(path) }
 
+	// SSHProvider は **RPC ONLY**。No silent fallback to SSH (= MaxSessions 食いを防ぐ)。
+	// RPC が落ちてれば file op も落ちる (= 明示的エラー、UI で「control daemon down」表示)。
+
 	func fileExists(_ path: String) -> Bool {
-		// RPC: stat が成功したら存在。size/mtime は見ない。
-		if let _ = rpcResult(op: "stat", params: ["path": path]) { return true }
-		// Fallback shell
-		return run("test -f \(shellQuote(path)) && echo yes || echo no") == "yes"
+		rpcResult(op: "stat", params: ["path": path]) != nil
 	}
 
 	func readFile(_ path: String) -> String? {
-		if let result = rpcResult(op: "read", params: ["path": path]),
-		   let content = result["content"] as? String { return content }
-		return run("cat \(shellQuote(path))")
+		rpcResult(op: "read", params: ["path": path])?["content"] as? String
 	}
 
 	func writeFile(_ path: String, content: String) -> Bool {
-		// RPC は base64 で渡す方が改行/制御文字に安全。
 		let b64 = Data(content.utf8).base64EncodedString()
-		if rpcOK(op: "write", params: ["path": path, "data": b64, "encoding": "base64"]) {
-			return true
-		}
-		let escaped = content.replacingOccurrences(of: "'", with: "'\\''")
-		return run("printf '%s' '\(escaped)' > \(shellQuote(path))") != nil
+		return rpcOK(op: "write", params: ["path": path, "data": b64, "encoding": "base64"])
 	}
 
 	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) {
-		if rpcOK(op: "delete", params: ["path": path]) {
-			return (true, nil)
-		}
-		return deleteItemRemote(path)
+		(rpcOK(op: "delete", params: ["path": path]), nil)
 	}
 
 	func moveItem(from: String, to: String) -> Bool {
-		if rpcOK(op: "rename", params: ["path": from, "path2": to]) { return true }
-		return run("mv \(shellQuote(from)) \(shellQuote(to))") != nil
+		rpcOK(op: "rename", params: ["path": from, "path2": to])
 	}
 
 	func createFile(_ path: String) -> Bool {
-		// 空ファイル作成: write op で空文字。
-		if rpcOK(op: "write", params: ["path": path, "data": "", "encoding": "utf8"]) { return true }
-		return run("touch \(shellQuote(path))") != nil
+		rpcOK(op: "write", params: ["path": path, "data": "", "encoding": "utf8"])
 	}
 
 	func modificationDate(_ path: String) -> Date? {
-		if let result = rpcResult(op: "stat", params: ["path": path]),
-		   let mtime = result["mtime"] as? Double {
-			return Date(timeIntervalSince1970: mtime)
-		}
-		guard let epoch = run("stat -c %Y \(shellQuote(path)) 2>/dev/null || stat -f %m \(shellQuote(path)) 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines),
-			  let ts = TimeInterval(epoch) else { return nil }
-		return Date(timeIntervalSince1970: ts)
+		guard let result = rpcResult(op: "stat", params: ["path": path]),
+		      let mtime = result["mtime"] as? Double
+		else { return nil }
+		return Date(timeIntervalSince1970: mtime)
 	}
 
 	func downloadFile(remotePath: String, to localURL: URL) -> Bool {
@@ -806,47 +810,38 @@ struct DevContainerProvider: WorkspaceProvider, RemoteProjectScoped {
 
 	func listDirectory(_ path: String) -> [FileItem] { listDirectoryRemote(path) }
 
+	// DevContainerProvider は **RPC ONLY**。No silent fallback (= SSHProvider と同じ理由)。
+
 	func fileExists(_ path: String) -> Bool {
-		if let _ = rpcResult(op: "stat", params: ["path": path]) { return true }
-		return run("test -f \(shellQuote(path)) && echo yes || echo no") == "yes"
+		rpcResult(op: "stat", params: ["path": path]) != nil
 	}
 
 	func readFile(_ path: String) -> String? {
-		if let result = rpcResult(op: "read", params: ["path": path]),
-		   let content = result["content"] as? String { return content }
-		return run("cat \(shellQuote(path))")
+		rpcResult(op: "read", params: ["path": path])?["content"] as? String
 	}
 
 	func writeFile(_ path: String, content: String) -> Bool {
 		let b64 = Data(content.utf8).base64EncodedString()
-		if rpcOK(op: "write", params: ["path": path, "data": b64, "encoding": "base64"]) { return true }
-		let escaped = content.replacingOccurrences(of: "'", with: "'\\''")
-		return run("printf '%s' '\(escaped)' > \(shellQuote(path))") != nil
+		return rpcOK(op: "write", params: ["path": path, "data": b64, "encoding": "base64"])
 	}
 
 	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) {
-		if rpcOK(op: "delete", params: ["path": path]) { return (true, nil) }
-		return deleteItemRemote(path)
+		(rpcOK(op: "delete", params: ["path": path]), nil)
 	}
 
 	func moveItem(from: String, to: String) -> Bool {
-		if rpcOK(op: "rename", params: ["path": from, "path2": to]) { return true }
-		return run("mv \(shellQuote(from)) \(shellQuote(to))") != nil
+		rpcOK(op: "rename", params: ["path": from, "path2": to])
 	}
 
 	func createFile(_ path: String) -> Bool {
-		if rpcOK(op: "write", params: ["path": path, "data": "", "encoding": "utf8"]) { return true }
-		return run("touch \(shellQuote(path))") != nil
+		rpcOK(op: "write", params: ["path": path, "data": "", "encoding": "utf8"])
 	}
 
 	func modificationDate(_ path: String) -> Date? {
-		if let result = rpcResult(op: "stat", params: ["path": path]),
-		   let mtime = result["mtime"] as? Double {
-			return Date(timeIntervalSince1970: mtime)
-		}
-		guard let epoch = run("stat -c %Y \(shellQuote(path)) 2>/dev/null")?.trimmingCharacters(in: .whitespacesAndNewlines),
-			  let ts = TimeInterval(epoch) else { return nil }
-		return Date(timeIntervalSince1970: ts)
+		guard let result = rpcResult(op: "stat", params: ["path": path]),
+		      let mtime = result["mtime"] as? Double
+		else { return nil }
+		return Date(timeIntervalSince1970: mtime)
 	}
 
 	func downloadFile(remotePath: String, to localURL: URL) -> Bool {
@@ -988,23 +983,6 @@ private func resolveContainerInfo(host: String, workspace: String) -> ContainerI
 
 // MARK: - Shared Remote Helpers
 
-private func listDirectoryRemote(_ path: String, run: (String) -> String?) -> [FileItem] {
-	guard let output = run("ls -1aF \(shellQuote(path))") else { return [] }
-	let items = output.components(separatedBy: "\n")
-		.filter { !$0.isEmpty && $0 != "./" && $0 != "../" }
-		.filter { entry in
-			let name = entry.hasSuffix("/") ? String(entry.dropLast()) : entry.replacingOccurrences(of: "*", with: "")
-			return !AppConfig.shared.shouldExclude(name)
-		}
-		.compactMap { entry -> FileItem? in
-			let isDir = entry.hasSuffix("/")
-			let name = isDir ? String(entry.dropLast()) : entry.replacingOccurrences(of: "*", with: "")
-			let fullPath = (path as NSString).appendingPathComponent(name)
-			return FileItem(name: name, path: fullPath, isDirectory: isDir)
-		}
-	return items.sortedLikeVSCode()
-}
-
 extension Array where Element == FileItem {
 	/// Match VS Code's default explorer sort: folders first, then files.
 	/// Within each group, case-insensitive natural compare — so dot-prefixed
@@ -1018,23 +996,16 @@ extension Array where Element == FileItem {
 }
 
 extension SSHProvider {
+	// RPC ONLY。RPC 未確立 / 失敗時は空 (= FileTree が空表示) — silent fallback で
+	// `ssh host ls` 大量発射して MaxSessions 食うのを防ぐ。
 	fileprivate func listDirectoryRemote(_ path: String) -> [FileItem] {
-		// RPC fast path: 既存 SSH port forward 越しに 1 TCP 往復で済む
-		// (vs `ssh host ls` で ~20-50ms の fork/exec)。失敗 (RPC 未確立等)
-		// なら従来の executeSSH 経路にフォールバック。
-		if let items = listDirectoryViaRPC(projectId: projectId, path: path) {
-			return items.sortedLikeVSCode()
-		}
-		return WorkspaceProvider_listDirectoryRemote(path, run: run)
+		(listDirectoryViaRPC(projectId: projectId, path: path) ?? []).sortedLikeVSCode()
 	}
 }
 
 extension DevContainerProvider {
 	fileprivate func listDirectoryRemote(_ path: String) -> [FileItem] {
-		if let items = listDirectoryViaRPC(projectId: projectId, path: path) {
-			return items.sortedLikeVSCode()
-		}
-		return WorkspaceProvider_listDirectoryRemote(path, run: run)
+		(listDirectoryViaRPC(projectId: projectId, path: path) ?? []).sortedLikeVSCode()
 	}
 }
 
@@ -1081,31 +1052,12 @@ func syncRPC(client: RemoteRPCClient, op: String, params: [String: Any]) -> RPCR
 	return res
 }
 
-private func WorkspaceProvider_listDirectoryRemote(_ path: String, run: (String) -> String?) -> [FileItem] {
-	Belve.listDirectoryRemote(path, run: run)
-}
-
-private func deleteItemRemote(_ path: String, run: (String) -> String?) -> (success: Bool, trashedURL: URL?) {
-	let filename = (path as NSString).lastPathComponent
-	let timestamp = Int(Date().timeIntervalSince1970)
-	let trashName = "\(filename).\(timestamp)"
-	let trashDir = "~/.belve-trash"
-	let trashPath = "\(trashDir)/\(trashName)"
-	let mkdirAndMove = "mkdir -p \(trashDir) && mv \(shellQuote(path)) \(shellQuote(trashPath))"
-	if run(mkdirAndMove) != nil {
-		let urlWithFragment = URL(string: "belve-remote://trash#\(trashPath.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) ?? trashPath)")!
-		return (true, urlWithFragment)
-	}
-	return (false, nil)
-}
-
 extension SSHProvider {
-	fileprivate func deleteItemRemote(_ path: String) -> (success: Bool, trashedURL: URL?) {
-		Belve.deleteItemRemote(path, run: run)
-	}
-
 	/// For each given absolute path, test whether `<path>/.devcontainer/devcontainer.json`
 	/// exists. Single SSH round-trip regardless of the number of paths.
+	/// **Note**: 直接 SSH (RPC 経路なし)。FolderBrowser での新規 project 追加時など
+	/// RPC 確立前から呼ばれるので RPC 化できない。executeSSH 側に 10s timeout が
+	/// 入ってるので長時間 hang はしない。
 	func findDevContainerDirs(in paths: [String]) -> Set<String> {
 		guard !paths.isEmpty else { return [] }
 		let quoted = paths.map { shellQuote("\($0)/.devcontainer/devcontainer.json") }.joined(separator: " ")
@@ -1117,11 +1069,5 @@ extension SSHProvider {
 			return s.hasSuffix(suffix) ? String(s.dropLast(suffix.count)) : nil
 		}
 		return Set(results)
-	}
-}
-
-extension DevContainerProvider {
-	fileprivate func deleteItemRemote(_ path: String) -> (success: Bool, trashedURL: URL?) {
-		Belve.deleteItemRemote(path, run: run)
 	}
 }

@@ -45,11 +45,27 @@ final class MasterClient: @unchecked Sendable {
 	@discardableResult
 	func bootstrap() async throws -> String {
 		NSLog("[Belve][master] bootstrap step=probe-existing")
-		// 1. 既存 socket に ping 試行。socket file が無ければ NWConnection が
-		//    waiting state で永遠に待つ可能性があるので、まず file 存在チェック。
+		// 1. 既存 socket に ping 試行。socket file が無くても、orphan (file あるが listener
+		//    無し) でも NWConnection が ECONNREFUSED を伝えず永遠に preparing になる事が
+		//    あるので、最初に BSD socket で同期 probe → orphan を確実に検出して cleanup。
 		if FileManager.default.fileExists(atPath: Self.socketPath) {
-			if let version = try? await fetchVersionWithTimeout(seconds: 1.5) {
+			if !Self.bsdProbeUnixSocket(path: Self.socketPath) {
+				NSLog("[Belve][master] orphan socket (refuses connect) → cleanup")
+				try? FileManager.default.removeItem(atPath: Self.socketPath)
+			} else if let version = try? await fetchVersionWithTimeout(seconds: 1.5) {
 				if version == Self.expectedVersion {
+					// Binary identity check: 一致なら attach、不一致なら **警告のみ**
+					// (auto-kill しない)。Master を kill すると router port forward が
+					// 死亡 → per-pane belve-persist client が TCP backend を失い、
+					// 全 pane が PTY exit する → 全 terminal が固まる
+					// (2026-04-27 事故)。stale master 問題は手動 pkill で対処、
+					// 自動化は per-pane の auto-reconnect が入ってから。
+					if let bundled = bundledBinaryIdentity(),
+					   let existing = try? await fetchBinaryIdentity(),
+					   existing != bundled {
+						NSLog("[Belve][master] WARN binary identity mismatch existing=(mtime=%lld size=%lld) bundled=(mtime=%lld size=%lld) — attaching anyway (manual `pkill -f mac-master` to refresh)",
+							existing.mtime, existing.size, bundled.mtime, bundled.size)
+					}
 					NSLog("[Belve][master] attached to existing master version=%@", version)
 					return version
 				}
@@ -87,6 +103,80 @@ final class MasterClient: @unchecked Sendable {
 			throw MasterError.malformedResponse("version missing")
 		}
 		return v
+	}
+
+	/// 既存 master の binary identity を取得する。version 応答に
+	/// `binaryMtime` (Unix epoch sec) + `binarySize` (bytes) が入る。
+	/// macMasterVersion を上げ忘れても、binary が変われば respawn できる安全網。
+	private struct BinaryIdentity: Equatable {
+		let mtime: Int64
+		let size: Int64
+	}
+
+	private func fetchBinaryIdentity() async throws -> BinaryIdentity? {
+		let res = try await send(op: "version", params: [:])
+		guard let result = res.result,
+		      let mtime = result["binaryMtime"] as? Int64,
+		      let size = result["binarySize"] as? Int64
+		else {
+			// 古い master は binaryMtime を返さない → nil で「比較不能」を伝える。
+			return nil
+		}
+		return BinaryIdentity(mtime: mtime, size: size)
+	}
+
+	/// App bundle 内の binary の identity を読む。Spawn しようとしている binary と
+	/// 既存 master の binary を比較する用。
+	/// BSD socket で同期 probe する。NWConnection が orphan unix socket file
+	/// (= file あるが listener なし) で ECONNREFUSED を伝えず preparing で固まる
+	/// バグを回避するためのプリチェック。Connect 試行を 500ms timeout で打ち切る。
+	/// Returns true if the socket has a real listener.
+	static func bsdProbeUnixSocket(path: String) -> Bool {
+		let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+		if fd < 0 { return false }
+		defer { Darwin.close(fd) }
+		// Set non-blocking so connect returns immediately
+		var flags = fcntl(fd, F_GETFL, 0)
+		flags |= O_NONBLOCK
+		_ = fcntl(fd, F_SETFL, flags)
+
+		var addr = sockaddr_un()
+		addr.sun_family = sa_family_t(AF_UNIX)
+		// Copy path bytes into sun_path (=104 byte fixed array)
+		let pathBytes = path.utf8CString
+		guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else { return false }
+		_ = withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+			ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dst in
+				pathBytes.withUnsafeBufferPointer { src in
+					dst.update(from: src.baseAddress!, count: pathBytes.count)
+				}
+			}
+		}
+		let addrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+		let rc = withUnsafePointer(to: &addr) {
+			$0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+				Darwin.connect(fd, $0, addrLen)
+			}
+		}
+		if rc == 0 { return true }
+		// Non-blocking connect: EINPROGRESS = in flight, poll for completion
+		if errno != EINPROGRESS { return false }
+		var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+		let pollRc = poll(&pfd, 1, 500) // 500ms
+		if pollRc <= 0 { return false }
+		var soErr: Int32 = 0
+		var soErrLen = socklen_t(MemoryLayout<Int32>.size)
+		_ = getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &soErrLen)
+		return soErr == 0
+	}
+
+	private func bundledBinaryIdentity() -> BinaryIdentity? {
+		guard let path = locateBinary(),
+		      let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+		      let mtime = attrs[.modificationDate] as? Date,
+		      let size = attrs[.size] as? NSNumber
+		else { return nil }
+		return BinaryIdentity(mtime: Int64(mtime.timeIntervalSince1970), size: size.int64Value)
 	}
 
 	/// Project の setup (deploy_bundle + ssh belve-setup) を master 側で

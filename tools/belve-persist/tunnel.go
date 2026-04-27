@@ -13,6 +13,7 @@ package main
 //   - Belve.app は IPC で「使う local port を教えて」と聞くだけ
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -26,6 +27,12 @@ import (
 const (
 	tunnelBasePort = 19222
 	tunnelMaxPort  = 19322
+	// per-host の forward port を永続化する file。Master 再起動後に同じ port を
+	// 再利用することで、走り続けてる per-pane belve-persist daemon (= -tcpbackend
+	// 127.0.0.1:PORT) の reconnect が成功するようにする (= 古い master が
+	// allocate した port を新 master が忘れて別 port を allocate → daemon が
+	// 古い port を叩き続ける、という 2026-04-27 の事故の対策)。
+	tunnelStateFile = "/tmp/belve-master-state.json"
 )
 
 type tunnelManager struct {
@@ -46,7 +53,64 @@ var globalTunnelManager = &tunnelManager{
 }
 
 func init() {
+	globalTunnelManager.loadState()
 	go globalTunnelManager.healthCheckLoop()
+}
+
+// persistedTunnelState: tunnelStateFile に書き出す JSON shape。
+// 必要なのは host → local port mapping だけ (forward の有無は起動時に
+// `isLocalPortReachable` で確認し、生きてれば再 allocate 不要、死んでれば
+// 同 port で `ensureRouterForwardOnPort` を呼ぶ)。
+type persistedTunnelState struct {
+	RouterForwards map[string]int `json:"routerForwards"`
+}
+
+// loadState: 起動時に過去の port 割当を読み込んで `routerForwards` を復元する。
+// `ensureRouterForward` の fast path (already-mapped check) で再利用される。
+// 死んでた forward は次の `ensureRouterForward` 呼び出し or healthCheckLoop で
+// 同 port で復活する。
+func (tm *tunnelManager) loadState() {
+	data, err := os.ReadFile(tunnelStateFile)
+	if err != nil {
+		return // 初回起動 / state なし
+	}
+	var st persistedTunnelState
+	if err := json.Unmarshal(data, &st); err != nil {
+		fmt.Fprintf(os.Stderr, "[belve-master] loadState parse error: %v\n", err)
+		return
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	for host, port := range st.RouterForwards {
+		tm.routerForwards[host] = port
+		tm.allocatedPorts[port] = true
+	}
+	fmt.Fprintf(os.Stderr, "[belve-master] loadState restored %d host port mappings\n", len(st.RouterForwards))
+}
+
+// saveStateLocked: tm.mu を握ってる前提で state を書き出す。
+// `ensureRouterForward` 系の最後で呼ぶ。書き込み失敗はログするだけで継続
+// (state file 無しでも master は動く)。
+func (tm *tunnelManager) saveStateLocked() {
+	st := persistedTunnelState{
+		RouterForwards: make(map[string]int, len(tm.routerForwards)),
+	}
+	for host, port := range tm.routerForwards {
+		st.RouterForwards[host] = port
+	}
+	data, err := json.Marshal(st)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[belve-master] saveState marshal error: %v\n", err)
+		return
+	}
+	tmpPath := tunnelStateFile + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "[belve-master] saveState write error: %v\n", err)
+		return
+	}
+	if err := os.Rename(tmpPath, tunnelStateFile); err != nil {
+		fmt.Fprintf(os.Stderr, "[belve-master] saveState rename error: %v\n", err)
+	}
 }
 
 // healthCheckLoop: SSH master の再起動 / OS sleep 復帰 etc で forward が死んだ時に
@@ -110,6 +174,7 @@ func (tm *tunnelManager) ensureRouterForwardOnPort(host string, localPort, remot
 	tm.routerForwards[host] = localPort
 	tm.routerSpecs[host] = spec
 	tm.allocatedPorts[localPort] = true
+	tm.saveStateLocked()
 	tm.mu.Unlock()
 	fmt.Fprintf(os.Stderr, "[belve-master] router forward (recovered) host=%s local=%d -> 127.0.0.1:%d\n", host, localPort, remotePort)
 	return localPort, nil
@@ -143,8 +208,14 @@ func (tm *tunnelManager) ensureRouterForward(host string, remotePort int) (int, 
 		if isLocalPortReachable(p) {
 			return p, nil
 		}
-		// stale: forward が死んでる。state を消して再確立に進む。
-		fmt.Fprintf(os.Stderr, "[belve-master] router forward host=%s port=%d is stale, re-establishing\n", host, p)
+		// stale: forward が死んでる。**同じ port** で再確立を試みる。
+		// これが成功すれば走り続けてる per-pane belve-persist daemon
+		// (= -tcpbackend 127.0.0.1:p で接続待ち) の reconnect が透過に成功する。
+		// 失敗したら通常の allocate にフォールバック。
+		fmt.Fprintf(os.Stderr, "[belve-master] router forward host=%s port=%d is stale, attempting same-port re-establish\n", host, p)
+		if recovered, err := tm.ensureRouterForwardOnPort(host, p, remotePort); err == nil {
+			return recovered, nil
+		}
 		tm.mu.Lock()
 		delete(tm.routerForwards, host)
 		delete(tm.routerSpecs, host)
@@ -205,6 +276,7 @@ func (tm *tunnelManager) ensureRouterForward(host string, remotePort int) (int, 
 	tm.mu.Lock()
 	tm.routerForwards[host] = port
 	tm.routerSpecs[host] = spec
+	tm.saveStateLocked()
 	tm.mu.Unlock()
 	fmt.Fprintf(os.Stderr, "[belve-master] router forward host=%s local=%d -> 127.0.0.1:%d\n", host, port, remotePort)
 	return port, nil
@@ -304,6 +376,7 @@ func (tm *tunnelManager) teardownAll() {
 	tm.routerForwards = map[string]int{}
 	tm.routerSpecs = map[string]string{}
 	tm.allocatedPorts = map[int]bool{}
+	tm.saveStateLocked()
 	tm.mu.Unlock()
 
 	for host := range routers {

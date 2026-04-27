@@ -1101,6 +1101,10 @@ struct XTermTerminalView: NSViewRepresentable {
 		}
 
 		private var ptyRetryCount = 0
+		/// Retry の最大回数。Remote/Local 共通。Master が落ちて per-host port forward
+		/// が再確立するまで数十秒かかる場合があるので、十分な回数を確保しておく。
+		/// Backoff 入りなので合計 ~5 分くらいまで粘る。
+		private static let ptyMaxRetries = 12
 
 		private func handlePTYExit(status: Int32) {
 			postConnectionState(isLoading: false)
@@ -1115,23 +1119,41 @@ struct XTermTerminalView: NSViewRepresentable {
 				ptyRetryCount
 			)
 
-			if project.isRemote {
-				// Auto-retry up to 3 times for remote projects (initial deploy/setup can take time)
-				if ptyRetryCount < 3 {
-					ptyRetryCount += 1
-					ptyService = nil
-					let delay = Double(ptyRetryCount) * 2.0 // 2s, 4s, 6s
-					NSLog("[Belve] Auto-retrying PTY for project=%@ (attempt %d, delay %.0fs)", project.name, ptyRetryCount, delay)
-					DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-						guard let self else { return }
-						let cols = self.lastResizeCols > 0 ? self.lastResizeCols : 80
-						let rows = self.lastResizeRows > 0 ? self.lastResizeRows : 24
-						self.startPTY(cols: cols, rows: rows)
-					}
-					return
+			// Local / Remote 共通で auto-retry。Local も killOrphanClients
+			// (= app 再起動時の cleanup) で SIGTERM を受けて exit するため retry が必要。
+			// Backoff: 2,4,8,16,30,30,30,... (cap=30s)。
+			if ptyRetryCount < Self.ptyMaxRetries {
+				ptyRetryCount += 1
+				ptyService = nil
+				let delay = min(30.0, pow(2.0, Double(ptyRetryCount)))
+				NSLog("[Belve] Auto-retrying PTY for project=%@ (attempt %d/%d, delay %.0fs)",
+					project.name, ptyRetryCount, Self.ptyMaxRetries, delay)
+				postReconnectingState(attempt: ptyRetryCount, max: Self.ptyMaxRetries)
+				DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+					guard let self else { return }
+					let cols = self.lastResizeCols > 0 ? self.lastResizeCols : 80
+					let rows = self.lastResizeRows > 0 ? self.lastResizeRows : 24
+					self.startPTY(cols: cols, rows: rows)
 				}
-				postDisconnectedState(isDisconnected: true)
+				return
 			}
+			postDisconnectedState(isDisconnected: true)
+		}
+
+		/// Reconnect 中の状態をターミナル上に視覚表示する用 notification。
+		/// Connection status banner (灰色帯) に "Reconnecting…" を出す。
+		private func postReconnectingState(attempt: Int, max: Int) {
+			guard let project, let paneId else { return }
+			let message = "Reconnecting… (\(attempt)/\(max))"
+			NotificationCenter.default.post(
+				name: .belveTerminalConnectionStatus,
+				object: nil,
+				userInfo: [
+					"projectId": project.id,
+					"paneId": paneId,
+					"message": message as Any,
+				]
+			)
 		}
 
 		private func handleShortcut(key: String, shift: Bool) {

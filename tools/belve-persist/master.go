@@ -27,6 +27,27 @@ import (
 // (= broker の version negotiation 議論を Mac 側に持ってきた版)。
 const macMasterVersion = "1.2"
 
+// Master 起動時に記録する自身の binary identity。version 応答に含めて
+// Belve.app 側が「app bundle 内の binary と違ったら respawn」判定に使う。
+// macMasterVersion を上げ忘れても binary が変わっていれば respawn される
+// 安全網 (= 金曜の stale master が今日の app と通信し続けた事故の対策)。
+//
+// mtime と size の組合せ。md5 は startup を遅らせる + crypto 不要なので避ける。
+// build した瞬間に mtime + size の少なくともどちらかは確実に変わる。
+var (
+	masterBinaryMtime int64
+	masterBinarySize  int64
+)
+
+func init() {
+	if exe, err := os.Executable(); err == nil {
+		if st, err := os.Stat(exe); err == nil {
+			masterBinaryMtime = st.ModTime().Unix()
+			masterBinarySize = st.Size()
+		}
+	}
+}
+
 type masterReq struct {
 	ID     string                 `json:"id"`
 	Op     string                 `json:"op"`
@@ -145,9 +166,11 @@ func masterDispatch(mc *masterConn, req masterReq) masterRes {
 	case "ping":
 		return masterRes{ID: req.ID, OK: true, Result: map[string]string{"pong": "ok"}}
 	case "version":
-		return masterRes{ID: req.ID, OK: true, Result: map[string]string{
-			"version": macMasterVersion,
-			"pid":     fmt.Sprintf("%d", os.Getpid()),
+		return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{
+			"version":      macMasterVersion,
+			"pid":          fmt.Sprintf("%d", os.Getpid()),
+			"binaryMtime":  masterBinaryMtime,
+			"binarySize":   masterBinarySize,
 		}}
 	case "ensureSetup":
 		return opEnsureSetup(req)
