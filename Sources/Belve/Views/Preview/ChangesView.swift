@@ -54,6 +54,7 @@ struct ChangedFile {
 
 struct ChangesView: View {
 	let project: Project
+	var onOpenFile: ((String) -> Void)? = nil
 	@State private var diffMode: DiffMode = .working
 	@State private var changedFiles: [ChangedFile] = []
 	@State private var isLoading = false
@@ -141,6 +142,8 @@ struct ChangesView: View {
 					// Unified diff (right)
 					UnifiedDiffWebView(files: changedFiles, onWebViewReady: { wv in
 						diffWebView = wv
+					}, onOpenFile: { path in
+						openFileInEditor(path)
 					})
 				}
 			}
@@ -198,32 +201,56 @@ struct ChangesView: View {
 		}
 	}
 
+	@State private var hoveredFilePath: String?
+
 	private func fileRow(_ file: ChangedFile) -> some View {
 		let isSelected = selectedFilePath == file.path
-		return Button {
+		let isHovered = hoveredFilePath == file.path
+		return HStack(spacing: 6) {
+			Text(file.statusLabel)
+				.font(.system(size: 9, weight: .bold, design: .monospaced))
+				.foregroundStyle(file.statusColor)
+				.frame(width: 14)
+			Text(file.filename)
+				.font(.system(size: 11))
+				.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+				.lineLimit(1)
+			Spacer()
+			if isHovered {
+				Button {
+					openFileInEditor(file.path)
+				} label: {
+					Image(systemName: "arrow.up.forward.square")
+						.font(.system(size: 10))
+						.foregroundStyle(Theme.textTertiary)
+				}
+				.buttonStyle(.plain)
+				.help("Open in editor")
+			}
+		}
+		.padding(.horizontal, 8)
+		.padding(.vertical, 3)
+		.background(
+			RoundedRectangle(cornerRadius: 4)
+				.fill(isSelected ? Theme.surfaceActive : Color.clear)
+		)
+		.contentShape(Rectangle())
+		.onTapGesture {
 			selectedFilePath = file.path
 			scrollToFile(file.path)
-		} label: {
-			HStack(spacing: 6) {
-				Text(file.statusLabel)
-					.font(.system(size: 9, weight: .bold, design: .monospaced))
-					.foregroundStyle(file.statusColor)
-					.frame(width: 14)
-				Text(file.filename)
-					.font(.system(size: 11))
-					.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
-					.lineLimit(1)
-				Spacer()
-			}
-			.padding(.horizontal, 8)
-			.padding(.vertical, 3)
-			.background(
-				RoundedRectangle(cornerRadius: 4)
-					.fill(isSelected ? Theme.surfaceActive : Color.clear)
-			)
-			.contentShape(Rectangle())
 		}
-		.buttonStyle(.plain)
+		.onHover { hovering in hoveredFilePath = hovering ? file.path : nil }
+	}
+
+	private func openFileInEditor(_ path: String) {
+		let fullPath: String
+		let rootPath = project.effectivePath
+		if rootPath == "." {
+			fullPath = path
+		} else {
+			fullPath = (rootPath as NSString).appendingPathComponent(path)
+		}
+		onOpenFile?(fullPath)
 	}
 
 	private func scrollToFile(_ path: String) {
@@ -284,13 +311,19 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 	let files: [ChangedFile]
 	var onWebViewReady: ((WKWebView) -> Void)?
 
+	var onOpenFile: ((String) -> Void)?
+
 	func makeNSView(context: Context) -> WKWebView {
-		let webView = WKWebView()
+		let config = WKWebViewConfiguration()
+		config.userContentController.add(context.coordinator, name: "diffHandler")
+		let webView = WKWebView(frame: .zero, configuration: config)
 		webView.setValue(false, forKey: "drawsBackground")
 		webView.loadHTMLString(buildHTML(), baseURL: nil)
 		DispatchQueue.main.async { onWebViewReady?(webView) }
 		return webView
 	}
+
+	func makeCoordinator() -> DiffCoordinator { DiffCoordinator(onOpenFile: onOpenFile) }
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		let newHash = files.map(\.path).joined(separator: ",")
@@ -301,10 +334,23 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		DispatchQueue.main.async { onWebViewReady?(nsView) }
 	}
 
-	func makeCoordinator() -> DiffCoordinator { DiffCoordinator() }
-
-	class DiffCoordinator {
+	class DiffCoordinator: NSObject, WKScriptMessageHandler {
 		var lastHash: String = ""
+		var onOpenFile: ((String) -> Void)?
+
+		init(onOpenFile: ((String) -> Void)?) {
+			self.onOpenFile = onOpenFile
+		}
+
+		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+			guard let body = message.body as? [String: Any],
+				  let type = body["type"] as? String else { return }
+			if type == "openFile", let path = body["path"] as? String {
+				DispatchQueue.main.async { [weak self] in
+					self?.onOpenFile?(path)
+				}
+			}
+		}
 	}
 
 	private func buildHTML() -> String {
@@ -377,11 +423,38 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			font-size: 12px;
 			font-weight: 500;
 			color: #cdd6f4;
+			flex: 1;
 		}
 		.filepath {
 			font-size: 11px;
 			color: #585b70;
+		}
+		.open-btn {
+			font-size: 10px;
+			color: #585b70;
+			cursor: pointer;
+			padding: 2px 6px;
+			border-radius: 4px;
+			border: 1px solid #313244;
+			background: transparent;
 			margin-left: auto;
+		}
+		.open-btn:hover {
+			color: #89b4fa;
+			border-color: #89b4fa;
+		}
+		.expand-row {
+			background: rgba(137, 180, 250, 0.04);
+			cursor: pointer;
+		}
+		.expand-row:hover {
+			background: rgba(137, 180, 250, 0.10);
+		}
+		.expand-row td {
+			text-align: center;
+			color: #585b70;
+			font-size: 11px;
+			padding: 3px 0;
 		}
 		.diff-table {
 			width: 100%;
@@ -454,6 +527,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		let diffLines = buildDiffRows(file.diff)
 
 		let b64 = Data(file.path.utf8).base64EncodedString()
+		let escapedPath = escapeHTML(file.path)
 		return """
 		<div class="file-section" data-file="\(b64)">
 			<div class="file-header">
@@ -461,6 +535,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 				<span class="status-badge status-\(statusClass)">\(statusLabel)</span>
 				<span class="filename">\(escapedFilename)</span>
 				<span class="filepath">\(escapedDir)</span>
+				<button class="open-btn" onclick="event.stopPropagation();window.webkit.messageHandlers.diffHandler.postMessage({type:'openFile',path:'\(escapedPath)'})">Open ↗</button>
 			</div>
 			<div class="diff-body">
 				\(diffLines.isEmpty ? "<div class=\"empty-diff\">No diff available</div>" : "<table class=\"diff-table\">\(diffLines)</table>")
@@ -474,6 +549,9 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		var html = ""
 		var oldLine = 0
 		var newLine = 0
+		var prevOldEnd = 0
+		var prevNewEnd = 0
+		var isFirstHunk = true
 
 		for line in lines {
 			let escaped = escapeHTML(line)
@@ -483,22 +561,36 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 				if parts.count >= 3 {
 					let oldComps = parts[1].dropFirst().split(separator: ",")
 					let newComps = parts[2].dropFirst().split(separator: ",")
-					oldLine = Int(oldComps[0]) ?? 0
-					newLine = Int(newComps[0]) ?? 0
+					let newOldStart = Int(oldComps[0]) ?? 0
+					let newNewStart = Int(newComps[0]) ?? 0
+
+					// Show "expand" row for skipped lines between hunks
+					if !isFirstHunk && newOldStart > prevOldEnd + 1 {
+						let skipped = newOldStart - prevOldEnd - 1
+						html += "<tr class=\"expand-row\"><td colspan=\"3\">⋯ \(skipped) lines hidden ⋯</td></tr>"
+					}
+					isFirstHunk = false
+
+					oldLine = newOldStart
+					newLine = newNewStart
 				}
 				html += "<tr class=\"hunk\"><td class=\"ln\"></td><td class=\"ln\"></td><td class=\"code\">\(escaped)</td></tr>"
 			} else if line.hasPrefix("---") || line.hasPrefix("+++") || line.hasPrefix("diff ") || line.hasPrefix("index ") {
-				continue // skip meta lines
+				continue
 			} else if line.hasPrefix("+") {
 				html += "<tr class=\"add\"><td class=\"ln\"></td><td class=\"ln\">\(newLine)</td><td class=\"code\">\(escaped)</td></tr>"
 				newLine += 1
+				prevNewEnd = newLine - 1
 			} else if line.hasPrefix("-") {
 				html += "<tr class=\"del\"><td class=\"ln\">\(oldLine)</td><td class=\"ln\"></td><td class=\"code\">\(escaped)</td></tr>"
 				oldLine += 1
+				prevOldEnd = oldLine - 1
 			} else if !line.isEmpty {
 				html += "<tr><td class=\"ln\">\(oldLine)</td><td class=\"ln\">\(newLine)</td><td class=\"code\">\(escaped)</td></tr>"
 				oldLine += 1
 				newLine += 1
+				prevOldEnd = oldLine - 1
+				prevNewEnd = newLine - 1
 			}
 		}
 		return html

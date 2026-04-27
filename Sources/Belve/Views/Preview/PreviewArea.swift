@@ -123,7 +123,10 @@ struct PreviewArea: View {
 				}
 
 				if showChanges {
-					ChangesView(project: project)
+					ChangesView(project: project, onOpenFile: { path in
+						showChanges = false
+						loadFile(at: path)
+					})
 				} else {
 					editorContent
 				}
