@@ -86,7 +86,7 @@ struct PreviewArea: View {
 	var body: some View {
 		GeometryReader { geo in
 			HStack(spacing: 0) {
-				if layoutState.showFileTree {
+				if layoutState.showFileTree && !showChanges {
 					Group {
 						FileTreeView(
 							project: project,
