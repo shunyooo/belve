@@ -631,6 +631,8 @@ struct FileTreeView: View {
 	// can observe the change through normal @State observation (SwiftUI @FocusState bool
 	// changes are not reliably treated as animatable state).
 	@State private var treeBorderActive: Bool = false
+	/// ツリー全体への drop hover (= 空白部分でも root に投げ込めるよ表示)。
+	@State private var isTreeDropTargeted: Bool = false
 
 	private var isEditing: Bool {
 		state.renamingPath != nil || state.creatingInPath != nil
@@ -689,8 +691,17 @@ struct FileTreeView: View {
 				}
 			}
 			.overlay(FocusBorderOverlay(isActive: treeBorderActive))
-			// Drag-and-drop upload from Finder — drops land in the project root.
-			.onDrop(of: [.fileURL], isTargeted: nil) { providers in
+			// Tree-level drop indicator: row に hit しなかった drop を root に逃がす。
+			// `isTargeted` で枠線を accent にして「ここに drop できる」を見せる。
+			.overlay {
+				if isTreeDropTargeted {
+					RoundedRectangle(cornerRadius: 6)
+						.strokeBorder(Theme.accent.opacity(0.7), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+						.allowsHitTesting(false)
+						.transition(.opacity)
+				}
+			}
+			.onDrop(of: [.fileURL], isTargeted: $isTreeDropTargeted) { providers in
 				handleFileDrop(providers: providers, destination: rootPath)
 				return true
 			}
@@ -925,8 +936,20 @@ struct FileTreeRow: View {
 	let onFileSelect: (String) -> Void
 	var gitFileStatus: [String: String] = [:]
 	@State private var isHovering = false
+	@State private var isDropTargeted = false
+	/// Spring-loaded folder expansion: drop hover が一定時間続くと自動展開する
+	/// (= Finder と同じ挙動)。タイマーは drop 移動 / 終了で必ず cancel する。
+	@State private var springExpandWork: DispatchWorkItem? = nil
 	@FocusState private var renameFocused: Bool
 	@FocusState private var newFileFocused: Bool
+
+	/// Drop の着地先 (= folder ならこの folder の中、file なら親 folder)。
+	private var dropDestination: String {
+		if item.isDirectory {
+			return item.path
+		}
+		return (item.path as NSString).deletingLastPathComponent
+	}
 
 	private var isFocused: Bool {
 		state.focusedPath == item.path
@@ -990,6 +1013,11 @@ struct FileTreeRow: View {
 	}
 
 	private var rowBackground: Color {
+		if isDropTargeted {
+			// Folder drop は accent でしっかり目立たせる、file の場合は親 folder へ
+			// 入る挙動なので少し控えめに。
+			return item.isDirectory ? Theme.accent.opacity(0.28) : Theme.accent.opacity(0.14)
+		}
 		if isFocused && isSelected {
 			return Theme.surfaceActive
 		} else if isFocused {
@@ -1000,6 +1028,41 @@ struct FileTreeRow: View {
 			return Theme.surfaceHover
 		}
 		return Color.clear
+	}
+
+	private func scheduleSpringExpand() {
+		cancelSpringExpand()
+		let work = DispatchWorkItem { [item, project, state] in
+			guard item.isDirectory, !state.expandedPaths.contains(item.path) else { return }
+			state.toggle(path: item.path, project: project)
+		}
+		springExpandWork = work
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+	}
+
+	private func cancelSpringExpand() {
+		springExpandWork?.cancel()
+		springExpandWork = nil
+	}
+
+	private func handleRowDrop(providers: [NSItemProvider], destination: String) {
+		let provider = project.provider
+		for item in providers {
+			_ = item.loadObject(ofClass: URL.self) { url, _ in
+				guard let url else { return }
+				let destPath = (destination as NSString).appendingPathComponent(url.lastPathComponent)
+				DispatchQueue.global(qos: .userInitiated).async {
+					let ok = provider.uploadFile(localURL: url, to: destPath)
+					DispatchQueue.main.async {
+						if ok {
+							state.refreshVisible(project: project, rootPath: rootPath)
+						} else {
+							NSLog("[Belve] upload failed: \(url.lastPathComponent) -> \(destPath)")
+						}
+					}
+				}
+			}
+		}
 	}
 
 	var body: some View {
@@ -1083,6 +1146,22 @@ struct FileTreeRow: View {
 			}
 			.onHover { hovering in
 				isHovering = hovering
+			}
+			// Per-row drop. Folder なら自身、file なら親 folder にアップロード。
+			// `isTargeted` で行ハイライト + spring-load expand トリガ。
+			.onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+				cancelSpringExpand()
+				handleRowDrop(providers: providers, destination: dropDestination)
+				return true
+			}
+			.onChange(of: isDropTargeted) { _, targeted in
+				// Spring-load: folder の上に 0.6s 留まったら自動展開して
+				// ネストした folder にも drop できるようにする (= Finder 互換)。
+				if targeted, item.isDirectory, !isExpanded {
+					scheduleSpringExpand()
+				} else {
+					cancelSpringExpand()
+				}
 			}
 			.contextMenu {
 				Button("Copy Full Path") {
