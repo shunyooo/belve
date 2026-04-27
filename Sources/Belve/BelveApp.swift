@@ -118,6 +118,7 @@ extension Notification.Name {
 	static let belveUndo = Notification.Name("belveUndo")
 	static let belvePortDetected = Notification.Name("belvePortDetected")
 	static let belveToggleBrowser = Notification.Name("belveToggleBrowser")
+	static let belveShowChanges = Notification.Name("belveShowChanges")
 	static let belveToggleTile = Notification.Name("belveToggleTile")
 	static let belveTileOpenFocused = Notification.Name("belveTileOpenFocused")
 	static let belveToggleStage = Notification.Name("belveToggleStage")

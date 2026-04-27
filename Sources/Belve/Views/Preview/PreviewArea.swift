@@ -27,6 +27,7 @@ struct PreviewArea: View {
 	/// dirty-check without re-assigning openFile (which would re-init the editor).
 	@State private var savedContentReference: String = ""
 	@State private var editedContent: String = ""
+	@State private var showChanges = false
 	@State private var loadingPath: String?
 	@State private var fileWatchTimer: Timer?
 	@State private var lastKnownModTime: Date?
@@ -121,7 +122,11 @@ struct PreviewArea: View {
 					))
 				}
 
-				editorContent
+				if showChanges {
+					ChangesView(project: project)
+				} else {
+					editorContent
+				}
 			}
 			.overlay(alignment: .top) {
 				if isFileSearchPresented {
@@ -164,6 +169,10 @@ struct PreviewArea: View {
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileSave)) { _ in
 			saveCurrentFile()
 			projectStore.refreshGitStatus()
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .belveShowChanges)) { notif in
+			if let projectId = notif.userInfo?["projectId"] as? UUID, projectId != project.id { return }
+			showChanges.toggle()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileDeleted)) { notif in
 			if let deletedPaths = notif.object as? [String],

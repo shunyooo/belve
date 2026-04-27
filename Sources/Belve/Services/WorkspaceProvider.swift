@@ -32,6 +32,8 @@ protocol WorkspaceProvider {
 	func gitStatus(_ path: String) -> [String: String]
 	func gitDiffHunks(_ path: String, file: String) -> [GitDiffHunk]
 	func gitCheckIgnore(_ repoPath: String, paths: [String]) -> Set<String>
+	func gitFullDiff(_ path: String, file: String, args: [String]) -> String?
+	func gitChangedFiles(_ path: String, args: [String]) -> [(status: String, file: String)]
 
 	// MARK: Search
 	func searchFileNames(rootPath: String, query: String, limit: Int) -> [SearchMatch]
@@ -267,6 +269,40 @@ extension WorkspaceProvider {
 		let result = runAllowFailure("cd \(shellQuote(repoPath)) && git check-ignore \(quotedPaths) 2>/dev/null")
 		guard let output = result else { return [] }
 		return Set(output.components(separatedBy: "\n").filter { !$0.isEmpty })
+	}
+
+	func gitFullDiff(_ path: String, file: String, args: [String]) -> String? {
+		let quotedArgs = args.joined(separator: " ")
+		let cmd = "cd \(shellQuote(path)) && git diff \(quotedArgs) -- \(shellQuote(file)) 2>/dev/null"
+		return run(cmd)
+	}
+
+	func gitChangedFiles(_ path: String, args: [String]) -> [(status: String, file: String)] {
+		let cmd: String
+		if args.isEmpty {
+			// Working changes: use git status --porcelain for unstaged + staged + untracked
+			cmd = "cd \(shellQuote(path)) && git status --porcelain 2>/dev/null"
+		} else {
+			let quotedArgs = args.joined(separator: " ")
+			cmd = "cd \(shellQuote(path)) && git diff \(quotedArgs) --name-status 2>/dev/null"
+		}
+		guard let output = run(cmd), !output.isEmpty else { return [] }
+		var results: [(status: String, file: String)] = []
+		for line in output.components(separatedBy: "\n") where !line.isEmpty {
+			if args.isEmpty {
+				// git status --porcelain: "XY filename" (2 char status + space + path)
+				guard line.count >= 4 else { continue }
+				let status = String(line.prefix(2)).trimmingCharacters(in: .whitespaces)
+				let file = String(line.dropFirst(3))
+				results.append((status.isEmpty ? "?" : status, file))
+			} else {
+				// git diff --name-status: "X\tfilename"
+				let parts = line.split(separator: "\t", maxSplits: 1)
+				guard parts.count == 2 else { continue }
+				results.append((String(parts[0]), String(parts[1])))
+			}
+		}
+		return results
 	}
 
 	// MARK: Search (shared via run())

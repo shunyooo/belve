@@ -1050,6 +1050,11 @@ struct MainWindow: View {
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
 			withAnimation(.easeOut(duration: 0.15)) { layoutState.showSidebar.toggle() }
 		})
+		cmds.append(PaletteCommand(title: "Show Changes", icon: "doc.badge.gearshape") {
+			if let id = projectStore.selectedProject?.id {
+				NotificationCenter.default.post(name: .belveShowChanges, object: nil, userInfo: ["projectId": id])
+			}
+		})
 		cmds.append(PaletteCommand(title: appConfig.viewMode == .tile ? "Switch to Project View" : "Show Tile View (All Panes)", icon: "square.grid.2x2") {
 			let next: ViewMode = (appConfig.viewMode == .tile) ? .project : .tile
 			withAnimation(ViewMode.toggleAnimation(showing: next == .tile)) {
