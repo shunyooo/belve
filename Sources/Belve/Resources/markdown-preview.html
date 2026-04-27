@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html data-theme="dark">
 <head>
 	<meta charset="utf-8">
 	<style>
@@ -68,6 +68,20 @@
 		#preview th { background: var(--code-bg); }
 		#preview hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
 		#preview img { max-width: 100%; border-radius: 4px; }
+		.belve-mermaid {
+			margin: 1em 0;
+			padding: 12px;
+			background: var(--code-bg);
+			border-radius: 6px;
+			overflow-x: auto;
+			text-align: center;
+		}
+		.belve-mermaid svg { max-width: 100%; height: auto; }
+		.belve-mermaid-error {
+			color: #f7768e;
+			background: rgba(247, 118, 142, 0.08);
+			border-left: 3px solid #f7768e;
+		}
 	</style>
 </head>
 <body>
