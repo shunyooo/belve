@@ -1,29 +1,10 @@
 import SwiftUI
 import WebKit
 
-enum DiffMode: String, CaseIterable {
-	case working = "Working"
-	case staged = "Staged"
-	case branch = "Branch"
-	case lastCommit = "Last Commit"
-
-	var gitArgs: [String] {
-		switch self {
-		case .working: return []
-		case .staged: return ["--staged"]
-		case .branch: return ["main...HEAD"]
-		case .lastCommit: return ["HEAD~1..HEAD"]
-		}
-	}
-
-	var diffArgs: [String] {
-		switch self {
-		case .working: return ["HEAD"]
-		case .staged: return ["--staged"]
-		case .branch: return ["main...HEAD"]
-		case .lastCommit: return ["HEAD~1..HEAD"]
-		}
-	}
+struct DiffFilter {
+	var staged: Bool = true
+	var unstaged: Bool = true
+	var committed: Bool = false
 }
 
 struct ChangedFile {
@@ -55,7 +36,7 @@ struct ChangedFile {
 struct ChangesView: View {
 	let project: Project
 	var onOpenFile: ((String) -> Void)? = nil
-	@State private var diffMode: DiffMode = .working
+	@State private var filter = DiffFilter()
 	@State private var changedFiles: [ChangedFile] = []
 	@State private var isLoading = false
 	@State private var totalAdded = 0
@@ -67,21 +48,19 @@ struct ChangesView: View {
 	var body: some View {
 		VStack(spacing: 0) {
 			// Header
-			HStack(spacing: 8) {
-				Picker("", selection: $diffMode) {
-					ForEach(DiffMode.allCases, id: \.self) { mode in
-						Text(mode.rawValue).tag(mode)
-					}
-				}
-				.pickerStyle(.menu)
-				.frame(width: 120)
+			HStack(spacing: 10) {
+				filterToggle("Staged", isOn: $filter.staged)
+				filterToggle("Unstaged", isOn: $filter.unstaged)
+				filterToggle("Committed", isOn: $filter.committed)
+
+				Theme.borderSubtle.frame(width: 1, height: 14)
 
 				if isLoading {
 					ProgressView()
 						.controlSize(.small)
 						.scaleEffect(0.7)
 				} else {
-					Text("\(changedFiles.count) files changed")
+					Text("\(changedFiles.count) files")
 						.font(.system(size: 11))
 						.foregroundStyle(Theme.textSecondary)
 					if totalAdded > 0 {
@@ -149,7 +128,25 @@ struct ChangesView: View {
 			}
 		}
 		.onAppear { loadAll() }
-		.onChange(of: diffMode) { loadAll() }
+		.onChange(of: filter.staged) { loadAll() }
+		.onChange(of: filter.unstaged) { loadAll() }
+		.onChange(of: filter.committed) { loadAll() }
+	}
+
+	private func filterToggle(_ label: String, isOn: Binding<Bool>) -> some View {
+		Button {
+			isOn.wrappedValue.toggle()
+		} label: {
+			HStack(spacing: 4) {
+				Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+					.font(.system(size: 11))
+					.foregroundStyle(isOn.wrappedValue ? Theme.accent : Theme.textTertiary)
+				Text(label)
+					.font(.system(size: 11))
+					.foregroundStyle(isOn.wrappedValue ? Theme.textPrimary : Theme.textTertiary)
+			}
+		}
+		.buttonStyle(.plain)
 	}
 
 	// MARK: - File Tree
@@ -253,6 +250,13 @@ struct ChangesView: View {
 		onOpenFile?(fullPath)
 	}
 
+	private func countLines(_ diff: String, added: inout Int, removed: inout Int) {
+		for line in diff.components(separatedBy: "\n") {
+			if line.hasPrefix("+") && !line.hasPrefix("+++") { added += 1 }
+			if line.hasPrefix("-") && !line.hasPrefix("---") { removed += 1 }
+		}
+	}
+
 	private func scrollToFile(_ path: String) {
 		// Use CSS.escape for safe selector, fallback to data attribute query
 		let b64 = Data(path.utf8).base64EncodedString()
@@ -266,34 +270,63 @@ struct ChangesView: View {
 		isLoading = true
 		let provider = project.provider
 		let rootPath = project.effectivePath
-		let listArgs = diffMode.gitArgs
-		let diffArgs = diffMode.diffArgs
+		let currentFilter = filter
 
 		DispatchQueue.global(qos: .userInitiated).async {
-			let fileList = provider.gitChangedFiles(rootPath, args: listArgs)
-			var files: [ChangedFile] = []
+			var allFiles: [String: ChangedFile] = [:] // path → file (dedup)
 			var added = 0
 			var removed = 0
 
-			for (status, path) in fileList {
-				var diff = ""
-				if status == "??" {
-					if let content = provider.readFile(
-						rootPath == "." ? path : (rootPath as NSString).appendingPathComponent(path)
-					) {
-						let lines = content.components(separatedBy: "\n")
-						diff = "@@ -0,0 +1,\(lines.count) @@\n" + lines.map { "+\($0)" }.joined(separator: "\n")
-						added += lines.count
+			// Staged
+			if currentFilter.staged {
+				let stagedList = provider.gitChangedFiles(rootPath, args: ["--staged"])
+				for (status, path) in stagedList {
+					let diff = provider.gitFullDiff(rootPath, file: path, args: ["--staged"]) ?? ""
+					countLines(diff, added: &added, removed: &removed)
+					allFiles[path] = ChangedFile(status: status, path: path, diff: diff)
+				}
+			}
+
+			// Unstaged (including untracked)
+			if currentFilter.unstaged {
+				let workingList = provider.gitChangedFiles(rootPath, args: [])
+				for (status, path) in workingList {
+					// Skip if already in staged (avoid duplicate, but merge diff)
+					var diff = ""
+					if status == "??" {
+						if let content = provider.readFile(
+							rootPath == "." ? path : (rootPath as NSString).appendingPathComponent(path)
+						) {
+							let lines = content.components(separatedBy: "\n")
+							diff = "@@ -0,0 +1,\(lines.count) @@\n" + lines.map { "+\($0)" }.joined(separator: "\n")
+							added += lines.count
+						}
+					} else {
+						// Unstaged changes only (not --staged)
+						diff = provider.gitFullDiff(rootPath, file: path, args: []) ?? ""
+						countLines(diff, added: &added, removed: &removed)
 					}
-				} else {
-					diff = provider.gitFullDiff(rootPath, file: path, args: diffArgs) ?? ""
-					for line in diff.components(separatedBy: "\n") {
-						if line.hasPrefix("+") && !line.hasPrefix("+++") { added += 1 }
-						if line.hasPrefix("-") && !line.hasPrefix("---") { removed += 1 }
+					if let existing = allFiles[path] {
+						// Merge: append unstaged diff after staged diff
+						allFiles[path] = ChangedFile(status: existing.status, path: path, diff: existing.diff + "\n" + diff)
+					} else {
+						allFiles[path] = ChangedFile(status: status, path: path, diff: diff)
 					}
 				}
-				files.append(ChangedFile(status: status, path: path, diff: diff))
 			}
+
+			// Committed (branch diff, excluding working changes)
+			if currentFilter.committed {
+				let branchList = provider.gitChangedFiles(rootPath, args: ["main...HEAD"])
+				for (status, path) in branchList {
+					if allFiles[path] != nil { continue } // already shown from staged/unstaged
+					let diff = provider.gitFullDiff(rootPath, file: path, args: ["main...HEAD"]) ?? ""
+					countLines(diff, added: &added, removed: &removed)
+					allFiles[path] = ChangedFile(status: status, path: path, diff: diff)
+				}
+			}
+
+			let files = allFiles.values.sorted { $0.path < $1.path }
 
 			DispatchQueue.main.async {
 				changedFiles = files
