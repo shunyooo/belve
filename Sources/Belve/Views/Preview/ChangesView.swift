@@ -314,16 +314,17 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		<style>
 		* { margin: 0; padding: 0; box-sizing: border-box; }
 		body {
-			background: #1e1e2e;
+			background: #141418;
 			color: #cdd6f4;
 			font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 			font-size: 13px;
 		}
 		.file-section {
-			margin-bottom: 12px;
+			margin-bottom: 16px;
 			border: 1px solid #313244;
-			border-radius: 6px;
+			border-radius: 8px;
 			overflow: hidden;
+			background: #1e1e2e;
 		}
 		.file-section:last-child {
 			margin-bottom: 24px;
@@ -332,8 +333,8 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			display: flex;
 			align-items: center;
 			gap: 8px;
-			padding: 8px 14px;
-			background: #24242e;
+			padding: 10px 14px;
+			background: #252534;
 			border-bottom: 1px solid #313244;
 			cursor: pointer;
 			user-select: none;
