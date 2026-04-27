@@ -621,6 +621,11 @@ struct FileTreeView: View {
 	let onFileSelect: (String) -> Void
 	@ObservedObject var state: FileTreeState
 	var gitFileStatus: [String: String] = [:]
+	/// Editor で表示中のファイル path。FileTree 再表示時 (= toggle で hide → show)
+	/// に sync するため使う。Hidden 時は view が unmount されてて
+	/// `belveRevealFileInTree` notification を受け取れないため、onAppear で
+	/// 自分から reveal する。
+	var currentFilePath: String? = nil
 	@FocusState private var isTreeFocused: Bool
 	// Mirror of isTreeFocused that we mutate inside withAnimation so matchedGeometryEffect
 	// can observe the change through normal @State observation (SwiftUI @FocusState bool
@@ -799,6 +804,10 @@ struct FileTreeView: View {
 			.onAppear {
 				if state.items.isEmpty {
 					state.loadRoot(project: project, rootPath: rootPath)
+				}
+				// Hidden 時に発生した openFile 変化を catchup: 表示中ファイルを reveal。
+				if let path = currentFilePath, !path.isEmpty {
+					state.reveal(path: path, rootPath: rootPath, project: project)
 				}
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .belveFocusFileTree)) { notif in

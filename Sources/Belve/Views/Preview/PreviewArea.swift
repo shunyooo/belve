@@ -95,7 +95,8 @@ struct PreviewArea: View {
 								loadFile(at: path)
 							},
 							state: fileTreeState,
-							gitFileStatus: projectStore.gitFileStatus
+							gitFileStatus: projectStore.gitFileStatus,
+							currentFilePath: openFile?.path ?? layoutState.lastOpenedFile
 						)
 						.frame(width: layoutState.fileTreeWidth)
 
