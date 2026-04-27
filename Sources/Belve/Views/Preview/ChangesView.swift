@@ -30,6 +30,26 @@ struct ChangedFile {
 	let status: String
 	let path: String
 	var diff: String = ""
+
+	var filename: String { (path as NSString).lastPathComponent }
+	var directory: String {
+		let dir = (path as NSString).deletingLastPathComponent
+		return dir.isEmpty ? "" : dir
+	}
+
+	var statusColor: Color {
+		switch status {
+		case "M", "MM": return Theme.yellow
+		case "A", "??": return Theme.green
+		case "D": return Theme.red
+		case "R": return Theme.accent
+		default: return Theme.textTertiary
+		}
+	}
+
+	var statusLabel: String {
+		status == "??" ? "U" : status
+	}
 }
 
 struct ChangesView: View {
@@ -39,6 +59,9 @@ struct ChangesView: View {
 	@State private var isLoading = false
 	@State private var totalAdded = 0
 	@State private var totalRemoved = 0
+	@State private var selectedFilePath: String?
+	@State private var collapsedDirs: Set<String> = []
+	@State private var diffWebView: WKWebView?
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -89,7 +112,7 @@ struct ChangesView: View {
 
 			Theme.borderSubtle.frame(height: 1)
 
-			// All diffs in one scroll — rendered as HTML in WKWebView
+			// Left: file tree + Right: all diffs in one scroll
 			if changedFiles.isEmpty && !isLoading {
 				VStack(spacing: 8) {
 					Image(systemName: "checkmark.circle")
@@ -102,11 +125,113 @@ struct ChangesView: View {
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.background(Theme.surface)
 			} else {
-				UnifiedDiffWebView(files: changedFiles)
+				HStack(spacing: 0) {
+					// File tree (left)
+					ScrollView {
+						VStack(alignment: .leading, spacing: 0) {
+							fileTree
+						}
+						.padding(.vertical, 4)
+					}
+					.frame(width: 220)
+					.background(Theme.bg)
+
+					Theme.borderSubtle.frame(width: 1)
+
+					// Unified diff (right)
+					UnifiedDiffWebView(files: changedFiles, onWebViewReady: { wv in
+						diffWebView = wv
+					})
+				}
 			}
 		}
 		.onAppear { loadAll() }
 		.onChange(of: diffMode) { loadAll() }
+	}
+
+	// MARK: - File Tree
+
+	private var fileTree: some View {
+		let grouped = Dictionary(grouping: changedFiles, by: { $0.directory })
+		let sortedDirs = grouped.keys.sorted()
+
+		return ForEach(sortedDirs, id: \.self) { dir in
+			let files = grouped[dir] ?? []
+			if dir.isEmpty {
+				ForEach(Array(files.enumerated()), id: \.element.path) { _, file in
+					fileRow(file)
+				}
+			} else {
+				let isCollapsed = collapsedDirs.contains(dir)
+				Button {
+					if isCollapsed { collapsedDirs.remove(dir) } else { collapsedDirs.insert(dir) }
+				} label: {
+					HStack(spacing: 4) {
+						Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+							.font(.system(size: 8, weight: .semibold))
+							.foregroundStyle(Theme.textTertiary)
+						Image(systemName: "folder")
+							.font(.system(size: 10))
+							.foregroundStyle(Theme.textTertiary)
+						Text(dir)
+							.font(.system(size: 11))
+							.foregroundStyle(Theme.textSecondary)
+							.lineLimit(1)
+						Spacer()
+						Text("\(files.count)")
+							.font(.system(size: 9))
+							.foregroundStyle(Theme.textTertiary)
+					}
+					.padding(.horizontal, 8)
+					.padding(.vertical, 4)
+					.contentShape(Rectangle())
+				}
+				.buttonStyle(.plain)
+
+				if !isCollapsed {
+					ForEach(Array(files.enumerated()), id: \.element.path) { _, file in
+						fileRow(file)
+							.padding(.leading, 16)
+					}
+				}
+			}
+		}
+	}
+
+	private func fileRow(_ file: ChangedFile) -> some View {
+		let isSelected = selectedFilePath == file.path
+		return Button {
+			selectedFilePath = file.path
+			scrollToFile(file.path)
+		} label: {
+			HStack(spacing: 6) {
+				Text(file.statusLabel)
+					.font(.system(size: 9, weight: .bold, design: .monospaced))
+					.foregroundStyle(file.statusColor)
+					.frame(width: 14)
+				Text(file.filename)
+					.font(.system(size: 11))
+					.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+					.lineLimit(1)
+				Spacer()
+			}
+			.padding(.horizontal, 8)
+			.padding(.vertical, 3)
+			.background(
+				RoundedRectangle(cornerRadius: 4)
+					.fill(isSelected ? Theme.surfaceActive : Color.clear)
+			)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+	}
+
+	private func scrollToFile(_ path: String) {
+		let escaped = path.replacingOccurrences(of: "'", with: "\\'")
+		diffWebView?.evaluateJavaScript(
+			"document.getElementById('file-\(escaped)')?.scrollIntoView({behavior:'smooth',block:'start'})",
+			completionHandler: nil
+		)
 	}
 
 	private func loadAll() {
@@ -156,16 +281,19 @@ struct ChangesView: View {
 
 private struct UnifiedDiffWebView: NSViewRepresentable {
 	let files: [ChangedFile]
+	var onWebViewReady: ((WKWebView) -> Void)?
 
 	func makeNSView(context: Context) -> WKWebView {
 		let webView = WKWebView()
 		webView.setValue(false, forKey: "drawsBackground")
 		loadHTML(webView)
+		onWebViewReady?(webView)
 		return webView
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		loadHTML(nsView)
+		onWebViewReady?(nsView)
 	}
 
 	private func loadHTML(_ webView: WKWebView) {
@@ -192,7 +320,13 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			font-size: 13px;
 		}
 		.file-section {
-			margin-bottom: 2px;
+			margin-bottom: 12px;
+			border: 1px solid #313244;
+			border-radius: 6px;
+			overflow: hidden;
+		}
+		.file-section:last-child {
+			margin-bottom: 24px;
 		}
 		.file-header {
 			display: flex;
@@ -281,7 +415,9 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		</style>
 		</head>
 		<body>
+		<div style="padding: 12px;">
 		\(sections)
+		</div>
 		<script>
 		document.querySelectorAll('.file-header').forEach(function(hdr) {
 			hdr.addEventListener('click', function() {
@@ -307,8 +443,9 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 
 		let diffLines = buildDiffRows(file.diff)
 
+		let escapedId = escapeHTML(file.path)
 		return """
-		<div class="file-section">
+		<div class="file-section" id="file-\(escapedId)">
 			<div class="file-header">
 				<span class="chevron">▼</span>
 				<span class="status-badge status-\(statusClass)">\(statusLabel)</span>
