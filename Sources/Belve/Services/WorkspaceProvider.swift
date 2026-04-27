@@ -33,6 +33,7 @@ protocol WorkspaceProvider {
 	func gitDiffHunks(_ path: String, file: String) -> [GitDiffHunk]
 	func gitCheckIgnore(_ repoPath: String, paths: [String]) -> Set<String>
 	func gitFullDiff(_ path: String, file: String, args: [String]) -> String?
+	func gitDiffBulk(_ path: String, args: [String]) -> String?
 	func gitChangedFiles(_ path: String, args: [String]) -> [(status: String, file: String)]
 
 	// MARK: Search
@@ -272,15 +273,57 @@ extension WorkspaceProvider {
 	}
 
 	func gitFullDiff(_ path: String, file: String, args: [String]) -> String? {
+		// RPC fast path
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
+		   let client = RemoteRPCRegistry.shared.client(for: pid) {
+			var params: [String: Any] = ["path": path, "file": file]
+			if !args.isEmpty { params["args"] = args }
+			if let res = syncRPC(client: client, op: "gitDiff", params: params),
+			   let result = res.result,
+			   let diff = result["diff"] as? String {
+				return diff.isEmpty ? nil : diff
+			}
+		}
 		let quotedArgs = args.joined(separator: " ")
 		let cmd = "cd \(shellQuote(path)) && git diff \(quotedArgs) -- \(shellQuote(file)) 2>/dev/null"
 		return run(cmd)
 	}
 
+	/// Bulk diff for all files (single git command). Returns raw unified diff.
+	func gitDiffBulk(_ path: String, args: [String]) -> String? {
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
+		   let client = RemoteRPCRegistry.shared.client(for: pid) {
+			var params: [String: Any] = ["path": path]
+			if !args.isEmpty { params["args"] = args }
+			if let res = syncRPC(client: client, op: "gitDiffBulk", params: params),
+			   let result = res.result,
+			   let diff = result["diff"] as? String {
+				return diff
+			}
+		}
+		let quotedArgs = args.joined(separator: " ")
+		return run("cd \(shellQuote(path)) && git diff \(quotedArgs) 2>/dev/null")
+	}
+
 	func gitChangedFiles(_ path: String, args: [String]) -> [(status: String, file: String)] {
+		// RPC fast path
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC,
+		   let client = RemoteRPCRegistry.shared.client(for: pid) {
+			var params: [String: Any] = ["path": path]
+			if !args.isEmpty { params["args"] = args }
+			if let res = syncRPC(client: client, op: "gitChangedFiles", params: params),
+			   let result = res.result,
+			   let files = result["files"] as? [[String: Any]] {
+				return files.compactMap { f in
+					guard let status = f["status"] as? String,
+						  let file = f["file"] as? String else { return nil }
+					return (status, file)
+				}
+			}
+		}
+		// Shell fallback
 		let cmd: String
 		if args.isEmpty {
-			// Working changes: use git status --porcelain for unstaged + staged + untracked
 			cmd = "cd \(shellQuote(path)) && git status --porcelain 2>/dev/null"
 		} else {
 			let quotedArgs = args.joined(separator: " ")
@@ -290,13 +333,11 @@ extension WorkspaceProvider {
 		var results: [(status: String, file: String)] = []
 		for line in output.components(separatedBy: "\n") where !line.isEmpty {
 			if args.isEmpty {
-				// git status --porcelain: "XY filename" (2 char status + space + path)
 				guard line.count >= 4 else { continue }
 				let status = String(line.prefix(2)).trimmingCharacters(in: .whitespaces)
 				let file = String(line.dropFirst(3))
 				results.append((status.isEmpty ? "?" : status, file))
 			} else {
-				// git diff --name-status: "X\tfilename"
 				let parts = line.split(separator: "\t", maxSplits: 1)
 				guard parts.count == 2 else { continue }
 				results.append((String(parts[0]), String(parts[1])))

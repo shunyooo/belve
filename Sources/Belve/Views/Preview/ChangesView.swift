@@ -269,10 +269,6 @@ struct ChangesView: View {
 		return result
 	}
 
-	private func shellQuote(_ s: String) -> String {
-		"'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-	}
-
 	private func countLines(_ diff: String, added: inout Int, removed: inout Int) {
 		for line in diff.components(separatedBy: "\n") {
 			if line.hasPrefix("+") && !line.hasPrefix("+++") { added += 1 }
@@ -303,7 +299,7 @@ struct ChangesView: View {
 			// Staged — single git diff --staged (all files at once)
 			if currentFilter.staged {
 				let stagedList = provider.gitChangedFiles(rootPath, args: ["--staged"])
-				let bulkDiff = provider.run("cd \(shellQuote(rootPath)) && git diff --staged 2>/dev/null") ?? ""
+				let bulkDiff = provider.gitDiffBulk(rootPath, args: ["--staged"]) ?? ""
 				let splitDiffs = splitUnifiedDiff(bulkDiff)
 				for (status, path) in stagedList {
 					let diff = splitDiffs[path] ?? ""
@@ -315,7 +311,7 @@ struct ChangesView: View {
 			// Unstaged (including untracked) — single git diff
 			if currentFilter.unstaged {
 				let workingList = provider.gitChangedFiles(rootPath, args: [])
-				let bulkDiff = provider.run("cd \(shellQuote(rootPath)) && git diff 2>/dev/null") ?? ""
+				let bulkDiff = provider.gitDiffBulk(rootPath, args: []) ?? ""
 				let splitDiffs = splitUnifiedDiff(bulkDiff)
 				for (status, path) in workingList {
 					var diff = ""
@@ -342,7 +338,7 @@ struct ChangesView: View {
 			// Committed (branch diff) — single git diff main...HEAD
 			if currentFilter.committed {
 				let branchList = provider.gitChangedFiles(rootPath, args: ["main...HEAD"])
-				let bulkDiff = provider.run("cd \(shellQuote(rootPath)) && git diff main...HEAD 2>/dev/null") ?? ""
+				let bulkDiff = provider.gitDiffBulk(rootPath, args: ["main...HEAD"]) ?? ""
 				let splitDiffs = splitUnifiedDiff(bulkDiff)
 				for (status, path) in branchList {
 					if allFiles[path] != nil { continue }

@@ -42,6 +42,7 @@ type ctrlReq struct {
 	WatchID  string   `json:"watchId,omitempty"`  // for unwatch
 	File     string   `json:"file,omitempty"`     // for gitDiff (relative file path within repo)
 	Paths    []string `json:"paths,omitempty"`    // for gitCheckIgnore
+	Args     []string `json:"args,omitempty"`     // for gitDiffBulk / gitChangedFiles
 }
 
 type ctrlRes struct {
@@ -188,6 +189,10 @@ func dispatchOp(cs *connState, req ctrlReq) ctrlRes {
 		return opGitDiff(req)
 	case "gitCheckIgnore":
 		return opGitCheckIgnore(req)
+	case "gitDiffBulk":
+		return opGitDiffBulk(req)
+	case "gitChangedFiles":
+		return opGitChangedFiles(req)
 	case "watch":
 		return opWatch(cs, req)
 	case "unwatch":
@@ -411,6 +416,72 @@ func opGitCheckIgnore(req ctrlReq) ctrlRes {
 		}
 	}
 	return ctrlRes{ID: req.ID, OK: true, Result: map[string][]string{"ignored": ignored}}
+}
+
+// Bulk diff: `git -C path diff [args...] 2>/dev/null` の全出力を返す。
+// args は "--staged", "main...HEAD" 等の git diff 引数。
+func opGitDiffBulk(req ctrlReq) ctrlRes {
+	if req.Path == "" {
+		return errRes(req.ID, "path required")
+	}
+	p := expandHome(req.Path)
+	args := []string{"-C", p, "diff"}
+	args = append(args, req.Args...)
+	cmd := exec.Command("git", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"diff": ""}}
+	}
+	return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"diff": string(out)}}
+}
+
+// Changed files list: args が空なら `git status --porcelain`、
+// 非空なら `git diff [args] --name-status` を実行。
+func opGitChangedFiles(req ctrlReq) ctrlRes {
+	if req.Path == "" {
+		return errRes(req.ID, "path required")
+	}
+	p := expandHome(req.Path)
+	var cmd *exec.Cmd
+	if len(req.Args) == 0 {
+		cmd = exec.Command("git", "-C", p, "status", "--porcelain")
+	} else {
+		args := []string{"-C", p, "diff"}
+		args = append(args, req.Args...)
+		args = append(args, "--name-status")
+		cmd = exec.Command("git", args...)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return ctrlRes{ID: req.ID, OK: true, Result: map[string]interface{}{"files": []gitFileStatus{}}}
+	}
+	files := []gitFileStatus{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		if len(req.Args) == 0 {
+			// git status --porcelain: "XY filename"
+			if len(line) < 4 {
+				continue
+			}
+			files = append(files, gitFileStatus{
+				Status: strings.TrimSpace(line[:2]),
+				File:   line[3:],
+			})
+		} else {
+			// git diff --name-status: "X\tfilename"
+			parts := strings.SplitN(line, "\t", 2)
+			if len(parts) < 2 {
+				continue
+			}
+			files = append(files, gitFileStatus{
+				Status: parts[0],
+				File:   parts[1],
+			})
+		}
+	}
+	return ctrlRes{ID: req.ID, OK: true, Result: map[string]interface{}{"files": files}}
 }
 
 // MARK: - Watch
