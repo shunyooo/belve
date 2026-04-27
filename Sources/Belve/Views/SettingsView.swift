@@ -199,7 +199,7 @@ struct SettingsView: View {
 	@ViewBuilder
 	private func mockSessionRow(status: AgentStatus, prompt: String, tool: String? = nil, detail: String? = nil, waitingMessage: String? = nil) -> some View {
 		let isActive = status == .running || status == .waiting
-		HStack(alignment: .top, spacing: 6) {
+		HStack(alignment: .top, spacing: 10) {
 			VStack {
 				Spacer().frame(height: 3)
 				StatusIndicator(status: status)

@@ -24,3 +24,10 @@ out/
 src/
 dist/
 tmp/
+
+# Character sprite workflow (sandbox) — intermediate artifacts only
+sandbox/character-sprites/source/
+sandbox/character-sprites/variants/
+sandbox/character-sprites/reports/
+sandbox/character-sprites/debug/
+sandbox/character-sprites/.backup-*/

@@ -19,6 +19,23 @@ class AppConfig: ObservableObject {
 		didSet { if oldValue != spinnerSize { save() } }
 	}
 
+	/// MainWindow のメイン表示モード (project / tile)。
+	@Published var viewMode: ViewMode = .project {
+		didSet { if oldValue != viewMode { save() } }
+	}
+
+	/// xterm.js の font size (8-28 pt)。Cmd +/- でユーザー調整可能。
+	@Published var terminalFontSize: CGFloat = 13 {
+		didSet {
+			let clamped = min(max(8, terminalFontSize), 28)
+			if clamped != terminalFontSize {
+				terminalFontSize = clamped
+				return
+			}
+			if oldValue != terminalFontSize { save() }
+		}
+	}
+
 	private static var configURL: URL {
 		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
 		let belveDir = appSupport.appendingPathComponent("Belve")
@@ -37,6 +54,8 @@ class AppConfig: ObservableObject {
 		struct UIConfig: Codable {
 			var spinnerStyle: String?
 			var spinnerSize: CGFloat?
+			var viewMode: String?
+			var terminalFontSize: CGFloat?
 		}
 	}
 
@@ -56,12 +75,23 @@ class AppConfig: ObservableObject {
 		if let size = persisted.ui?.spinnerSize {
 			spinnerSize = size
 		}
+		if let raw = persisted.ui?.viewMode, let mode = ViewMode(rawValue: raw) {
+			viewMode = mode
+		}
+		if let size = persisted.ui?.terminalFontSize {
+			terminalFontSize = min(max(8, size), 28)
+		}
 	}
 
 	func save() {
 		let persisted = Persisted(
 			fileTree: .init(excludePatterns: excludePatterns),
-			ui: .init(spinnerStyle: spinnerStyle.rawValue, spinnerSize: spinnerSize)
+			ui: .init(
+				spinnerStyle: spinnerStyle.rawValue,
+				spinnerSize: spinnerSize,
+				viewMode: viewMode.rawValue,
+				terminalFontSize: terminalFontSize
+			)
 		)
 		if let data = try? JSONEncoder().encode(persisted) {
 			try? data.write(to: Self.configURL)

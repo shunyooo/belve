@@ -164,6 +164,42 @@ class CommandAreaState: ObservableObject {
 		}
 	}
 
+	/// 新 pane を spawn して、その新 pane の id を返す (Stage view の "+ New Agent" 用)。
+	/// 内部的には splitActive と同じ tree 操作だが、新 pane を activePaneId に set して返す。
+	@discardableResult
+	func spawnNewPane(direction: SplitDirection = .vertical) -> UUID? {
+		let targetPaneId = activePaneId ?? firstLeaf(root)?.paneId
+		guard let targetPaneId else { return nil }
+		let newPaneId = UUID()
+		if spawnNode(targetPaneId, newPaneId: newPaneId, direction: direction, in: root) {
+			activePaneId = newPaneId
+			objectWillChange.send()
+			onLayoutChanged?()
+			return newPaneId
+		}
+		return nil
+	}
+
+	private func spawnNode(_ paneId: UUID, newPaneId: UUID, direction: SplitDirection, in node: PaneNode) -> Bool {
+		if node.paneId == paneId && node.isLeaf {
+			let existing = PaneNode(paneId: node.paneId, paneIndex: node.paneIndex)
+			let newPane = PaneNode(paneId: newPaneId, paneIndex: nextPaneIndex)
+			nextPaneIndex += 1
+			node.paneId = nil
+			node.paneIndex = nil
+			node.splitDirection = direction
+			node.splitRatio = 0.5
+			node.children = [existing, newPane]
+			return true
+		}
+		for child in node.children ?? [] {
+			if spawnNode(paneId, newPaneId: newPaneId, direction: direction, in: child) {
+				return true
+			}
+		}
+		return false
+	}
+
 	private func splitNode(_ paneId: UUID, direction: SplitDirection, in node: PaneNode) -> Bool {
 		if node.paneId == paneId && node.isLeaf {
 			let existing = PaneNode(paneId: node.paneId, paneIndex: node.paneIndex)

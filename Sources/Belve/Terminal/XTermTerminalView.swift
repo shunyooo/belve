@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import Combine
 
 /// Auto-focus 制御の global 状態。
 /// - `lastAutoFocusAt`: 直前 auto-focus 時刻 (debounce 用)。
@@ -16,8 +17,20 @@ final class TerminalWebView: WKWebView {
 	var onLineDeleteCommand: (() -> Void)?
 	var onMetaKeyChanged: ((Bool) -> Void)?
 	var onMouseFocus: (() -> Void)?
+	/// true の時、自分が first responder で無い時の scroll event は親 NSView に
+	/// 流す (= 内部 terminal scrollback ではなく外側 ScrollView をスクロールさせる)。
+	/// Tile view で「focus してない pane の上で scroll → gallery 全体スクロール」用。
+	var forwardsScrollWhenNotFocused: Bool = false
 
 	override var acceptsFirstResponder: Bool { true }
+
+	override func scrollWheel(with event: NSEvent) {
+		if forwardsScrollWhenNotFocused, window?.firstResponder !== self {
+			nextResponder?.scrollWheel(with: event)
+			return
+		}
+		super.scrollWheel(with: event)
+	}
 
 	override func becomeFirstResponder() -> Bool {
 		NotificationCenter.default.post(name: .belveTerminalFocused, object: self)
@@ -114,30 +127,64 @@ struct XTermTerminalView: NSViewRepresentable {
 	@EnvironmentObject var commandAreaState: CommandAreaState
 
 	func makeNSView(context: Context) -> WKWebView {
-		let config = WKWebViewConfiguration()
-		config.userContentController.add(context.coordinator, name: "terminalHandler")
+		// Pane registry を経由: 同じ paneId で既存 WebView あれば再利用 (= tile view と
+		// project view 間で同じ WebView インスタンスを reparent しながら共有)。
+		// 既存 entry の場合は coordinator も registry が strong に保持してるので、SwiftUI の
+		// 新規 context.coordinator は使わず、callback bind / PTY setup も skip。
+		let resolvedPaneId = paneId
+		let createPair: () -> (WKWebView, AnyObject) = {
+			let config = WKWebViewConfiguration()
+			config.userContentController.add(context.coordinator, name: "terminalHandler")
 
-		let initialFrame = NSRect(x: 0, y: 0, width: max(1, viewWidth), height: max(1, viewHeight))
-		let webView = TerminalWebView(frame: initialFrame, configuration: config)
-		webView.autoresizingMask = [.width, .height]
-		let terminalIdentifier = paneId.map { "BelveTerminalWebView:\($0)" } ?? "BelveTerminalWebView"
-		webView.identifier = NSUserInterfaceItemIdentifier(terminalIdentifier)
-		webView.setValue(false, forKey: "drawsBackground")
-		webView.onCopyCommand = { [weak coordinator = context.coordinator] in
-			coordinator?.copySelectionToPasteboard()
+			let initialFrame = NSRect(x: 0, y: 0, width: max(1, viewWidth), height: max(1, viewHeight))
+			let webView = TerminalWebView(frame: initialFrame, configuration: config)
+			webView.autoresizingMask = [.width, .height]
+			let terminalIdentifier = resolvedPaneId.map { "BelveTerminalWebView:\($0)" } ?? "BelveTerminalWebView"
+			webView.identifier = NSUserInterfaceItemIdentifier(terminalIdentifier)
+			webView.setValue(false, forKey: "drawsBackground")
+			webView.onCopyCommand = { [weak coordinator = context.coordinator] in
+				coordinator?.copySelectionToPasteboard()
+			}
+			webView.onPasteCommand = { [weak coordinator = context.coordinator] in
+				coordinator?.pasteFromPasteboard()
+			}
+			webView.onLineDeleteCommand = { [weak coordinator = context.coordinator] in
+				coordinator?.sendLineDelete()
+			}
+			webView.onMetaKeyChanged = { [weak coordinator = context.coordinator] isPressed in
+				coordinator?.setMetaPressed(isPressed)
+			}
+			webView.onMouseFocus = { [weak coordinator = context.coordinator] in
+				coordinator?.activatePane()
+			}
+			if let html = Self.buildHTML() {
+				webView.loadHTMLString(html, baseURL: nil)
+			}
+			return (webView, context.coordinator)
 		}
-		webView.onPasteCommand = { [weak coordinator = context.coordinator] in
-			coordinator?.pasteFromPasteboard()
+
+		let webView: WKWebView
+		let isNewlyCreated: Bool
+		if let paneId {
+			let result = PaneHostRegistry.shared.resolveWebView(
+				forPaneId: paneId,
+				projectId: project.id,
+				paneIndex: paneIndex,
+				create: createPair
+			)
+			webView = result.webView
+			isNewlyCreated = result.isNewlyCreated
+		} else {
+			let (newWebView, _) = createPair()
+			webView = newWebView
+			isNewlyCreated = true
 		}
-		webView.onLineDeleteCommand = { [weak coordinator = context.coordinator] in
-			coordinator?.sendLineDelete()
-		}
-		webView.onMetaKeyChanged = { [weak coordinator = context.coordinator] isPressed in
-			coordinator?.setMetaPressed(isPressed)
-		}
-		webView.onMouseFocus = { [weak coordinator = context.coordinator] in
-			coordinator?.activatePane()
-		}
+
+		// SwiftUI 側 context.coordinator のフィールドは毎回 setup する。
+		// registry が再利用する WebView でも、updateNSView は新 coordinator の
+		// resizeTerminal() を呼ぶので、webView ref が無いと resize が no-op になる。
+		// (callback bindings は WebView 上に既に新規生成時に設定済みなので、
+		//  ここで再 bind はしない。)
 		context.coordinator.webView = webView
 		context.coordinator.project = project
 		context.coordinator.paneId = paneId
@@ -145,29 +192,39 @@ struct XTermTerminalView: NSViewRepresentable {
 		context.coordinator.notificationStore = notificationStore
 		context.coordinator.commandAreaState = commandAreaState
 
-		if let html = Self.buildHTML() {
-			webView.loadHTMLString(html, baseURL: nil)
-		}
+		// Pane mapping と observer 登録は新規生成時のみ (重複登録防止)。
+		if isNewlyCreated {
+			if let paneId {
+				notificationStore.registerPane(paneId: paneId, projectId: project.id)
+			}
 
-		// Register pane → project mapping for agent notifications
-		if let paneId {
-			notificationStore.registerPane(paneId: paneId, projectId: project.id)
-		}
-
-		// Listen for project switch refit notifications
-		context.coordinator.refitObserver = NotificationCenter.default.addObserver(
-			forName: .belveTerminalRefit, object: nil, queue: .main
-		) { [weak coordinator = context.coordinator] notif in
-			guard let coordinator,
-				  let projectId = notif.userInfo?["projectId"] as? UUID,
-				  coordinator.project?.id == projectId else { return }
-			coordinator.performRefit()
+			context.coordinator.refitObserver = NotificationCenter.default.addObserver(
+				forName: .belveTerminalRefit, object: nil, queue: .main
+			) { [weak coordinator = context.coordinator] notif in
+				guard let coordinator,
+					  let projectId = notif.userInfo?["projectId"] as? UUID,
+					  coordinator.project?.id == projectId else { return }
+				coordinator.performRefit()
+			}
 		}
 
 		return webView
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
+		// resizeTerminal 等の操作は registry に保存された "primary" coordinator (= WebView と
+		// 一緒に最初に mount された方) に流す。新しい SwiftUI mount で生成された
+		// context.coordinator には isTerminalReady / ptyService 等の state が無いため
+		// (handler が primary に bind されてる)、ここで使うと no-op になる。
+		let activeCoord: Coordinator = {
+			if let paneId,
+			   let entry = PaneHostRegistry.shared.entries[paneId],
+			   let primary = entry.coordinator as? Coordinator {
+				return primary
+			}
+			return context.coordinator
+		}()
+
 		if viewWidth > 0, viewHeight > 0 {
 			let newFrame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
 			if nsView.frame.size != newFrame.size {
@@ -175,7 +232,12 @@ struct XTermTerminalView: NSViewRepresentable {
 					  paneId ?? "?", viewWidth, viewHeight, nsView.frame.width, nsView.frame.height)
 				nsView.frame = newFrame
 			}
-			context.coordinator.resizeTerminal(width: viewWidth, height: viewHeight)
+			activeCoord.resizeTerminal(width: viewWidth, height: viewHeight)
+		}
+		// Tile view (= isProjectSelected が false で mount される) の時は、focus してない
+		// pane の scroll を親 ScrollView に流す。Project view では従来通り pane 内 scroll。
+		if let term = nsView as? TerminalWebView {
+			term.forwardsScrollWhenNotFocused = !isProjectSelected
 		}
 		// Focus は CommandAreaState.activePaneId が source of truth (構造改善 C)。
 		// 加えて isProjectSelected で「現在 sidebar で選択中の project」のみ focus
@@ -184,7 +246,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		   let paneId, let active = commandAreaState.activePaneId,
 		   active.uuidString == paneId,
 		   nsView.window?.firstResponder !== nsView,
-		   context.coordinator.isTerminalReady {
+		   activeCoord.isTerminalReady {
 			DispatchQueue.main.async {
 				nsView.window?.makeFirstResponder(nsView)
 				nsView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
@@ -231,6 +293,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		weak var notificationStore: NotificationStore?
 		var refitObserver: Any?
 		weak var commandAreaState: CommandAreaState?
+		var fontSizeCancellable: AnyCancellable?
 
 		/// Buffer PTY output and flush on a timer to avoid excessive JS calls
 		private var outputBuffer = Data()
@@ -256,8 +319,20 @@ struct XTermTerminalView: NSViewRepresentable {
 				// が奪われる問題を解消。
 				isTerminalReady = true
 				pendingAutoFocus = true
-				// Delayed fit to get correct size after SwiftUI layout settles
-				DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+				// 初期 font size を AppConfig から反映 + 以降の変更を購読。
+				let initialSize = AppConfig.shared.terminalFontSize
+				webView?.evaluateJavaScript("window.terminalSetFontSize(\(initialSize))", completionHandler: nil)
+				fontSizeCancellable = AppConfig.shared.$terminalFontSize
+					.dropFirst()
+					.removeDuplicates()
+					.sink { [weak self] size in
+						self?.webView?.evaluateJavaScript("window.terminalSetFontSize(\(size))", completionHandler: nil)
+					}
+				// Delayed fit to get correct size after SwiftUI layout settles.
+				// Stage mode は hero animation (~0.42s spring) で WebView が中間サイズを
+				// 経由するため、長めに待ってから fit (= PTY 初期 cols/rows を最終サイズで)。
+				let initialFitDelay: TimeInterval = AppConfig.shared.viewMode == .stage ? 0.7 : 0.15
+				DispatchQueue.main.asyncAfter(deadline: .now() + initialFitDelay) { [weak self] in
 					guard let self, let webView = self.webView, self.ptyService == nil else { return }
 					webView.evaluateJavaScript("window.terminalFit()") { [weak self] result, _ in
 						guard let self, self.ptyService == nil else { return }
@@ -741,6 +816,8 @@ struct XTermTerminalView: NSViewRepresentable {
 		func activatePane() {
 			guard let paneId, let paneUUID = UUID(uuidString: paneId) else { return }
 			commandAreaState?.activePaneId = paneUUID
+			// Tile mode の単一 global focus も同期 (project mode 中は値は使われない)
+			TileFilterState.shared.focusedPaneId = paneId
 		}
 
 		private var resizeDebounceWorkItem: DispatchWorkItem?

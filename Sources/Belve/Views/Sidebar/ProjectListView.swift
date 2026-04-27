@@ -31,6 +31,7 @@ struct ProjectListView: View {
 
 	private static let pinnedKey = "__pinned__"
 
+	@ObservedObject private var appConfig = AppConfig.shared
 	@State private var renamingProjectId: UUID?
 	@State private var renameText = ""
 	@State private var renamingGroupName: String?
@@ -117,6 +118,24 @@ struct ProjectListView: View {
 			.overlay(alignment: .topTrailing) {
 				HStack(spacing: 4) {
 					SidebarIconButton(icon: "plus", action: { onAddProject?() })
+					SidebarIconButton(
+						icon: appConfig.viewMode == .tile ? "square.grid.2x2.fill" : "square.grid.2x2",
+						action: {
+							let next: ViewMode = (appConfig.viewMode == .tile) ? .project : .tile
+							withAnimation(ViewMode.toggleAnimation(showing: next == .tile)) {
+								appConfig.viewMode = next
+							}
+						}
+					)
+					SidebarIconButton(
+						icon: appConfig.viewMode == .stage ? "rectangle.center.inset.filled" : "rectangle.center.inset.filled.badge.plus",
+						action: {
+							let next: ViewMode = (appConfig.viewMode == .stage) ? .project : .stage
+							withAnimation(ViewMode.toggleAnimation(showing: next == .stage)) {
+								appConfig.viewMode = next
+							}
+						}
+					)
 					SidebarIconButton(icon: "sidebar.left", action: { onToggleSidebar?() })
 				}
 				.padding(.trailing, 6)
@@ -597,7 +616,7 @@ private struct SessionRow: View {
 	}
 
 	var body: some View {
-		HStack(alignment: .top, spacing: 6) {
+		HStack(alignment: .top, spacing: 10) {
 			VStack {
 				Spacer().frame(height: 3)
 				// subagent 走行中は親 status (running/waiting/etc) より優先表示

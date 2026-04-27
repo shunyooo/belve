@@ -70,6 +70,8 @@ enum LauncherScriptGenerator {
 		}
 		PROMPT_COMMAND="_belve_load_env\${PROMPT_COMMAND:+; \$PROMPT_COMMAND}"
 		_belve_load_env
+		# Belve: 短い PS1 (basename of cwd + $/#)。長い user@host:full-path 表示は cell 圧迫の原因。
+		PS1='\W \$ '
 		BASHRC
 		    BELVE_SHELL="\#(shell) --rcfile \#(tmpDir)/belve-bashrc -i" ;;
 		  zsh)
@@ -105,6 +107,8 @@ enum LauncherScriptGenerator {
 		autoload -U add-zsh-hook
 		add-zsh-hook precmd _belve_load_env
 		_belve_load_env
+		# Belve: 短い prompt (basename of cwd + $/#)。長い user@host:full-path 表示は cell 圧迫の原因。
+		PROMPT='%1~ %# '
 		ZSHRC
 		    BELVE_SHELL="ZDOTDIR=\#(tmpDir)/zdotdir \#(shell) -l -i" ;;
 		  fish)

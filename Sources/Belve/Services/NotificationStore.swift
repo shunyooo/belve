@@ -59,6 +59,14 @@ class NotificationStore: ObservableObject {
 		paneToProject[paneId] = projectId
 	}
 
+	/// Latest non-archived session for a pane. UI が pane 単位の status / activity を
+	/// 表示する時に使う (project-keyed `agentStatus` だと pane 間で混ざるため)。
+	func currentSession(forPaneId paneId: String) -> AgentSession? {
+		sessions
+			.filter { $0.paneId == paneId && !$0.isArchived }
+			.max(by: { $0.updatedAt < $1.updatedAt })
+	}
+
 	func updateAgentStatus(paneId: String, status: String, message: String) {
 		guard let projectId = paneToProject[paneId],
 			  let agentStatus = AgentStatus(rawValue: status) else { return }

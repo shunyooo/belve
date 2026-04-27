@@ -33,6 +33,14 @@ struct BelveApp: App {
 				Button("Search Files") {
 					NotificationCenter.default.post(name: .belveOpenFileSearch, object: nil)
 				}
+				Button("Toggle Tile View") {
+					NotificationCenter.default.post(name: .belveToggleTile, object: nil)
+				}
+				.keyboardShortcut("t", modifiers: .command)
+				Button("Toggle Stage View") {
+					NotificationCenter.default.post(name: .belveToggleStage, object: nil)
+				}
+				.keyboardShortcut("y", modifiers: .command)
 			}
 			CommandGroup(replacing: .newItem) {
 				Button("New Project") {
@@ -110,6 +118,9 @@ extension Notification.Name {
 	static let belveUndo = Notification.Name("belveUndo")
 	static let belvePortDetected = Notification.Name("belvePortDetected")
 	static let belveToggleBrowser = Notification.Name("belveToggleBrowser")
+	static let belveToggleTile = Notification.Name("belveToggleTile")
+	static let belveTileOpenFocused = Notification.Name("belveTileOpenFocused")
+	static let belveToggleStage = Notification.Name("belveToggleStage")
 }
 
 class CommandPaletteState: ObservableObject {
@@ -131,7 +142,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		let buildDate = binaryModificationDate()
 		NSLog("[Belve] Binary: \(Bundle.main.executableURL?.path ?? "?"), modified: \(buildDate)")
 
-		// Disable macOS window tabbing — reserves Cmd+Shift+\ for "Show Tab Overview"
+		// Disable macOS window tabbing — reserves Cmd+Shift+\ for "Show Tab Tile"
 		// which conflicts with Belve's session bar toggle shortcut.
 		NSWindow.allowsAutomaticWindowTabbing = false
 
@@ -203,6 +214,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				return event
 			}
 			let shift = flags.contains(.shift)
+			// Cmd+Enter (keyCode 36): tile mode で focus 中 pane の project view へ遷移。
+			if event.keyCode == 36, !shift, AppConfig.shared.viewMode == .tile {
+				NotificationCenter.default.post(name: .belveTileOpenFocused, object: nil)
+				return nil
+			}
 			switch key {
 			// Keys that accept both Cmd and Cmd+Shift variants
 			case "e":
@@ -219,6 +235,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				NSApp.hide(nil)
 				return nil
 			case "\\" where !shift:
+				if AppConfig.shared.viewMode.isDedicatedView { return nil }
 				NotificationCenter.default.post(name: .belveToggleSidebar, object: nil)
 				return nil
 			case "p":
@@ -236,13 +253,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				NotificationCenter.default.post(name: .belveFocusPreviousPane, object: nil)
 				return nil
 			case "]" where !shift:
+				if AppConfig.shared.viewMode.isDedicatedView { return nil }
 				NotificationCenter.default.post(name: .belveSelectNextProject, object: nil)
 				return nil
 			case "[" where !shift:
+				if AppConfig.shared.viewMode.isDedicatedView { return nil }
 				NotificationCenter.default.post(name: .belveSelectPreviousProject, object: nil)
 				return nil
 			case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 				if shift { return event }
+				if AppConfig.shared.viewMode.isDedicatedView { return nil }
 				if let digit = Int(key) {
 					NotificationCenter.default.post(
 						name: .belveSwitchProject,
@@ -256,6 +276,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				return nil
 			case "o" where !shift:
 				NotificationCenter.default.post(name: .belveOpenFolder, object: nil)
+				return nil
+			case "t" where !shift:
+				NotificationCenter.default.post(name: .belveToggleTile, object: nil)
+				return nil
+			case "y" where !shift:
+				NotificationCenter.default.post(name: .belveToggleStage, object: nil)
+				return nil
+			case "-", "_":
+				AppConfig.shared.terminalFontSize -= 1
+				return nil
+			case "=", "+":
+				AppConfig.shared.terminalFontSize += 1
+				return nil
+			case "0" where !shift:
+				AppConfig.shared.terminalFontSize = 13
 				return nil
 			case "r" where !shift:
 				// Cmd+R routes to the browser when its panel is the key window

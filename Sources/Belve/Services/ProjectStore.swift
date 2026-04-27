@@ -194,13 +194,22 @@ class ProjectStore: ObservableObject {
 			fetchContainerImageName(sshHost: sshHost, remotePath: workspacePath)
 		}
 
-		terminalReloadTokens[projectId, default: 0] += 1
+		bumpTerminalReload(for: projectId)
 		objectWillChange.send()
 		NSLog("[Belve] Reloaded project: \(project.name)")
 	}
 
 	func terminalReloadToken(for projectId: UUID) -> Int {
 		terminalReloadTokens[projectId, default: 0]
+	}
+
+	/// 該当 project の全 pane を破棄して terminal を再 spawn させる。
+	/// PaneHostRegistry の strong ref も外す (= 古い WebView/PTY が deinit される)。
+	/// CommandArea の `.id(...token...)` 変更が SwiftUI の再 mount をトリガーし、
+	/// 新規 XTermTerminalView が registry cache miss → 新 WebView + 新 PTYService。
+	private func bumpTerminalReload(for projectId: UUID) {
+		PaneHostRegistry.shared.unregisterAll(in: projectId)
+		terminalReloadTokens[projectId, default: 0] += 1
 	}
 
 	// MARK: - Selection
@@ -565,6 +574,8 @@ class ProjectStore: ObservableObject {
 		if let host = projects.first(where: { $0.id == id })?.sshHost {
 			SSHTunnelManager.shared.teardownTunnel(host: host, projectId: id)
 		}
+		// Pane WebView / PTY を解放 (registry の strong ref を外して deinit させる)。
+		PaneHostRegistry.shared.unregisterAll(in: id)
 		projects.removeAll { $0.id == id }
 		if selectedProject?.id == id {
 			select(projects.first)
@@ -910,7 +921,7 @@ class ProjectStore: ObservableObject {
 			log: [initialMessage],
 			startedAt: Date()
 		)
-		terminalReloadTokens[projectId, default: 0] += 1
+		bumpTerminalReload(for: projectId)
 		objectWillChange.send()
 
 		guard let binDir = Self.belveBinDir() else {
@@ -936,7 +947,7 @@ class ProjectStore: ObservableObject {
 				try? await Task.sleep(nanoseconds: 1_500_000_000)
 				await MainActor.run {
 					self?.rebuildStates.removeValue(forKey: projectId)
-					self?.terminalReloadTokens[projectId, default: 0] += 1
+					self?.bumpTerminalReload(for: projectId)
 					self?.objectWillChange.send()
 				}
 			} catch {
@@ -952,7 +963,7 @@ class ProjectStore: ObservableObject {
 	/// `RebuildOverlayView` の "Dismiss" / "Retry" ボタンから呼ばれる。
 	func dismissRebuildState(_ projectId: UUID) {
 		rebuildStates.removeValue(forKey: projectId)
-		terminalReloadTokens[projectId, default: 0] += 1
+		bumpTerminalReload(for: projectId)
 		objectWillChange.send()
 	}
 
@@ -977,11 +988,11 @@ class ProjectStore: ObservableObject {
 			let sameHostIds = projects.filter { $0.sshHost == host }.map(\.id)
 			for id in sameHostIds {
 				connectionErrors.removeValue(forKey: id)
-				terminalReloadTokens[id, default: 0] += 1
+				bumpTerminalReload(for: id)
 			}
 		} else {
 			connectionErrors.removeValue(forKey: projectId)
-			terminalReloadTokens[projectId, default: 0] += 1
+			bumpTerminalReload(for: projectId)
 		}
 		objectWillChange.send()
 	}

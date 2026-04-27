@@ -63,13 +63,16 @@ function buildFullUrl(buf, startY, urlStart) {
 		var isWrapped = nextLine.isWrapped;
 		if (!isWrapped && !prevEndsAtEdge) break;
 		var nextText = nextLine.translateToString(true);
-		var cont = nextText.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
+		// Indented continuation も許容: 先頭空白を skip して URL-safe chars を取る。
+		var cont = nextText.match(/^(\s*)([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
 		// 次行が `https://...` で始まる = 別 URL なので止める。先頭が URL-safe
 		// じゃない (空白やボーダー文字) なら継続じゃない。
-		if (!cont || nextText.match(/^https?:\/\//)) break;
-		url += cont[1];
-		continuations.push({ y: nextY + 1, startX: 1, endX: cont[1].length });
-		if (cont[1].length < nextText.length) break;
+		if (!cont || nextText.match(/^\s*https?:\/\//)) break;
+		var leading = cont[1].length;
+		var contStr = cont[2];
+		url += contStr;
+		continuations.push({ y: nextY + 1, startX: leading + 1, endX: leading + contStr.length });
+		if (leading + contStr.length < nextText.length) break;
 		// 次行も同じ判定で延ばす場合のために更新
 		prevEndsAtEdge = nextText.length >= term.cols;
 		nextY++;
@@ -160,16 +163,21 @@ term.registerLinkProvider({
 				var prevMatch = prevText.match(/(https?:\/\/[^\s<>"'`)\]]+)$/);
 				var prevEndsAtEdge = prevMatch && prevText.length >= term.cols;
 				if (prevMatch && (line.isWrapped || prevEndsAtEdge)) {
-					var cont = text.match(/^([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
-					if (cont && !text.match(/^https?:\/\//)) {
+					// Indented continuation も許容 (^\s* で先頭空白を skip)。URL を改行 +
+					// インデントで折り返す TUI 出力 (例: claude code) に対応。
+					var cont = text.match(/^(\s*)([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
+					if (cont && !text.match(/^\s*https?:\/\//)) {
 						var result = buildFullUrl(buf, y - 2, prevMatch[1]);
 						var peerSx = mapStringIndexToCell(prevLine, prevMatch.index) + 1;
 						var peerEx = mapStringIndexToCell(prevLine, prevMatch.index + prevMatch[1].length);
 						var peerRange = { y: y - 1, startX: peerSx, endX: peerEx };
-						var selfRange = { y: y, startX: 1, endX: cont[1].length };
+						var leadingSpaces = cont[1].length;
+						var contStartX = leadingSpaces + 1;
+						var contEndX = leadingSpaces + cont[2].length;
+						var selfRange = { y: y, startX: contStartX, endX: contEndX };
 						(function(u, allR) {
 							links.push({
-								range: { start: { x: 1, y: y }, end: { x: cont[1].length, y: y } },
+								range: { start: { x: contStartX, y: y }, end: { x: contEndX, y: y } },
 								text: u, decorations: { pointerCursor: true },
 								activate: function() { postMessage({ type: 'openUrl', url: u }); },
 								hover: function() { showPeerUnderlines(allR); },
@@ -500,6 +508,14 @@ window.terminalFocus = function(focused) {
 
 window.terminalSetTheme = function(themeJson) {
 	term.options.theme = JSON.parse(themeJson);
+};
+
+window.terminalSetFontSize = function(size) {
+	const clamped = Math.max(8, Math.min(28, size));
+	if (term.options.fontSize === clamped) return;
+	term.options.fontSize = clamped;
+	// 反映には refit が必要 (font 変わると 1 文字あたりの cell 寸法が変わる)
+	if (window.terminalFit) window.terminalFit();
 };
 
 window.terminalClear = function() {
