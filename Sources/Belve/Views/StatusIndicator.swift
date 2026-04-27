@@ -136,7 +136,7 @@ struct StatusIndicator: View {
 					restFrame: "parrot-rest",
 					runInterval: 0.025,
 					subagentFrames: parrot,
-					subagentInterval: 0.05,
+					subagentInterval: 0.025,
 					waitingFrames: ["parrot-waiting"],
 					waitingInterval: 1.0,
 					completedFrames: ["parrot-done"],
