@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 enum DiffMode: String, CaseIterable {
 	case working = "Working"
@@ -8,7 +9,7 @@ enum DiffMode: String, CaseIterable {
 
 	var gitArgs: [String] {
 		switch self {
-		case .working: return [] // uses git status --porcelain
+		case .working: return []
 		case .staged: return ["--staged"]
 		case .branch: return ["main...HEAD"]
 		case .lastCommit: return ["HEAD~1..HEAD"]
@@ -25,42 +26,19 @@ enum DiffMode: String, CaseIterable {
 	}
 }
 
-struct ChangedFile: Identifiable, Hashable {
-	let id = UUID()
+struct ChangedFile {
 	let status: String
 	let path: String
-	var filename: String { (path as NSString).lastPathComponent }
-	var directory: String {
-		let dir = (path as NSString).deletingLastPathComponent
-		return dir.isEmpty ? "" : dir
-	}
-
-	var statusColor: Color {
-		switch status {
-		case "M", "MM": return Theme.yellow
-		case "A", "??": return Theme.green
-		case "D": return Theme.red
-		case "R": return Theme.accent
-		default: return Theme.textTertiary
-		}
-	}
-
-	var statusLabel: String {
-		switch status {
-		case "??": return "U"
-		default: return status
-		}
-	}
+	var diff: String = ""
 }
 
 struct ChangesView: View {
 	let project: Project
 	@State private var diffMode: DiffMode = .working
 	@State private var changedFiles: [ChangedFile] = []
-	@State private var selectedFile: ChangedFile?
-	@State private var diffText: String = ""
 	@State private var isLoading = false
-	@State private var collapsedDirs: Set<String> = []
+	@State private var totalAdded = 0
+	@State private var totalRemoved = 0
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -74,14 +52,30 @@ struct ChangesView: View {
 				.pickerStyle(.menu)
 				.frame(width: 120)
 
-				Text("\(changedFiles.count) files changed")
-					.font(.system(size: 11))
-					.foregroundStyle(Theme.textSecondary)
+				if isLoading {
+					ProgressView()
+						.controlSize(.small)
+						.scaleEffect(0.7)
+				} else {
+					Text("\(changedFiles.count) files changed")
+						.font(.system(size: 11))
+						.foregroundStyle(Theme.textSecondary)
+					if totalAdded > 0 {
+						Text("+\(totalAdded)")
+							.font(.system(size: 11, weight: .medium))
+							.foregroundStyle(Theme.green)
+					}
+					if totalRemoved > 0 {
+						Text("-\(totalRemoved)")
+							.font(.system(size: 11, weight: .medium))
+							.foregroundStyle(Theme.red)
+					}
+				}
 
 				Spacer()
 
 				Button {
-					loadChangedFiles()
+					loadAll()
 				} label: {
 					Image(systemName: "arrow.clockwise")
 						.font(.system(size: 11))
@@ -95,172 +89,277 @@ struct ChangesView: View {
 
 			Theme.borderSubtle.frame(height: 1)
 
-			// Content
-			HStack(spacing: 0) {
-				// File tree
-				ScrollView {
-					VStack(alignment: .leading, spacing: 0) {
-						fileTree
-					}
-					.padding(.vertical, 4)
+			// All diffs in one scroll — rendered as HTML in WKWebView
+			if changedFiles.isEmpty && !isLoading {
+				VStack(spacing: 8) {
+					Image(systemName: "checkmark.circle")
+						.font(.system(size: 28, weight: .thin))
+						.foregroundStyle(Theme.green)
+					Text("No changes")
+						.font(Theme.fontBody)
+						.foregroundStyle(Theme.textTertiary)
 				}
-				.frame(width: 220)
-				.background(Theme.bg)
-
-				Theme.borderSubtle.frame(width: 1)
-
-				// Diff content
-				if let file = selectedFile {
-					DiffContentView(diffText: diffText, filename: file.path)
-				} else {
-					VStack(spacing: 8) {
-						Image(systemName: "doc.text.magnifyingglass")
-							.font(.system(size: 28, weight: .thin))
-							.foregroundStyle(Theme.textTertiary)
-						Text("Select a file to view changes")
-							.font(Theme.fontBody)
-							.foregroundStyle(Theme.textTertiary)
-					}
-					.frame(maxWidth: .infinity, maxHeight: .infinity)
-					.background(Theme.surface)
-				}
-			}
-		}
-		.onAppear { loadChangedFiles() }
-		.onChange(of: diffMode) { loadChangedFiles() }
-	}
-
-	// MARK: - File Tree (PR Changes style)
-
-	private var fileTree: some View {
-		let grouped = Dictionary(grouping: changedFiles, by: { $0.directory })
-		let sortedDirs = grouped.keys.sorted()
-
-		return ForEach(sortedDirs, id: \.self) { dir in
-			let files = grouped[dir] ?? []
-			if dir.isEmpty {
-				// Root-level files
-				ForEach(files) { file in
-					fileRow(file)
-				}
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.background(Theme.surface)
 			} else {
-				// Directory group
-				let isCollapsed = collapsedDirs.contains(dir)
-				Button {
-					if isCollapsed {
-						collapsedDirs.remove(dir)
-					} else {
-						collapsedDirs.insert(dir)
-					}
-				} label: {
-					HStack(spacing: 4) {
-						Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-							.font(.system(size: 8, weight: .semibold))
-							.foregroundStyle(Theme.textTertiary)
-						Image(systemName: "folder")
-							.font(.system(size: 10))
-							.foregroundStyle(Theme.textTertiary)
-						Text(dir)
-							.font(.system(size: 11))
-							.foregroundStyle(Theme.textSecondary)
-							.lineLimit(1)
-						Spacer()
-						Text("\(files.count)")
-							.font(.system(size: 9))
-							.foregroundStyle(Theme.textTertiary)
-					}
-					.padding(.horizontal, 8)
-					.padding(.vertical, 4)
-					.contentShape(Rectangle())
-				}
-				.buttonStyle(.plain)
-
-				if !isCollapsed {
-					ForEach(files) { file in
-						fileRow(file)
-							.padding(.leading, 16)
-					}
-				}
+				UnifiedDiffWebView(files: changedFiles)
 			}
 		}
+		.onAppear { loadAll() }
+		.onChange(of: diffMode) { loadAll() }
 	}
 
-	private func fileRow(_ file: ChangedFile) -> some View {
-		let isSelected = selectedFile == file
-		return Button {
-			selectedFile = file
-			loadDiff(for: file)
-		} label: {
-			HStack(spacing: 6) {
-				Text(file.statusLabel)
-					.font(.system(size: 9, weight: .bold, design: .monospaced))
-					.foregroundStyle(file.statusColor)
-					.frame(width: 14)
-				Text(file.filename)
-					.font(.system(size: 11))
-					.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
-					.lineLimit(1)
-				Spacer()
-			}
-			.padding(.horizontal, 8)
-			.padding(.vertical, 3)
-			.background(
-				RoundedRectangle(cornerRadius: 4)
-					.fill(isSelected ? Theme.surfaceActive : Color.clear)
-			)
-			.contentShape(Rectangle())
-		}
-		.buttonStyle(.plain)
-	}
-
-	// MARK: - Data Loading
-
-	private func loadChangedFiles() {
+	private func loadAll() {
 		isLoading = true
 		let provider = project.provider
 		let rootPath = project.effectivePath
-		let args = diffMode.gitArgs
+		let listArgs = diffMode.gitArgs
+		let diffArgs = diffMode.diffArgs
+
 		DispatchQueue.global(qos: .userInitiated).async {
-			let files = provider.gitChangedFiles(rootPath, args: args)
-			let changed = files.map { ChangedFile(status: $0.status, path: $0.file) }
-			DispatchQueue.main.async {
-				changedFiles = changed
-				isLoading = false
-				if let first = changed.first {
-					selectedFile = first
-					loadDiff(for: first)
+			let fileList = provider.gitChangedFiles(rootPath, args: listArgs)
+			var files: [ChangedFile] = []
+			var added = 0
+			var removed = 0
+
+			for (status, path) in fileList {
+				var diff = ""
+				if status == "??" {
+					if let content = provider.readFile(
+						rootPath == "." ? path : (rootPath as NSString).appendingPathComponent(path)
+					) {
+						let lines = content.components(separatedBy: "\n")
+						diff = "@@ -0,0 +1,\(lines.count) @@\n" + lines.map { "+\($0)" }.joined(separator: "\n")
+						added += lines.count
+					}
 				} else {
-					selectedFile = nil
-					diffText = ""
+					diff = provider.gitFullDiff(rootPath, file: path, args: diffArgs) ?? ""
+					for line in diff.components(separatedBy: "\n") {
+						if line.hasPrefix("+") && !line.hasPrefix("+++") { added += 1 }
+						if line.hasPrefix("-") && !line.hasPrefix("---") { removed += 1 }
+					}
 				}
+				files.append(ChangedFile(status: status, path: path, diff: diff))
+			}
+
+			DispatchQueue.main.async {
+				changedFiles = files
+				totalAdded = added
+				totalRemoved = removed
+				isLoading = false
 			}
 		}
 	}
+}
 
-	private func loadDiff(for file: ChangedFile) {
-		let provider = project.provider
-		let rootPath = project.effectivePath
-		let args = diffMode.diffArgs
-		DispatchQueue.global(qos: .userInitiated).async {
-			var diff: String?
-			if file.status == "??" {
-				// Untracked file — show full content as addition
-				if let content = provider.readFile(
-					(rootPath as NSString).appendingPathComponent(file.path)
-				) {
-					let lines = content.components(separatedBy: "\n")
-					var result = "--- /dev/null\n+++ b/\(file.path)\n@@ -0,0 +1,\(lines.count) @@\n"
-					for line in lines {
-						result += "+\(line)\n"
-					}
-					diff = result
+// MARK: - Unified Diff WebView (all files in one scroll)
+
+private struct UnifiedDiffWebView: NSViewRepresentable {
+	let files: [ChangedFile]
+
+	func makeNSView(context: Context) -> WKWebView {
+		let webView = WKWebView()
+		webView.setValue(false, forKey: "drawsBackground")
+		loadHTML(webView)
+		return webView
+	}
+
+	func updateNSView(_ nsView: WKWebView, context: Context) {
+		loadHTML(nsView)
+	}
+
+	private func loadHTML(_ webView: WKWebView) {
+		webView.loadHTMLString(buildHTML(), baseURL: nil)
+	}
+
+	private func buildHTML() -> String {
+		var sections = ""
+		for file in files {
+			sections += buildFileSection(file)
+		}
+
+		return """
+		<!DOCTYPE html>
+		<html>
+		<head>
+		<meta charset="UTF-8">
+		<style>
+		* { margin: 0; padding: 0; box-sizing: border-box; }
+		body {
+			background: #1e1e2e;
+			color: #cdd6f4;
+			font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+			font-size: 13px;
+		}
+		.file-section {
+			margin-bottom: 2px;
+		}
+		.file-header {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 8px 14px;
+			background: #24242e;
+			border-bottom: 1px solid #313244;
+			cursor: pointer;
+			user-select: none;
+			position: sticky;
+			top: 0;
+			z-index: 10;
+		}
+		.file-header:hover {
+			background: #2a2a38;
+		}
+		.chevron {
+			font-size: 10px;
+			color: #585b70;
+			transition: transform 0.15s;
+			width: 12px;
+		}
+		.chevron.collapsed {
+			transform: rotate(-90deg);
+		}
+		.status-badge {
+			font-family: 'SF Mono', Menlo, monospace;
+			font-size: 10px;
+			font-weight: 700;
+			padding: 1px 4px;
+			border-radius: 3px;
+		}
+		.status-M { color: #f9e2af; background: rgba(249, 226, 175, 0.15); }
+		.status-A, .status-U { color: #a6e3a1; background: rgba(166, 227, 161, 0.15); }
+		.status-D { color: #f38ba8; background: rgba(243, 139, 168, 0.15); }
+		.status-R { color: #89b4fa; background: rgba(137, 180, 250, 0.15); }
+		.filename {
+			font-size: 12px;
+			font-weight: 500;
+			color: #cdd6f4;
+		}
+		.filepath {
+			font-size: 11px;
+			color: #585b70;
+			margin-left: auto;
+		}
+		.diff-table {
+			width: 100%;
+			border-collapse: collapse;
+			font-family: 'SF Mono', Menlo, Monaco, monospace;
+			font-size: 12px;
+			line-height: 1.5;
+		}
+		.diff-table tr.add { background: rgba(166, 227, 161, 0.10); }
+		.diff-table tr.del { background: rgba(243, 139, 168, 0.10); }
+		.diff-table tr.hunk {
+			background: rgba(137, 180, 250, 0.06);
+		}
+		.diff-table td.ln {
+			width: 40px;
+			min-width: 40px;
+			text-align: right;
+			padding: 0 6px;
+			color: #45475a;
+			user-select: none;
+			border-right: 1px solid #252530;
+			font-size: 11px;
+		}
+		.diff-table td.code {
+			padding: 0 12px;
+			white-space: pre-wrap;
+			word-break: break-all;
+		}
+		.diff-table tr.add td.code { color: #a6e3a1; }
+		.diff-table tr.del td.code { color: #f38ba8; }
+		.diff-table tr.hunk td.code { color: #89b4fa; font-size: 11px; }
+		.diff-body { overflow: hidden; transition: max-height 0.2s ease; }
+		.diff-body.collapsed { max-height: 0 !important; }
+		.empty-diff {
+			padding: 16px;
+			color: #585b70;
+			font-style: italic;
+			text-align: center;
+		}
+		</style>
+		</head>
+		<body>
+		\(sections)
+		<script>
+		document.querySelectorAll('.file-header').forEach(function(hdr) {
+			hdr.addEventListener('click', function() {
+				var body = hdr.nextElementSibling;
+				var chevron = hdr.querySelector('.chevron');
+				body.classList.toggle('collapsed');
+				chevron.classList.toggle('collapsed');
+			});
+		});
+		</script>
+		</body>
+		</html>
+		"""
+	}
+
+	private func buildFileSection(_ file: ChangedFile) -> String {
+		let filename = (file.path as NSString).lastPathComponent
+		let dir = (file.path as NSString).deletingLastPathComponent
+		let escapedFilename = escapeHTML(filename)
+		let escapedDir = escapeHTML(dir.isEmpty ? "" : dir + "/")
+		let statusLabel = file.status == "??" ? "U" : escapeHTML(file.status)
+		let statusClass = file.status == "??" ? "U" : file.status
+
+		let diffLines = buildDiffRows(file.diff)
+
+		return """
+		<div class="file-section">
+			<div class="file-header">
+				<span class="chevron">▼</span>
+				<span class="status-badge status-\(statusClass)">\(statusLabel)</span>
+				<span class="filename">\(escapedFilename)</span>
+				<span class="filepath">\(escapedDir)</span>
+			</div>
+			<div class="diff-body">
+				\(diffLines.isEmpty ? "<div class=\"empty-diff\">No diff available</div>" : "<table class=\"diff-table\">\(diffLines)</table>")
+			</div>
+		</div>
+		"""
+	}
+
+	private func buildDiffRows(_ diffText: String) -> String {
+		let lines = diffText.components(separatedBy: "\n")
+		var html = ""
+		var oldLine = 0
+		var newLine = 0
+
+		for line in lines {
+			let escaped = escapeHTML(line)
+
+			if line.hasPrefix("@@") {
+				let parts = line.components(separatedBy: " ")
+				if parts.count >= 3 {
+					let oldComps = parts[1].dropFirst().split(separator: ",")
+					let newComps = parts[2].dropFirst().split(separator: ",")
+					oldLine = Int(oldComps[0]) ?? 0
+					newLine = Int(newComps[0]) ?? 0
 				}
-			} else {
-				diff = provider.gitFullDiff(rootPath, file: file.path, args: args)
-			}
-			DispatchQueue.main.async {
-				diffText = diff ?? "No changes"
+				html += "<tr class=\"hunk\"><td class=\"ln\"></td><td class=\"ln\"></td><td class=\"code\">\(escaped)</td></tr>"
+			} else if line.hasPrefix("---") || line.hasPrefix("+++") || line.hasPrefix("diff ") || line.hasPrefix("index ") {
+				continue // skip meta lines
+			} else if line.hasPrefix("+") {
+				html += "<tr class=\"add\"><td class=\"ln\"></td><td class=\"ln\">\(newLine)</td><td class=\"code\">\(escaped)</td></tr>"
+				newLine += 1
+			} else if line.hasPrefix("-") {
+				html += "<tr class=\"del\"><td class=\"ln\">\(oldLine)</td><td class=\"ln\"></td><td class=\"code\">\(escaped)</td></tr>"
+				oldLine += 1
+			} else if !line.isEmpty {
+				html += "<tr><td class=\"ln\">\(oldLine)</td><td class=\"ln\">\(newLine)</td><td class=\"code\">\(escaped)</td></tr>"
+				oldLine += 1
+				newLine += 1
 			}
 		}
+		return html
+	}
+
+	private func escapeHTML(_ s: String) -> String {
+		s.replacingOccurrences(of: "&", with: "&amp;")
+		 .replacingOccurrences(of: "<", with: "&lt;")
+		 .replacingOccurrences(of: ">", with: "&gt;")
 	}
 }
