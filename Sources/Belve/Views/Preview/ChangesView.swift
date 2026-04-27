@@ -36,6 +36,7 @@ struct ChangedFile {
 struct ChangesView: View {
 	let project: Project
 	var onOpenFile: ((String) -> Void)? = nil
+	var onDismiss: (() -> Void)? = nil
 	@State private var filter = DiffFilter()
 	@State private var changedFiles: [ChangedFile] = []
 	@State private var isLoading = false
@@ -44,6 +45,8 @@ struct ChangesView: View {
 	@State private var selectedFilePath: String?
 	@State private var collapsedDirs: Set<String> = []
 	@State private var diffWebView: WKWebView?
+	@State private var lastStatusHash: String = ""
+	@State private var pollTimer: Timer?
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -82,9 +85,19 @@ struct ChangesView: View {
 				} label: {
 					Image(systemName: "arrow.clockwise")
 						.font(.system(size: 11))
-						.foregroundStyle(Theme.textTertiary)
+						.foregroundStyle(Theme.textSecondary)
 				}
 				.buttonStyle(.plain)
+
+				Button {
+					onDismiss?()
+				} label: {
+					Image(systemName: "xmark")
+						.font(.system(size: 10, weight: .medium))
+						.foregroundStyle(Theme.textSecondary)
+				}
+				.buttonStyle(.plain)
+				.help("Close Changes (⇧⌘G)")
 			}
 			.padding(.horizontal, 12)
 			.padding(.vertical, 8)
@@ -107,11 +120,20 @@ struct ChangesView: View {
 			} else {
 				HStack(spacing: 0) {
 					// File tree (left)
-					ScrollView {
-						VStack(alignment: .leading, spacing: 0) {
-							fileTree
+					ScrollViewReader { proxy in
+						ScrollView {
+							VStack(alignment: .leading, spacing: 0) {
+								fileTree
+							}
+							.padding(.vertical, 4)
 						}
-						.padding(.vertical, 4)
+						.onChange(of: selectedFilePath) {
+							if let path = selectedFilePath {
+								withAnimation(.easeInOut(duration: 0.2)) {
+									proxy.scrollTo(path, anchor: .center)
+								}
+							}
+						}
 					}
 					.frame(width: 220)
 					.background(Theme.bg)
@@ -123,11 +145,17 @@ struct ChangesView: View {
 						diffWebView = wv
 					}, onOpenFile: { path in
 						openFileInEditor(path)
+					}, onVisibleFileChanged: { path in
+						selectedFilePath = path
 					})
 				}
 			}
 		}
-		.onAppear { loadAll() }
+		.onAppear {
+			loadAll()
+			startPolling()
+		}
+		.onDisappear { stopPolling() }
 		.onChange(of: filter.staged) { loadAll() }
 		.onChange(of: filter.unstaged) { loadAll() }
 		.onChange(of: filter.committed) { loadAll() }
@@ -140,10 +168,10 @@ struct ChangesView: View {
 			HStack(spacing: 4) {
 				Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
 					.font(.system(size: 11))
-					.foregroundStyle(isOn.wrappedValue ? Theme.accent : Theme.textTertiary)
+					.foregroundStyle(isOn.wrappedValue ? Theme.accent : Theme.textSecondary)
 				Text(label)
 					.font(.system(size: 11))
-					.foregroundStyle(isOn.wrappedValue ? Theme.textPrimary : Theme.textTertiary)
+					.foregroundStyle(isOn.wrappedValue ? Theme.textPrimary : Theme.textSecondary)
 			}
 		}
 		.buttonStyle(.plain)
@@ -169,10 +197,10 @@ struct ChangesView: View {
 					HStack(spacing: 4) {
 						Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
 							.font(.system(size: 8, weight: .semibold))
-							.foregroundStyle(Theme.textTertiary)
+							.foregroundStyle(Theme.textSecondary)
 						Image(systemName: "folder")
 							.font(.system(size: 10))
-							.foregroundStyle(Theme.textTertiary)
+							.foregroundStyle(Theme.textSecondary)
 						Text(dir)
 							.font(.system(size: 11))
 							.foregroundStyle(Theme.textSecondary)
@@ -180,7 +208,7 @@ struct ChangesView: View {
 						Spacer()
 						Text("\(files.count)")
 							.font(.system(size: 9))
-							.foregroundStyle(Theme.textTertiary)
+							.foregroundStyle(Theme.textSecondary)
 					}
 					.padding(.horizontal, 8)
 					.padding(.vertical, 4)
@@ -219,7 +247,7 @@ struct ChangesView: View {
 				} label: {
 					Image(systemName: "arrow.up.forward.square")
 						.font(.system(size: 10))
-						.foregroundStyle(Theme.textTertiary)
+						.foregroundStyle(Theme.textSecondary)
 				}
 				.buttonStyle(.plain)
 				.help("Open in editor")
@@ -237,6 +265,7 @@ struct ChangesView: View {
 			scrollToFile(file.path)
 		}
 		.onHover { hovering in hoveredFilePath = hovering ? file.path : nil }
+		.id(file.path)
 	}
 
 	private func openFileInEditor(_ path: String) {
@@ -283,6 +312,47 @@ struct ChangesView: View {
 			"document.querySelector('[data-file=\"\(b64)\"]')?.scrollIntoView({behavior:'smooth',block:'start'})",
 			completionHandler: nil
 		)
+	}
+
+	private func startPolling() {
+		stopPolling()
+		pollTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
+			checkForChanges()
+		}
+	}
+
+	private func stopPolling() {
+		pollTimer?.invalidate()
+		pollTimer = nil
+	}
+
+	private func checkForChanges() {
+		let provider = project.provider
+		let rootPath = project.effectivePath
+		let currentFilter = filter
+		DispatchQueue.global(qos: .utility).async {
+			// Build a lightweight fingerprint from git status only
+			var parts: [String] = []
+			if currentFilter.staged {
+				let list = provider.gitChangedFiles(rootPath, args: ["--staged"])
+				parts.append("S:" + list.map { "\($0.0):\($0.1)" }.joined(separator: ","))
+			}
+			if currentFilter.unstaged {
+				let list = provider.gitChangedFiles(rootPath, args: [])
+				parts.append("U:" + list.map { "\($0.0):\($0.1)" }.joined(separator: ","))
+			}
+			if currentFilter.committed {
+				let list = provider.gitChangedFiles(rootPath, args: ["main...HEAD"])
+				parts.append("C:" + list.map { "\($0.0):\($0.1)" }.joined(separator: ","))
+			}
+			let hash = parts.joined(separator: "|")
+			DispatchQueue.main.async {
+				if hash != lastStatusHash {
+					lastStatusHash = hash
+					loadAll()
+				}
+			}
+		}
 	}
 
 	private func loadAll() {
@@ -348,7 +418,15 @@ struct ChangesView: View {
 				}
 			}
 
-			let files = allFiles.values.sorted { $0.path < $1.path }
+			// Sort to match file tree order: root files first, then by directory, then filename
+			let files = allFiles.values.sorted {
+				let dir0 = $0.directory
+				let dir1 = $1.directory
+				if dir0 == dir1 { return $0.filename < $1.filename }
+				if dir0.isEmpty { return true }
+				if dir1.isEmpty { return false }
+				return dir0 < dir1
+			}
 
 			DispatchQueue.main.async {
 				changedFiles = files
@@ -367,6 +445,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 	var onWebViewReady: ((WKWebView) -> Void)?
 
 	var onOpenFile: ((String) -> Void)?
+	var onVisibleFileChanged: ((String) -> Void)?
 
 	func makeNSView(context: Context) -> WKWebView {
 		let config = WKWebViewConfiguration()
@@ -378,7 +457,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		return webView
 	}
 
-	func makeCoordinator() -> DiffCoordinator { DiffCoordinator(onOpenFile: onOpenFile) }
+	func makeCoordinator() -> DiffCoordinator { DiffCoordinator(onOpenFile: onOpenFile, onVisibleFileChanged: onVisibleFileChanged) }
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		let newHash = files.map(\.path).joined(separator: ",")
@@ -392,9 +471,11 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 	class DiffCoordinator: NSObject, WKScriptMessageHandler {
 		var lastHash: String = ""
 		var onOpenFile: ((String) -> Void)?
+		var onVisibleFileChanged: ((String) -> Void)?
 
-		init(onOpenFile: ((String) -> Void)?) {
+		init(onOpenFile: ((String) -> Void)?, onVisibleFileChanged: ((String) -> Void)?) {
 			self.onOpenFile = onOpenFile
+			self.onVisibleFileChanged = onVisibleFileChanged
 		}
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -403,6 +484,12 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			if type == "openFile", let path = body["path"] as? String {
 				DispatchQueue.main.async { [weak self] in
 					self?.onOpenFile?(path)
+				}
+			} else if type == "visibleFile", let b64 = body["file"] as? String {
+				if let data = Data(base64Encoded: b64), let path = String(data: data, encoding: .utf8) {
+					DispatchQueue.main.async { [weak self] in
+						self?.onVisibleFileChanged?(path)
+					}
 				}
 			}
 		}
@@ -456,7 +543,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		}
 		.chevron {
 			font-size: 10px;
-			color: #585b70;
+			color: #7f849c;
 			transition: transform 0.15s;
 			width: 12px;
 		}
@@ -479,14 +566,15 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			font-weight: 500;
 			color: #cdd6f4;
 			flex: 1;
-		}
-		.filepath {
-			font-size: 11px;
-			color: #585b70;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			direction: rtl;
+			text-align: left;
 		}
 		.open-btn {
 			font-size: 10px;
-			color: #585b70;
+			color: #7f849c;
 			cursor: pointer;
 			padding: 2px 6px;
 			border-radius: 4px;
@@ -507,7 +595,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		}
 		.expand-row td {
 			text-align: center;
-			color: #585b70;
+			color: #7f849c;
 			font-size: 11px;
 			padding: 3px 0;
 		}
@@ -528,7 +616,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			min-width: 40px;
 			text-align: right;
 			padding: 0 6px;
-			color: #45475a;
+			color: #6c7086;
 			-webkit-user-select: none;
 			user-select: none;
 			border-right: 1px solid #252530;
@@ -546,7 +634,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		.diff-body.collapsed { max-height: 0 !important; }
 		.empty-diff {
 			padding: 16px;
-			color: #585b70;
+			color: #7f849c;
 			font-style: italic;
 			text-align: center;
 		}
@@ -565,6 +653,21 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 				chevron.classList.toggle('collapsed');
 			});
 		});
+		// Track which file section is currently visible
+		var observer = new IntersectionObserver(function(entries) {
+			for (var i = 0; i < entries.length; i++) {
+				if (entries[i].isIntersecting) {
+					var file = entries[i].target.getAttribute('data-file');
+					if (file) {
+						window.webkit.messageHandlers.diffHandler.postMessage({type:'visibleFile', file: file});
+					}
+					break;
+				}
+			}
+		}, {rootMargin: '-10% 0px -80% 0px'});
+		document.querySelectorAll('.file-section').forEach(function(el) {
+			observer.observe(el);
+		});
 		</script>
 		</body>
 		</html>
@@ -582,15 +685,14 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		let diffLines = buildDiffRows(file.diff)
 
 		let b64 = Data(file.path.utf8).base64EncodedString()
-		let escapedPath = escapeHTML(file.path)
+		let escapedFullPath = escapeHTML(file.path)
 		return """
 		<div class="file-section" data-file="\(b64)">
 			<div class="file-header">
 				<span class="chevron">▼</span>
 				<span class="status-badge status-\(statusClass)">\(statusLabel)</span>
-				<span class="filename">\(escapedFilename)</span>
-				<span class="filepath">\(escapedDir)</span>
-				<button class="open-btn" onclick="event.stopPropagation();window.webkit.messageHandlers.diffHandler.postMessage({type:'openFile',path:'\(escapedPath)'})">Open ↗</button>
+				<span class="filename">\(escapedFullPath)</span>
+				<button class="open-btn" onclick="event.stopPropagation();window.webkit.messageHandlers.diffHandler.postMessage({type:'openFile',path:'\(escapedFullPath)'})">Open ↗</button>
 			</div>
 			<div class="diff-body">
 				\(diffLines.isEmpty ? "<div class=\"empty-diff\">No diff available</div>" : "<table class=\"diff-table\">\(diffLines)</table>")

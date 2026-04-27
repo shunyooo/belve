@@ -126,6 +126,8 @@ struct PreviewArea: View {
 					ChangesView(project: project, onOpenFile: { path in
 						layoutState.showChanges = false
 						loadFile(at: path)
+					}, onDismiss: {
+						layoutState.showChanges = false
 					})
 				} else {
 					editorContent

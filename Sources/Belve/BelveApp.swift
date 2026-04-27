@@ -232,6 +232,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			case "b" where shift:
 				NotificationCenter.default.post(name: .belveToggleBrowser, object: nil)
 				return nil
+			case "g" where shift:
+				NotificationCenter.default.post(name: .belveShowChanges, object: nil)
+				return nil
 			case ".", ">" where shift:
 				NSApp.hide(nil)
 				return nil
@@ -296,17 +299,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			case "r" where !shift:
 				// Cmd+R routes to the browser when its panel is the key window
 				// (matches the obvious "this is a browser, reload it" mental
-				// model); otherwise fall back to project reload.
+				// model); otherwise pass through to the terminal / app.
 				if NSApp.keyWindow?.identifier?.rawValue.hasPrefix("BelveBrowser-") == true {
 					NotificationCenter.default.post(
 						name: .belveBrowserNav,
 						object: nil,
 						userInfo: ["action": BrowserView.NavAction.reload]
 					)
-				} else {
-					NotificationCenter.default.post(name: .belveReloadProject, object: nil)
+					return nil
 				}
-				return nil
+				return event
 			default:
 				return event
 			}
