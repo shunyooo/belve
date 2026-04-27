@@ -261,14 +261,28 @@ func opStat(req ctrlReq) ctrlRes {
 	}}
 }
 
+// opReadMaxBytes: 1 回の read op で返す上限。これを超えたらエラーで返す。
+// 巨大ファイル (= core dump 等) の content を NDJSON で返すと encMu で直列化された
+// 書き込みが長時間ブロックして同 connection の他 op (gitChangedFiles 等) が
+// timeout する (= 2026-04-27 の cascade)。Editor / preview は数 MB が現実的上限なので
+// 8 MB を上限にする (Markdown / source code / 設定ファイルは余裕で収まる)。
+const opReadMaxBytes = 8 * 1024 * 1024
+
 func opRead(req ctrlReq) ctrlRes {
 	if req.Path == "" {
 		return errRes(req.ID, "path required")
 	}
 	p := expandHome(req.Path)
+	// stat 先行: 巨大ファイルは ReadFile せず即エラー (= メモリも食わない)。
+	if info, err := os.Stat(p); err == nil && info.Size() > opReadMaxBytes {
+		return ctrlRes{ID: req.ID, OK: false, Error: fmt.Sprintf("file too large: %d bytes (limit %d)", info.Size(), opReadMaxBytes)}
+	}
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return errRes(req.ID, err.Error())
+	}
+	if len(data) > opReadMaxBytes {
+		return ctrlRes{ID: req.ID, OK: false, Error: fmt.Sprintf("file too large: %d bytes (limit %d)", len(data), opReadMaxBytes)}
 	}
 	encoding := req.Encoding
 	if encoding == "" {
@@ -427,6 +441,11 @@ func opGitCheckIgnore(req ctrlReq) ctrlRes {
 
 // Bulk diff: `git -C path diff [args...] 2>/dev/null` の全出力を返す。
 // args は "--staged", "main...HEAD" 等の git diff 引数。
+//
+// 巨大 diff (= 数 MB-数十 MB) はそのまま返さず error にする。理由は opRead と同じ
+// (encMu 直列化で同 connection の他 op が timeout する)。ChangesView は diff 表示
+// なので 8 MB 超なら表示も実用的でないし、そもそも巨大 untracked file を含む
+// repo (= core dump 等) 向けの保険。
 func opGitDiffBulk(req ctrlReq) ctrlRes {
 	if req.Path == "" {
 		return errRes(req.ID, "path required")
@@ -438,6 +457,9 @@ func opGitDiffBulk(req ctrlReq) ctrlRes {
 	out, err := cmd.Output()
 	if err != nil {
 		return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"diff": ""}}
+	}
+	if len(out) > opReadMaxBytes {
+		return ctrlRes{ID: req.ID, OK: false, Error: fmt.Sprintf("diff too large: %d bytes (limit %d)", len(out), opReadMaxBytes)}
 	}
 	return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"diff": string(out)}}
 }
