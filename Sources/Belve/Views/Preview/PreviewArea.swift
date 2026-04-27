@@ -27,7 +27,7 @@ struct PreviewArea: View {
 	/// dirty-check without re-assigning openFile (which would re-init the editor).
 	@State private var savedContentReference: String = ""
 	@State private var editedContent: String = ""
-	@State private var showChanges = false
+	// showChanges is persisted via layoutState.showChanges
 	@State private var loadingPath: String?
 	@State private var fileWatchTimer: Timer?
 	@State private var lastKnownModTime: Date?
@@ -86,7 +86,7 @@ struct PreviewArea: View {
 	var body: some View {
 		GeometryReader { geo in
 			HStack(spacing: 0) {
-				if layoutState.showFileTree && !showChanges {
+				if layoutState.showFileTree && !layoutState.showChanges {
 					Group {
 						FileTreeView(
 							project: project,
@@ -122,9 +122,9 @@ struct PreviewArea: View {
 					))
 				}
 
-				if showChanges {
+				if layoutState.showChanges {
 					ChangesView(project: project, onOpenFile: { path in
-						showChanges = false
+						layoutState.showChanges = false
 						loadFile(at: path)
 					})
 				} else {
@@ -175,7 +175,7 @@ struct PreviewArea: View {
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveShowChanges)) { notif in
 			if let projectId = notif.userInfo?["projectId"] as? UUID, projectId != project.id { return }
-			showChanges.toggle()
+			layoutState.showChanges.toggle()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileDeleted)) { notif in
 			if let deletedPaths = notif.object as? [String],

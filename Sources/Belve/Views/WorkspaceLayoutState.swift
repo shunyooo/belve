@@ -18,6 +18,10 @@ final class ProjectLayoutState: ObservableObject, Codable {
 	@Published var lastOpenedFile: String? = nil {
 		didSet { onChanged?() }
 	}
+	/// Whether the Changes (diff) view is shown instead of the editor.
+	@Published var showChanges: Bool = false {
+		didSet { onChanged?() }
+	}
 	/// Preview-area mode: `.editor` shows the file tree + code/markdown editor
 	/// (the default), `.browser` swaps that out for a lightweight WKWebView
 	/// for debugging forwarded ports and local dev servers.
@@ -65,7 +69,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 	}
 
 	enum CodingKeys: String, CodingKey {
-		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile, previewMode, browserURL, browserOpen, browserThumbnail, browserFrame, browserViewport
+		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile, showChanges, previewMode, browserURL, browserOpen, browserThumbnail, browserFrame, browserViewport
 	}
 
 	required init(from decoder: Decoder) throws {
@@ -75,6 +79,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		showFileTree = try container.decodeIfPresent(Bool.self, forKey: .showFileTree) ?? true
 		fileTreeWidth = try container.decodeIfPresent(CGFloat.self, forKey: .fileTreeWidth) ?? 200
 		lastOpenedFile = try container.decodeIfPresent(String.self, forKey: .lastOpenedFile)
+		showChanges = try container.decodeIfPresent(Bool.self, forKey: .showChanges) ?? false
 		previewMode = try container.decodeIfPresent(PreviewMode.self, forKey: .previewMode) ?? .editor
 		browserURL = try container.decodeIfPresent(String.self, forKey: .browserURL) ?? ""
 		browserOpen = try container.decodeIfPresent(Bool.self, forKey: .browserOpen) ?? false
@@ -90,6 +95,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		try container.encode(showFileTree, forKey: .showFileTree)
 		try container.encode(fileTreeWidth, forKey: .fileTreeWidth)
 		try container.encodeIfPresent(lastOpenedFile, forKey: .lastOpenedFile)
+		try container.encode(showChanges, forKey: .showChanges)
 		try container.encode(previewMode, forKey: .previewMode)
 		try container.encode(browserURL, forKey: .browserURL)
 		try container.encode(browserOpen, forKey: .browserOpen)
