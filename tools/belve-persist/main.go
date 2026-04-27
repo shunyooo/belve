@@ -113,9 +113,18 @@ func main() {
 	flag.Parse()
 
 	// Parent 死活監視 (env BELVE_PARENT_PID 必要)。spawn 元が exit したら自分も exit。
-	// orphan 累積を構造的に防ぐ。Belve.app から spawn される client / daemon は env
-	// 渡される、container broker や mac-master は env 渡されないので no-op。
-	watchParent()
+	// orphan 累積を構造的に防ぐ。
+	//
+	// EXCEPTION: -daemon mode (= local PTY を持つ master daemon) と mac-master mode は
+	// **Belve.app の再起動を跨いで生存** する設計なので watchParent をスキップする。
+	// 過去 Belve.app 終了の度に local pane の zsh が初期化されてた不具合の根本原因
+	// (= launcher が BELVE_PARENT_PID を env でそのまま継承して spawn → daemon が
+	// 親死亡で自殺 → 次回 fresh shell)。
+	// クライアント (= PTY-attached belve-persist client) は引き続き watchParent OK。
+	// Container broker / router は env 渡されないので no-op。
+	if !*daemon && *macMaster == "" {
+		watchParent()
+	}
 
 	// Mac master mode is foreground (= 単一責務、別 mode と組まない)。
 	if *macMaster != "" {
