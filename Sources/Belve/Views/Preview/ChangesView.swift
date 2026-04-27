@@ -227,9 +227,10 @@ struct ChangesView: View {
 	}
 
 	private func scrollToFile(_ path: String) {
-		let escaped = path.replacingOccurrences(of: "'", with: "\\'")
+		// Use CSS.escape for safe selector, fallback to data attribute query
+		let b64 = Data(path.utf8).base64EncodedString()
 		diffWebView?.evaluateJavaScript(
-			"document.getElementById('file-\(escaped)')?.scrollIntoView({behavior:'smooth',block:'start'})",
+			"document.querySelector('[data-file=\"\(b64)\"]')?.scrollIntoView({behavior:'smooth',block:'start'})",
 			completionHandler: nil
 		)
 	}
@@ -286,18 +287,24 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 	func makeNSView(context: Context) -> WKWebView {
 		let webView = WKWebView()
 		webView.setValue(false, forKey: "drawsBackground")
-		loadHTML(webView)
-		onWebViewReady?(webView)
+		webView.loadHTMLString(buildHTML(), baseURL: nil)
+		DispatchQueue.main.async { onWebViewReady?(webView) }
 		return webView
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
-		loadHTML(nsView)
-		onWebViewReady?(nsView)
+		let newHash = files.map(\.path).joined(separator: ",")
+		if context.coordinator.lastHash != newHash {
+			context.coordinator.lastHash = newHash
+			nsView.loadHTMLString(buildHTML(), baseURL: nil)
+		}
+		DispatchQueue.main.async { onWebViewReady?(nsView) }
 	}
 
-	private func loadHTML(_ webView: WKWebView) {
-		webView.loadHTMLString(buildHTML(), baseURL: nil)
+	func makeCoordinator() -> DiffCoordinator { DiffCoordinator() }
+
+	class DiffCoordinator {
+		var lastHash: String = ""
 	}
 
 	private func buildHTML() -> String {
@@ -446,9 +453,9 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 
 		let diffLines = buildDiffRows(file.diff)
 
-		let escapedId = escapeHTML(file.path)
+		let b64 = Data(file.path.utf8).base64EncodedString()
 		return """
-		<div class="file-section" id="file-\(escapedId)">
+		<div class="file-section" data-file="\(b64)">
 			<div class="file-header">
 				<span class="chevron">▼</span>
 				<span class="status-badge status-\(statusClass)">\(statusLabel)</span>
