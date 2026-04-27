@@ -142,11 +142,18 @@ func handleControlConn(cs *connState) {
 			_ = cs.write(ctrlRes{OK: false, Error: fmt.Sprintf("bad json: %v", err)})
 			continue
 		}
-		res := safeDispatch(cs, req)
-		if err := cs.write(res); err != nil {
-			fmt.Fprintf(os.Stderr, "[belve-persist] control write: %v\n", err)
-			return
-		}
+		// 各 op を goroutine で並行処理する。Sync 処理だと 1 個遅い op (例:
+		// 巨大 repo の gitDiffBulk が数秒) が来た時に同 connection の後続 polling
+		// (ChangesView 3s × 数 ops) が全部 queue → Mac 側 RPC client の 5s timeout
+		// 連発、という cascade を起こしていた。
+		// `cs.write` は encMu で直列化されているので、複数 goroutine から同時に
+		// response を投げても OK (id でクライアント側が match するので順不同で良い)。
+		go func(req ctrlReq) {
+			res := safeDispatch(cs, req)
+			if err := cs.write(res); err != nil {
+				fmt.Fprintf(os.Stderr, "[belve-persist] control write: %v\n", err)
+			}
+		}(req)
 	}
 }
 
