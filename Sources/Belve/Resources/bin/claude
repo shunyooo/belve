@@ -42,6 +42,19 @@ if [[ -z "${BELVE_SESSION:-}" ]]; then
     exec "$REAL_CLAUDE" "$@"
 fi
 
+# Non-interactive mode (-p / --print) or child of a hook: run without
+# Belve hooks to prevent polluting the parent's session bar / companion.
+for _arg in "$@"; do
+    case "$_arg" in
+        -p|--print) REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+                    exec "$REAL_CLAUDE" "$@" ;;
+    esac
+done
+if [[ -n "${BELVE_HOOK_RUNNING:-}" ]]; then
+    REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+    exec "$REAL_CLAUDE" "$@"
+fi
+
 REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
 
 # Pass through subcommands that don't support hooks

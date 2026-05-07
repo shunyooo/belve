@@ -86,41 +86,10 @@ struct PreviewArea: View {
 	var body: some View {
 		GeometryReader { geo in
 			HStack(spacing: 0) {
-				if layoutState.showFileTree && !layoutState.showChanges {
-					Group {
-						FileTreeView(
-							project: project,
-							rootPath: rootPath,
-							onFileSelect: { path in
-								loadFile(at: path)
-							},
-							state: fileTreeState,
-							gitFileStatus: projectStore.gitFileStatus,
-							currentFilePath: openFile?.path ?? layoutState.lastOpenedFile
-						)
-						.frame(width: layoutState.fileTreeWidth)
+				let treeOnLeft = AppConfig.shared.fileTreePosition == .left
 
-						SplitDivider(
-							position: Binding(
-								get: { layoutState.fileTreeWidth },
-								set: { layoutState.fileTreeWidth = $0 }
-							),
-							minLeft: 120,
-							minRight: 220,
-							availableWidth: geo.size.width
-						)
-						.frame(width: DividerMetrics.absoluteHitWidth)
-					}
-					.transition(.asymmetric(
-						insertion: .modifier(
-							active: PreviewSidebarVisibilityModifier(xOffset: -10, opacity: 0),
-							identity: PreviewSidebarVisibilityModifier(xOffset: 0, opacity: 1)
-						),
-						removal: .modifier(
-							active: PreviewSidebarVisibilityModifier(xOffset: -8, opacity: 0),
-							identity: PreviewSidebarVisibilityModifier(xOffset: 0, opacity: 1)
-						)
-					))
+				if layoutState.showFileTree && !layoutState.showChanges && treeOnLeft {
+					fileTreeSection(geo: geo, onLeft: true)
 				}
 
 				if layoutState.showChanges {
@@ -132,6 +101,10 @@ struct PreviewArea: View {
 					})
 				} else {
 					editorContent
+				}
+
+				if layoutState.showFileTree && !layoutState.showChanges && !treeOnLeft {
+					fileTreeSection(geo: geo, onLeft: false)
 				}
 			}
 			.overlay(alignment: .top) {
@@ -207,6 +180,59 @@ struct PreviewArea: View {
 			selectedSearchIndex = 0
 			scheduleFileSearch()
 		}
+	}
+
+	@ViewBuilder
+	private func fileTreeSection(geo: GeometryProxy, onLeft: Bool) -> some View {
+		Group {
+			if !onLeft {
+				SplitDivider(
+					position: Binding(
+						get: { layoutState.fileTreeWidth },
+						set: { layoutState.fileTreeWidth = $0 }
+					),
+					minLeft: 220,
+					minRight: 120,
+					availableWidth: geo.size.width
+				)
+				.frame(width: DividerMetrics.absoluteHitWidth)
+			}
+
+			FileTreeView(
+				project: project,
+				rootPath: rootPath,
+				onFileSelect: { path in
+					loadFile(at: path)
+				},
+				state: fileTreeState,
+				gitFileStatus: projectStore.gitFileStatus,
+				currentFilePath: openFile?.path ?? layoutState.lastOpenedFile
+			)
+			.frame(width: layoutState.fileTreeWidth)
+
+			if onLeft {
+				SplitDivider(
+					position: Binding(
+						get: { layoutState.fileTreeWidth },
+						set: { layoutState.fileTreeWidth = $0 }
+					),
+					minLeft: 120,
+					minRight: 220,
+					availableWidth: geo.size.width
+				)
+				.frame(width: DividerMetrics.absoluteHitWidth)
+			}
+		}
+		.transition(.asymmetric(
+			insertion: .modifier(
+				active: PreviewSidebarVisibilityModifier(xOffset: onLeft ? -10 : 10, opacity: 0),
+				identity: PreviewSidebarVisibilityModifier(xOffset: 0, opacity: 1)
+			),
+			removal: .modifier(
+				active: PreviewSidebarVisibilityModifier(xOffset: onLeft ? -8 : 8, opacity: 0),
+				identity: PreviewSidebarVisibilityModifier(xOffset: 0, opacity: 1)
+			)
+		))
 	}
 
 	private var editorContent: some View {

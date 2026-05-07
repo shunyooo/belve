@@ -142,9 +142,17 @@ class CommandAreaStateManager: ObservableObject {
 		DispatchQueue.main.asyncAfter(deadline: .now() + saveDebounce, execute: task)
 	}
 
+	/// Wrapper that persists both the pane tree and the high-water pane index
+	/// so that closed-pane indices are never reused (which would reconnect to
+	/// a stale belve-persist daemon session).
+	private struct PersistedState: Codable {
+		let root: PaneNode
+		let nextPaneIndex: Int
+	}
+
 	func save() {
-		let data: [String: PaneNode] = states.reduce(into: [:]) { result, pair in
-			result[pair.key.uuidString] = pair.value.root
+		let data: [String: PersistedState] = states.reduce(into: [:]) { result, pair in
+			result[pair.key.uuidString] = PersistedState(root: pair.value.root, nextPaneIndex: pair.value.nextPaneIndexValue)
 		}
 		if let encoded = try? JSONEncoder().encode(data) {
 			try? encoded.write(to: Self.saveURL)
@@ -152,19 +160,30 @@ class CommandAreaStateManager: ObservableObject {
 	}
 
 	private func load() {
-		guard let data = try? Data(contentsOf: Self.saveURL),
-			  let decoded = try? JSONDecoder().decode([String: PaneNode].self, from: data) else { return }
-		for (key, root) in decoded {
-			if let uuid = UUID(uuidString: key) {
-				let state = CommandAreaState()
-				state.root = root
-				state.restoreNextPaneIndex()
-				state.onLayoutChanged = { [weak self] in self?.save() }
-				// Project の最初の leaf pane を default で activePaneId にしておく。
-				// XTermTerminalView は state-driven focus なので、これが set
-				// されてないと どの pane も focus されない (構造改善 C)。
-				state.activePaneId = state.firstLeafPublic()?.paneId
-				states[uuid] = state
+		guard let data = try? Data(contentsOf: Self.saveURL) else { return }
+		// Try new format first (with nextPaneIndex), fall back to legacy (PaneNode only)
+		if let decoded = try? JSONDecoder().decode([String: PersistedState].self, from: data) {
+			for (key, persisted) in decoded {
+				if let uuid = UUID(uuidString: key) {
+					let state = CommandAreaState()
+					state.root = persisted.root
+					state.setNextPaneIndex(persisted.nextPaneIndex)
+					state.onLayoutChanged = { [weak self] in self?.save() }
+					state.activePaneId = state.firstLeafPublic()?.paneId
+					states[uuid] = state
+				}
+			}
+		} else if let decoded = try? JSONDecoder().decode([String: PaneNode].self, from: data) {
+			// Legacy format: PaneNode only, no nextPaneIndex
+			for (key, root) in decoded {
+				if let uuid = UUID(uuidString: key) {
+					let state = CommandAreaState()
+					state.root = root
+					state.restoreNextPaneIndex()
+					state.onLayoutChanged = { [weak self] in self?.save() }
+					state.activePaneId = state.firstLeafPublic()?.paneId
+					states[uuid] = state
+				}
 			}
 		}
 		NSLog("[Belve] Restored pane layouts for \(states.count) projects")
@@ -280,6 +299,12 @@ class CommandAreaState: ObservableObject {
 			}
 		}
 		return false
+	}
+
+	var nextPaneIndexValue: Int { nextPaneIndex }
+
+	func setNextPaneIndex(_ value: Int) {
+		nextPaneIndex = max(value, maxPaneIndex(root) + 1)
 	}
 
 	func restoreNextPaneIndex() {

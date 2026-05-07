@@ -102,8 +102,8 @@ final class AgentCompanionPanel: NSPanel, NSWindowDelegate {
 		self.model = AgentCompanionViewModel(companion: companion)
 		self.host = NSHostingController(rootView: AgentCompanionView(model: model))
 		// 透過パネルなので大きめ frame でも見た目は SwiftUI content のみ。
-		// avatar + bubble ×3 + 展開分を余裕で収める固定 size。
-		let initialFrame = NSRect(x: 0, y: 0, width: 360, height: 300)
+		// 展開時にテキストが溢れないよう十分な高さを確保。
+		let initialFrame = NSRect(x: 0, y: 0, width: 400, height: 600)
 		super.init(
 			contentRect: initialFrame,
 			styleMask: [.borderless, .nonactivatingPanel],
@@ -123,6 +123,7 @@ final class AgentCompanionPanel: NSPanel, NSWindowDelegate {
 		// contentViewController を使うと sizingOptions 周りの挙動が不安定で
 		// content が 0 サイズに潰れたり panel が見えなくなる。
 		let hostView = host.view
+		hostView.wantsLayer = true
 		hostView.frame = self.contentView!.bounds
 		hostView.autoresizingMask = [.width, .height]
 		self.contentView!.addSubview(hostView)
@@ -130,11 +131,28 @@ final class AgentCompanionPanel: NSPanel, NSWindowDelegate {
 		self.lastOrigin = self.frame.origin
 	}
 
+	/// コンテンツの intrinsicContentSize に合わせてパネルをリサイズ。
+	/// bottom-left を固定して上方向に伸縮する。
+	private let panelWidth: CGFloat = 400
+
+	/// SwiftUI 側から通知されたコンテンツサイズに合わせてパネルをリサイズ。
+	func fitToSize(_ contentSize: CGSize) {
+		guard contentSize.height > 0 else { return }
+		let newH = max(contentSize.height + 8, 80)  // 余白
+		let newW = max(contentSize.width + 8, panelWidth)
+		let oldFrame = frame
+		// bottom-left 固定: origin.y を調整して上に伸びる
+		let newY = oldFrame.origin.y + oldFrame.height - newH
+		let newFrame = NSRect(x: oldFrame.origin.x, y: newY, width: newW, height: newH)
+		if abs(newFrame.height - oldFrame.height) > 2 {
+			ignoreNextMove = true
+			setFrame(newFrame, display: true, animate: false)
+			lastOrigin = newFrame.origin
+		}
+	}
+
 	func update(companion: AgentCompanion) {
 		model.companion = companion
-		// content size の自動追従は NSHostingController 任せにする (=
-		// setContentSize を毎回呼ぶと origin が jump して「位置崩れ」になる)。
-		// panel の初期サイズは十分余裕を持たせ、SwiftUI 側の layout に委ねる。
 	}
 
 	/// 伝播経由の origin 移動。windowDidMove の chain reaction を防ぐため flag を立てる。
@@ -176,6 +194,8 @@ final class AgentCompanionPanel: NSPanel, NSWindowDelegate {
 		guard let arr = UserDefaults.standard.array(forKey: key) as? [Double], arr.count == 2 else { return nil }
 		return NSPoint(x: arr[0], y: arr[1])
 	}
+
+	/// 保存済み size を復元。
 }
 
 /// ViewModel: SwiftUI 側で観測する。Window manager から差し替えられる。

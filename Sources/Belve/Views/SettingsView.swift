@@ -140,7 +140,23 @@ struct SettingsView: View {
 	private var editorTab: some View {
 		VStack(alignment: .leading, spacing: 20) {
 			settingsSection(title: "File Tree", icon: "folder.badge.minus") {
-				VStack(alignment: .leading, spacing: 6) {
+				VStack(alignment: .leading, spacing: 10) {
+					HStack {
+						Text("Position")
+							.font(.system(size: 11))
+							.foregroundStyle(Theme.textSecondary)
+						Spacer()
+						Picker("", selection: Binding(
+							get: { config.fileTreePosition },
+							set: { config.fileTreePosition = $0 }
+						)) {
+							Text("Left").tag(FileTreePosition.left)
+							Text("Right").tag(FileTreePosition.right)
+						}
+						.pickerStyle(.segmented)
+						.frame(width: 140)
+					}
+
 					Text("Hidden patterns")
 						.font(.system(size: 11))
 						.foregroundStyle(Theme.textTertiary)

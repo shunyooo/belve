@@ -81,6 +81,9 @@ parse_json() {
 
 case "${1:-}" in
     claude-hook)
+        # Hook 内から spawn される子 claude が Belve hooks を inject しないように
+        # 環境変数をセット。子 claude は claude wrapper でこれを見て pass-through する。
+        export BELVE_HOOK_RUNNING=1
         # 全 hook subcommand 共通で stdin を一度だけ読み、session_id 抽出。
         read_payload
         case "${2:-}" in
@@ -93,7 +96,7 @@ case "${1:-}" in
                 ;;
 
             prompt-submit)
-                msg=$(parse_json 'return (j.prompt||"").substring(0,100).replace(/[\n\r]/g," ").trim()')
+                msg=$(parse_json 'return (j.prompt||"").substring(0,500).replace(/[\n\r]/g," ").trim()')
                 emit_event "running" "${msg:-Generating}"
                 ;;
 
@@ -163,7 +166,7 @@ case "${1:-}" in
                     try {
                         let t = extract();
                         if (!t) { const{execSync:s}=require("child_process"); s("sleep 0.1"); t = extract(); }
-                        if (t) return t.replace(/[\x00-\x1f\x7f]/g,"").replace(/[\n\r\t]/g," ").substring(0,120).trim();
+                        if (t) return t.replace(/[\x00-\x1f\x7f]/g,"").replace(/[\n\r\t]/g," ").substring(0,500).trim();
                     } catch {}
                     return ""
                 ')

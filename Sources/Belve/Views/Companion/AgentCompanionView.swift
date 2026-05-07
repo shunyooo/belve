@@ -19,91 +19,111 @@ struct AgentCompanionView: View {
 	@State private var expandedTool = false
 
 	var body: some View {
-		HStack(alignment: .bottom, spacing: 14) {
-			// Avatar click → focus jump
-			StatusIndicator(
-				status: model.companion.status,
-				styleOverride: model.companion.avatarStyle,
-				sizeOverride: 48
-			)
-			.frame(width: 48, height: 48)
-			.contentShape(Rectangle())
-			.onTapGesture {
-				store.clearSelection()
-				focusInMainApp()
-			}
-
-			VStack(alignment: .leading, spacing: 4) {
-				// 固定ヘッダ: project 名 + ユーザーの最新指示 (= 背景付きで視認性確保)
-				VStack(alignment: .leading, spacing: 2) {
-					Text(model.companion.projectName)
-						.font(.system(size: 9, weight: .semibold))
-						.foregroundStyle(Theme.textTertiary)
-						.lineLimit(1)
-					if !model.companion.userPrompt.isEmpty {
+		VStack(alignment: .leading, spacing: 6) {
+			// Header: project name + user prompt
+			VStack(alignment: .leading, spacing: 3) {
+				Text(model.companion.projectName)
+					.font(.system(size: 13, weight: .bold))
+					.foregroundStyle(Theme.accent)
+					.lineLimit(1)
+				if !model.companion.userPrompt.isEmpty {
+					HStack(alignment: .top, spacing: 5) {
+						Text(">")
+							.font(.system(size: 12, weight: .bold, design: .monospaced))
+							.foregroundStyle(Theme.yellow)
 						Text(model.companion.userPrompt)
-							.font(.system(size: 10, weight: .medium))
+							.font(.system(size: 12, weight: .medium))
 							.foregroundStyle(Theme.textPrimary)
 							.lineLimit(expandedHeader ? nil : 2)
 							.fixedSize(horizontal: false, vertical: expandedHeader)
+							.textSelection(.enabled)
 					}
 				}
-				.frame(maxWidth: 240, alignment: .leading)
-				.padding(.horizontal, 8)
-				.padding(.vertical, 5)
-				.background(
-					RoundedRectangle(cornerRadius: 8, style: .continuous)
-						.fill(Theme.surface.opacity(0.88))
-						.shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+			}
+			.padding(.horizontal, 10)
+			.padding(.vertical, 7)
+			.frame(maxWidth: .infinity, alignment: .leading)
+			.background(
+				RoundedRectangle(cornerRadius: 8, style: .continuous)
+					.fill(Theme.surface.opacity(0.92))
+					.shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+			)
+			.onTapGesture {
+				withAnimation(.easeOut(duration: 0.15)) {
+					expandedHeader.toggle()
+				}
+			}
+
+			// Agent area: [avatar + name] + [bubbles + tool]
+			HStack(alignment: .bottom, spacing: 14) {
+				// Avatar + project name below
+				StatusIndicator(
+					status: model.companion.status,
+					styleOverride: model.companion.avatarStyle,
+					sizeOverride: 48
 				)
+				.frame(width: 72, height: 72)
+				.contentShape(Rectangle())
 				.onTapGesture {
-					withAnimation(.easeOut(duration: 0.15)) {
-						expandedHeader.toggle()
-					}
+					store.clearSelection()
+					focusInMainApp()
 				}
 
-				// Agent の思考 / 発言 bubble (= tool 以外)
-				ForEach(model.companion.messages) { msg in
-					let isExpanded = expandedMessageId == msg.id
-					let isLatest = msg.id == model.companion.messages.last?.id
-					messageBubble(msg, isExpanded: isExpanded, hasTail: isLatest)
-						.transition(.move(edge: .bottom).combined(with: .opacity))
-						.onTapGesture {
-							let mods = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-							if mods.contains(.command) {
-								store.toggleSelection(model.companion.paneId)
-							} else {
-								withAnimation(.easeOut(duration: 0.15)) {
-									expandedMessageId = expandedMessageId == msg.id ? nil : msg.id
+				VStack(alignment: .leading, spacing: 4) {
+					// Agent の思考 / 発言 bubble (= tool 以外)
+					ForEach(model.companion.messages) { msg in
+						let isExpanded = expandedMessageId == msg.id
+						let isLatest = msg.id == model.companion.messages.last?.id
+						messageBubble(msg, isExpanded: isExpanded, hasTail: isLatest)
+							.transition(.move(edge: .bottom).combined(with: .opacity))
+							.onTapGesture {
+								let mods = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+								if mods.contains(.command) {
+									store.toggleSelection(model.companion.paneId)
+								} else {
+									withAnimation(.easeOut(duration: 0.15)) {
+										expandedMessageId = expandedMessageId == msg.id ? nil : msg.id
+									}
 								}
 							}
-						}
-				}
-				.animation(.easeOut(duration: 0.2), value: model.companion.messages.count)
+					}
+					.animation(.easeOut(duration: 0.2), value: model.companion.messages.count)
 
-				// 現在の tool (= 固定高でインライン表示、click で展開)
-				HStack(spacing: 4) {
-					Image(systemName: "wrench.and.screwdriver")
-						.font(.system(size: 8))
-					Text(model.companion.currentTool ?? "")
-						.lineLimit(expandedTool ? nil : 1)
-						.truncationMode(.middle)
-						.fixedSize(horizontal: false, vertical: expandedTool)
-				}
-				.font(.system(size: 9))
-				.foregroundStyle(Theme.accent.opacity(0.8))
-				.padding(.leading, 4)
-				.frame(minHeight: 14, alignment: .leading)
-				.frame(maxWidth: 220, alignment: .leading)
-				.opacity(model.companion.currentTool != nil ? 1 : 0)
-				.onTapGesture {
-					withAnimation(.easeOut(duration: 0.15)) {
-						expandedTool.toggle()
+					// 現在の tool (= 固定高でインライン表示、click で展開)
+					HStack(spacing: 4) {
+						Image(systemName: "wrench.and.screwdriver")
+							.font(.system(size: 8))
+						Text(model.companion.currentTool ?? "")
+							.lineLimit(expandedTool ? nil : 1)
+							.truncationMode(.middle)
+							.fixedSize(horizontal: false, vertical: expandedTool)
+					}
+					.font(.system(size: 9))
+					.foregroundStyle(Theme.accent.opacity(0.8))
+					.padding(.leading, 4)
+					.frame(minHeight: 14, alignment: .leading)
+					.frame(maxWidth: .infinity, alignment: .leading)
+					.opacity(model.companion.currentTool != nil ? 1 : 0)
+					.onTapGesture {
+						withAnimation(.easeOut(duration: 0.15)) {
+							expandedTool.toggle()
+						}
 					}
 				}
 			}
 		}
-		.frame(minWidth: 300, alignment: .bottomLeading)
+		.frame(maxWidth: .infinity, alignment: .bottomLeading)
+		.background(
+			GeometryReader { geo in
+				Color.clear.preference(key: CompanionSizeKey.self, value: geo.size)
+			}
+		)
+		.onPreferenceChange(CompanionSizeKey.self) { size in
+			guard let panel = NSApp.windows.first(where: {
+				($0 as? AgentCompanionPanel)?.paneId == model.companion.paneId
+			}) as? AgentCompanionPanel else { return }
+			panel.fitToSize(size)
+		}
 		.contextMenu {
 			Button("Change Avatar") {
 				store.cycleAvatar(model.companion.paneId)
@@ -119,11 +139,12 @@ struct AgentCompanionView: View {
 	@ViewBuilder
 	private func messageBubble(_ msg: CompanionMessage, isExpanded: Bool, hasTail: Bool) -> some View {
 		Text(msg.text)
-			.font(.system(size: 11, weight: .medium))
+			.font(.system(size: 12, weight: .medium))
 			.foregroundStyle(Theme.textPrimary)
 			.lineLimit(isExpanded ? nil : 3)
 			.fixedSize(horizontal: false, vertical: isExpanded)
-		.frame(maxWidth: 240, alignment: .leading)
+			.textSelection(.enabled)
+		.frame(maxWidth: .infinity, alignment: .leading)
 		.padding(.horizontal, 10)
 		.padding(.vertical, 8)
 		.background(
@@ -171,6 +192,13 @@ struct AgentCompanionView: View {
 		}
 	}
 
+}
+
+private struct CompanionSizeKey: PreferenceKey {
+	static var defaultValue: CGSize = .zero
+	static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+		value = nextValue()
+	}
 }
 
 /// 吹き出し Shape。左 (or 右) に小さい三角の tail が付く。

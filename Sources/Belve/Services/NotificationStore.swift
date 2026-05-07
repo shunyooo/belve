@@ -154,7 +154,7 @@ class NotificationStore: ObservableObject {
 				} else if message.hasPrefix("result:") {
 					let detail = String(message.dropFirst(7))
 					let parts = detail.split(separator: ":", maxSplits: 1)
-					session.lastAgentActivity = parts.count > 1 ? String(parts[1]).prefix(80).description : "done"
+					session.lastAgentActivity = parts.count > 1 ? String(parts[1]).prefix(80).description : nil
 					// Keep currentTool visible until next tool or completion
 				} else if message.hasPrefix("subagent:") {
 					session.currentTool = "Agent"

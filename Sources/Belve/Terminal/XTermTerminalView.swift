@@ -192,11 +192,15 @@ struct XTermTerminalView: NSViewRepresentable {
 		context.coordinator.notificationStore = notificationStore
 		context.coordinator.commandAreaState = commandAreaState
 
-		// Pane mapping と observer 登録は新規生成時のみ (重複登録防止)。
+		// Pane → Project マッピングは毎回登録 (registry キャッシュヒットで
+		// isNewlyCreated=false の場合でも、paneToProject が無いと OSC agent
+		// 通知が全て無視される)。registerPane は冪等なので重複 OK。
+		if let paneId {
+			notificationStore.registerPane(paneId: paneId, projectId: project.id)
+		}
+
+		// Observer 登録は新規生成時のみ (重複登録防止)。
 		if isNewlyCreated {
-			if let paneId {
-				notificationStore.registerPane(paneId: paneId, projectId: project.id)
-			}
 
 			context.coordinator.refitObserver = NotificationCenter.default.addObserver(
 				forName: .belveTerminalRefit, object: nil, queue: .main

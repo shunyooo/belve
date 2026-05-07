@@ -112,6 +112,7 @@ final class AgentCompanionStore: ObservableObject {
 	private var messageHistory: [String: [CompanionMessage]] = [:]
 	/// 前回の message text (デデュプ判定用)。
 	private var lastMessageText: [String: String] = [:]
+	private var lastSeenPrompt: [String: String] = [:]
 	private let maxMessages = 3
 
 	private init() {
@@ -169,6 +170,14 @@ final class AgentCompanionStore: ObservableObject {
 			avatarStyles[paneId] = style
 			let projectName = projectStore?.projects.first(where: { $0.id == session.projectId })?.name ?? "?"
 
+			// ユーザーが新しい prompt を submit したら bubble をリセット
+			let currentPrompt = session.lastUserPrompt ?? ""
+			if !currentPrompt.isEmpty && currentPrompt != lastSeenPrompt[paneId] {
+				lastSeenPrompt[paneId] = currentPrompt
+				messageHistory.removeValue(forKey: paneId)
+				lastMessageText.removeValue(forKey: paneId)
+			}
+
 			// Bubble-worthy message: tool / result / subagent 以外 (= agent の思考、
 			// user prompt、waiting 等)。tool 系は currentTool として小さくインライン表示。
 			let bubbleText = bubbleWorthyText(for: session)
@@ -215,17 +224,11 @@ final class AgentCompanionStore: ObservableObject {
 	private func bubbleWorthyText(for session: AgentSession) -> String? {
 		// Waiting (= agent がユーザーに聞いてる) → 最も重要な bubble
 		if session.status == .waiting { return session.message }
-		// Tool 実行中の result summary (= "agent がやったこと" の報告)
 		let msg = session.message
-		if msg.hasPrefix("result:") {
-			if let activity = session.lastAgentActivity, !activity.isEmpty {
-				return activity
-			}
-		}
 		// User prompt / label と同じテキストは bubble に出さない (= header で既に表示)
 		if msg == session.lastUserPrompt || msg == session.label { return nil }
-		// Tool prefix / lifecycle / Generating / 空は skip
-		if msg.hasPrefix("tool:") || msg.hasPrefix("subagent") { return nil }
+		// Tool prefix / result / lifecycle / Generating / 空は skip
+		if msg.hasPrefix("tool:") || msg.hasPrefix("result:") || msg.hasPrefix("subagent") { return nil }
 		if ["Generating", "started", "ended", "Done", "Ready"].contains(msg) { return nil }
 		if msg.isEmpty { return nil }
 		// それ以外 (= agent の思考テキスト等) → bubble

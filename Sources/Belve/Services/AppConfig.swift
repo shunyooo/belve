@@ -1,5 +1,10 @@
 import Foundation
 
+enum FileTreePosition: String, Codable, CaseIterable {
+	case left
+	case right
+}
+
 /// Global app configuration, persisted to ~/Library/Application Support/Belve/config.json
 class AppConfig: ObservableObject {
 	static let shared = AppConfig()
@@ -22,6 +27,11 @@ class AppConfig: ObservableObject {
 	/// MainWindow のメイン表示モード (project / tile)。
 	@Published var viewMode: ViewMode = .project {
 		didSet { if oldValue != viewMode { save() } }
+	}
+
+	/// ファイルツリーの表示位置。
+	@Published var fileTreePosition: FileTreePosition = .right {
+		didSet { if oldValue != fileTreePosition { save() } }
 	}
 
 	/// xterm.js の font size (8-28 pt)。Cmd +/- でユーザー調整可能。
@@ -56,6 +66,7 @@ class AppConfig: ObservableObject {
 			var spinnerSize: CGFloat?
 			var viewMode: String?
 			var terminalFontSize: CGFloat?
+			var fileTreePosition: String?
 		}
 	}
 
@@ -81,6 +92,9 @@ class AppConfig: ObservableObject {
 		if let size = persisted.ui?.terminalFontSize {
 			terminalFontSize = min(max(8, size), 28)
 		}
+		if let raw = persisted.ui?.fileTreePosition, let pos = FileTreePosition(rawValue: raw) {
+			fileTreePosition = pos
+		}
 	}
 
 	func save() {
@@ -90,7 +104,8 @@ class AppConfig: ObservableObject {
 				spinnerStyle: spinnerStyle.rawValue,
 				spinnerSize: spinnerSize,
 				viewMode: viewMode.rawValue,
-				terminalFontSize: terminalFontSize
+				terminalFontSize: terminalFontSize,
+				fileTreePosition: fileTreePosition.rawValue
 			)
 		)
 		if let data = try? JSONEncoder().encode(persisted) {
