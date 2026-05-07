@@ -574,6 +574,38 @@ func (s *tcpSession) broadcast(data []byte) {
 	s.mu.Unlock()
 }
 
+// needsEnvUpdate は、既存 session の extraEnv に BELVE_PANE_ID が無く
+// 新しい handshake が持っている場合に true を返す。Stale session の検出用。
+func needsEnvUpdate(old, incoming []string) bool {
+	hasKey := func(envs []string, key string) bool {
+		prefix := key + "="
+		for _, kv := range envs {
+			if strings.HasPrefix(kv, prefix) && len(kv) > len(prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	return !hasKey(old, "BELVE_PANE_ID") && hasKey(incoming, "BELVE_PANE_ID")
+}
+
+// writeSessionEnvFile は per-session env file を書き出す。既に起動済みの shell
+// には env 注入できないので、hook script 側でこのファイルを fallback source として
+// 読む想定。path: /tmp/belve-session-env/<sessionName>.env
+func writeSessionEnvFile(sessionName string, envs []string) {
+	dir := "/tmp/belve-session-env"
+	os.MkdirAll(dir, 0700)
+	var buf strings.Builder
+	for _, kv := range envs {
+		if strings.HasPrefix(kv, "BELVE_") {
+			buf.WriteString(kv)
+			buf.WriteByte('\n')
+		}
+	}
+	path := filepath.Join(dir, sessionName+".env")
+	os.WriteFile(path, []byte(buf.String()), 0600)
+}
+
 // runTCPBroker listens on a TCP port and manages multiple sessions.
 // Each session has its own PTY. Sessions are identified by name via msgSession handshake.
 func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uint16) {
@@ -624,6 +656,20 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 		mu.Lock()
 		defer mu.Unlock()
 		if s, ok := sessions[name]; ok && s.alive {
+			// 既存 session の extraEnv に BELVE_PANE_ID が無く、新しい handshake
+			// が持っている場合、stale session と判定して env を更新する。
+			// shell は既に起動済みなので env 変更は即反映されないが、session の
+			// extraEnv を更新しておけば次回 shell respawn (= exit + re-create) 時に
+			// 正しい env で立ち上がる。即時反映が必要な場合は shell の env file
+			// に書き出して source させる (下記)。
+			if needsEnvUpdate(s.extraEnv, extraEnv) {
+				s.extraEnv = extraEnv
+				// 既存 shell に env を注入するため per-session env file に書き出す。
+				// session-bootstrap.sh 側は直接は再読みしないが、belve hook script
+				// 側でこの file から BELVE_PANE_ID を fallback 読みできるようにする。
+				writeSessionEnvFile(name, extraEnv)
+				logf("updated extraEnv for stale session %s (env=%d)", name, len(extraEnv))
+			}
 			return s
 		}
 		// Use client-provided size, fallback to broker defaults
@@ -792,6 +838,9 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 			}
 			env = append(filtered, s.extraEnv...)
 		}
+		// Session name を env に export。Hook script が session env file (=
+		// /tmp/belve-session-env/<name>.env) を fallback 読みするための key。
+		env = append(env, "BELVE_SESSION_NAME="+s.name)
 		cmd.Env = env
 		if err := cmd.Start(); err != nil {
 			logf("session %s: exec error: %v", s.name, err)

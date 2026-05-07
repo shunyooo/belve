@@ -6,6 +6,7 @@ struct MainWindow: View {
 	@EnvironmentObject var projectStore: ProjectStore
 	@EnvironmentObject var notificationStore: NotificationStore
 	@ObservedObject private var appConfig = AppConfig.shared
+	@ObservedObject private var viewStore = ProjectViewStore.shared
 	@State private var sidebarWidthAtDragStart: CGFloat = 0
 	/// Per-project open file cache. Keeping the loaded `OpenFile` around avoids
 	/// re-fetching (SSH read for remote projects) on every project switch.
@@ -66,6 +67,21 @@ struct MainWindow: View {
 				.onAppear {
 					sidebarWidthAtDragStart = layoutState.sidebarWidth
 					// Last-opened file restore is handled by PreviewArea.onAppear.
+					// 通知の抑制条件: paneId が現在 sidebar に出ている view (= viewStore
+					// 配下の全 view の PaneNode tree) のいずれかに含まれていれば live。
+					// program 経由 claude (= 親 pane に紐付かない) の通知を抑止する。
+					notificationStore.isPaneLive = { paneIdString in
+						let lower = paneIdString.lowercased()
+						for (_, viewList) in viewStore.viewsByProject {
+							for v in viewList {
+								let panes = stateManager.state(for: v.id).orderedPaneIds()
+								if panes.contains(where: { $0.uuidString.lowercased() == lower }) {
+									return true
+								}
+							}
+						}
+						return false
+					}
 				}
 		)
 
@@ -81,11 +97,17 @@ struct MainWindow: View {
 				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveToggleBrowser)) { _ in
 					guard let project = projectStore.selectedProject else { return }
-					let ls = layoutState.state(for: project.id)
+					let ls = projectLayoutState(for: project)
 					BrowserWindowManager.shared.toggle(project: project, layoutState: ls)
 				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveSelectPreviousProject)) { _ in
 					projectStore.selectPreviousProject()
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveSelectNextView)) { _ in
+					cycleView(step: 1)
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveSelectPreviousView)) { _ in
+					cycleView(step: -1)
 				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveFocusNextPane)) { _ in
 					cycleFocus(step: 1)
@@ -178,19 +200,13 @@ struct MainWindow: View {
 						appConfig.viewMode = next
 					}
 				}
-				.onReceive(NotificationCenter.default.publisher(for: .belveToggleStage)) { _ in
-					let next: ViewMode = (appConfig.viewMode == .stage) ? .project : .stage
-					withAnimation(ViewMode.toggleAnimation(showing: next == .stage)) {
-						appConfig.viewMode = next
-					}
-				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveTileOpenFocused)) { _ in
 					// Tile mode で Cmd+Enter: focus 中 pane の project view を開く。
 					guard let focusedId = TileFilterState.shared.focusedPaneId,
 					      let paneUUID = UUID(uuidString: focusedId) else { return }
 					// focused pane が属する project を探す
 					for project in projectStore.projects {
-						let state = stateManager.state(for: project.id)
+						let state = commandAreaState(for: project.id)
 						if state.orderedPaneIds().contains(paneUUID) {
 							if let idx = projectStore.projects.firstIndex(where: { $0.id == project.id }) {
 								projectStore.selectByIndex(idx)
@@ -209,17 +225,17 @@ struct MainWindow: View {
 					}
 				}
 				.onChange(of: appConfig.viewMode) { _, newMode in
-					// Tile / Stage に入る時は sidebar を隠す (= gallery / stage のスペース確保)。
+					// Tile に入る時は sidebar を隠す (= gallery のスペース確保)。
 					// Project view に戻る時は sidebar を必ず表示する (= project 操作の主動線が
 					// sidebar なので、隠れたままだと project 切替が困難)。
 					withAnimation(.easeOut(duration: 0.18)) {
 						layoutState.showSidebar = (newMode == .project)
 					}
 					if newMode.isDedicatedView {
-						// Tile / Stage mode は project context が無い → ブラウザ floating も隠す。
+						// Tile mode は project context が無い → ブラウザ floating も隠す。
 						BrowserWindowManager.shared.hideAllExcept(keepProjectId: nil)
 					} else {
-						// Project view 復帰時は terminal を refit (tile / stage cell のサイズの
+						// Project view 復帰時は terminal を refit (tile cell のサイズの
 						// まま残ってる xterm.js の cols/rows を project workspace size に再計算)。
 						DispatchQueue.main.async {
 							for project in projectStore.projects {
@@ -231,7 +247,7 @@ struct MainWindow: View {
 							}
 						}
 						if let project = projectStore.selectedProject {
-							let projectLayout = layoutState.state(for: project.id)
+							let projectLayout = projectLayoutState(for: project)
 							if projectLayout.browserOpen {
 								BrowserWindowManager.shared.open(project: project, layoutState: projectLayout)
 							}
@@ -272,9 +288,6 @@ struct MainWindow: View {
 				case .tile:
 					TileView(stateManager: stateManager)
 						.frame(maxWidth: .infinity, maxHeight: .infinity)
-				case .stage:
-					StageView(stateManager: stateManager)
-						.frame(maxWidth: .infinity, maxHeight: .infinity)
 				case .project:
 					projectContent
 				}
@@ -294,7 +307,7 @@ struct MainWindow: View {
 					},
 					onOpenBrowser: {
 						guard let project = projectStore.selectedProject else { return }
-						let ls = layoutState.state(for: project.id)
+						let ls = projectLayoutState(for: project)
 						BrowserWindowManager.shared.toggle(project: project, layoutState: ls)
 					}
 				)
@@ -331,8 +344,15 @@ struct MainWindow: View {
 				uniqueGroupName: { projectStore.uniqueGroupName() },
 				onMoveProjectToSection: { id, key in projectStore.moveProjectToSection(id, sectionKey: key) },
 				activeCommandState: commandAreaState(for: projectStore.selectedProject?.id ?? UUID()),
+				stateManager: stateManager,
 				paneIdsForProject: { projectId in
 					Set(commandAreaState(for: projectId).orderedPaneIds().map { $0.uuidString.lowercased() })
+				},
+				paneIdsForView: { viewId in
+					Set(stateManager.state(for: viewId).orderedPaneIds().map { $0.uuidString.lowercased() })
+				},
+				onMovePaneToView: { paneId, fromViewId, toViewId in
+					stateManager.movePane(paneId, fromViewId: fromViewId, toViewId: toViewId)
 				},
 				loadingStatusFor: { projectId in
 					projectStore.projectLoadingStatus[projectId]
@@ -386,7 +406,7 @@ struct MainWindow: View {
 	private func projectWorkspace(for project: Project, availableWidth: CGFloat) -> some View {
 		let isSelected = project.id == projectStore.selectedProject?.id
 		let state = commandAreaState(for: project.id)
-		let projectLayout = layoutState.state(for: project.id)
+		let projectLayout = projectLayoutState(for: project)
 		let dividerWidth = DividerMetrics.absoluteHitWidth
 		let splitBinding = Binding<CGFloat>(
 			get: {
@@ -588,13 +608,8 @@ struct MainWindow: View {
 			cycleTileFocus(step: step)
 			return
 		}
-		// Stage mode: center + off-stage を順に巡って center を入替え。
-		if appConfig.viewMode == .stage {
-			cycleStageFocus(step: step)
-			return
-		}
 		guard let project = projectStore.selectedProject else { return }
-		let projectLayout = layoutState.state(for: project.id)
+		let projectLayout = projectLayoutState(for: project)
 		let state = commandAreaState(for: project.id)
 
 		// Build a flat cycle: each terminal pane counts individually,
@@ -673,7 +688,7 @@ struct MainWindow: View {
 		}
 		var visible: [PaneRef] = []
 		for (projIdx, project) in projectStore.projects.enumerated() {
-			let state = stateManager.state(for: project.id)
+			let state = commandAreaState(for: project.id)
 			let status = notificationStore.agentStatus[project.id]?.status ?? .idle
 			let orderedPaneIds = state.orderedPaneIds()
 			for (idx, paneUUID) in orderedPaneIds.enumerated() {
@@ -718,75 +733,8 @@ struct MainWindow: View {
 		}
 	}
 
-	/// Stage mode で全 visible pane (center + off-stage) を横断し、center を入替える。
-	/// 現在 center が起点、step で次/前の pane を center に promote。
-	private func cycleStageFocus(step: Int) {
-		let stage = StageViewState.shared
-		// 全 pane (= dismissed 除く)、stage の display 順:
-		//   center → off-stage[0..N-1]
-		struct PaneRef {
-			let projectId: UUID
-			let paneIdString: String
-			let paneUUID: UUID
-		}
-		var orderedPanes: [PaneRef] = []
-		if let centerId = stage.centerPaneId,
-		   let centerUUID = UUID(uuidString: centerId),
-		   let centerProj = findProject(for: centerUUID) {
-			orderedPanes.append(PaneRef(
-				projectId: centerProj.id,
-				paneIdString: centerId,
-				paneUUID: centerUUID
-			))
-		}
-		// off-stage: status 優先順 (StageView.offStagePanes と同じ並び)。
-		// 同 status 内は project × pane index の自然順で安定 sort。
-		var offStageRefs: [(idx: Int, ref: PaneRef, status: AgentStatus)] = []
-		var natIdx = 0
-		for project in projectStore.projects {
-			let state = stateManager.state(for: project.id)
-			let status = notificationStore.agentStatus[project.id]?.status ?? .idle
-			for paneUUID in state.orderedPaneIds() {
-				let s = paneUUID.uuidString
-				if s == stage.centerPaneId { natIdx += 1; continue }
-				if stage.dismissedPaneIds.contains(s) { natIdx += 1; continue }
-				offStageRefs.append((natIdx, PaneRef(projectId: project.id, paneIdString: s, paneUUID: paneUUID), status))
-				natIdx += 1
-			}
-		}
-		let ordered = offStageRefs.sorted { lhs, rhs in
-			let lp = StageView.stagePriority(lhs.status)
-			let rp = StageView.stagePriority(rhs.status)
-			if lp != rp { return lp < rp }
-			return lhs.idx < rhs.idx
-		}.map { $0.ref }
-		orderedPanes.append(contentsOf: ordered)
-
-		guard !orderedPanes.isEmpty else { return }
-		// 現在 center を 0 とした循環で next/prev
-		let nextIdx = ((step + orderedPanes.count) % orderedPanes.count + orderedPanes.count) % orderedPanes.count
-		let next = orderedPanes[nextIdx]
-		withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
-			stage.promoteToCenter(next.paneIdString)
-		}
-		stateManager.state(for: next.projectId).activePaneId = next.paneUUID
-		DispatchQueue.main.async {
-			projectStore.refocusTerminal(paneId: next.paneIdString)
-		}
-	}
-
-	/// paneUUID が属する project を探す。
-	private func findProject(for paneUUID: UUID) -> Project? {
-		for project in projectStore.projects {
-			if stateManager.state(for: project.id).orderedPaneIds().contains(paneUUID) {
-				return project
-			}
-		}
-		return nil
-	}
-
 	private func toggleSidebar() {
-		// Tile / Stage mode は sidebar 不要 (project 概念無し) なので toggle 無効化。
+		// Tile mode は sidebar 不要 (project 概念無し) なので toggle 無効化。
 		guard !appConfig.viewMode.isDedicatedView else { return }
 		let isShowing = !layoutState.showSidebar
 		withAnimation(Self.toggleAnimation(isShowing: isShowing)) {
@@ -796,7 +744,7 @@ struct MainWindow: View {
 
 	private func toggleFileTree() {
 		guard let project = projectStore.selectedProject else { return }
-		let projectLayout = layoutState.state(for: project.id)
+		let projectLayout = projectLayoutState(for: project)
 		if !projectLayout.showEditor {
 			withAnimation(Self.toggleAnimation(isShowing: true)) {
 				projectLayout.showEditor = true
@@ -823,7 +771,7 @@ struct MainWindow: View {
 
 	private func toggleEditor() {
 		guard let project = projectStore.selectedProject else { return }
-		let projectLayout = layoutState.state(for: project.id)
+		let projectLayout = projectLayoutState(for: project)
 		let isShowing = !projectLayout.showEditor
 		withAnimation(Self.toggleAnimation(isShowing: isShowing)) {
 			projectLayout.showEditor.toggle()
@@ -845,7 +793,7 @@ struct MainWindow: View {
 			return
 		}
 		guard let project = projectStore.selectedProject else { return }
-		let projectLayout = layoutState.state(for: project.id)
+		let projectLayout = projectLayoutState(for: project)
 		if !projectLayout.showEditor {
 			withAnimation(Self.toggleAnimation(isShowing: true)) {
 				projectLayout.showEditor = true
@@ -1104,8 +1052,53 @@ struct MainWindow: View {
 		return label.isEmpty ? nil : label
 	}
 
+	/// Phase 1: 1 project = 1 view ("main") なので projectId == viewId。Phase 2 以降
+	/// で複数 view が出来た時は、active view の id を返す形に切り替わる。
+	/// 全 state lookup (= pane layout, workspace layout) はこの id で keyed。
+	private func activeViewId(of projectId: UUID) -> UUID {
+		viewStore.activeView(for: projectId).id
+	}
+
 	private func commandAreaState(for projectId: UUID) -> CommandAreaState {
-		stateManager.state(for: projectId)
+		stateManager.state(for: activeViewId(of: projectId))
+	}
+
+	/// `projectLayoutState(for: project)` を view-id 経由で引く wrapper。
+	/// Phase 2 以降で view 切替時に異なる layout state を返せるようにするための
+	/// indirection 層。
+	private func projectLayoutState(for project: Project) -> ProjectLayoutState {
+		layoutState.state(for: activeViewId(of: project.id))
+	}
+
+	/// 全 project の全 view を flat に巡回 (= sidebar 上を上下に view 単位で
+	/// 移動するイメージ)。Cmd+] / Cmd+[ から呼ばれる。Project 境界を跨いだら
+	/// project select も切替える。
+	/// Project 順序は ProjectStore.cycleScope (pinned 優先) に従う。
+	private func cycleView(step: Int) {
+		struct Stop {
+			let project: Project
+			let viewId: UUID
+		}
+		var stops: [Stop] = []
+		for p in projectStore.cycleProjects {
+			for v in viewStore.views(for: p.id) {
+				stops.append(Stop(project: p, viewId: v.id))
+			}
+		}
+		guard !stops.isEmpty else { return }
+
+		let currentProjectId = projectStore.selectedProject?.id
+		let currentViewId = currentProjectId.map { viewStore.activeView(for: $0).id }
+		let currentIdx = stops.firstIndex {
+			$0.project.id == currentProjectId && $0.viewId == currentViewId
+		} ?? 0
+		let nextIdx = (currentIdx + step + stops.count) % stops.count
+		let next = stops[nextIdx]
+
+		if next.project.id != currentProjectId {
+			projectStore.select(next.project)
+		}
+		viewStore.setActiveView(next.viewId, for: next.project.id)
 	}
 
 	private func openFolder() {
@@ -1406,12 +1399,11 @@ struct TopBar: View {
 		.background(Theme.bg)
 	}
 
-	/// Dedicated view (tile / stage) では「project view に戻る」action、
+	/// Dedicated mode (tile) では「project view に戻る」action、
 	/// project mode では sidebar toggle。filled icon で active を表現。
 	private var leftButtonIcon: String {
 		switch appConfig.viewMode {
 		case .tile: return "square.grid.2x2.fill"
-		case .stage: return "rectangle.center.inset.filled"
 		case .project: return "sidebar.left"
 		}
 	}

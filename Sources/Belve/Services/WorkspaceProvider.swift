@@ -699,8 +699,47 @@ struct SSHProvider: WorkspaceProvider, RemoteProjectScoped {
 
 	func listDirectory(_ path: String) -> [FileItem] { listDirectoryRemote(path) }
 
-	// SSHProvider は **RPC ONLY**。No silent fallback to SSH (= MaxSessions 食いを防ぐ)。
-	// RPC が落ちてれば file op も落ちる (= 明示的エラー、UI で「control daemon down」表示)。
+	/// FolderBrowser 等、project に bind されてない (= RPC client が無い) 状態で
+	/// SSH host のフォルダを参照する用途専用の listing。`ssh host ls -F` で
+	/// 直接実行する。RPC fallback ではないので「main 経路の隠れフォールバック」
+	/// 規則には抵触しない (= 呼び出し側が明示的にこのメソッドを選ぶ)。
+	func listDirectoryViaSSH(_ path: String) -> [FileItem] {
+		// `~` から始まる path は shell の tilde expansion を効かせる必要が
+		// あるので `$HOME` 置換を使う (= "$HOME${rest}")。それ以外は single quote
+		// で literal 化。`ls -1AF` で 1 列出力 + 隠しファイル + dir に `/` 付与。
+		let shellPath: String
+		if path == "~" {
+			shellPath = "\"$HOME\""
+		} else if path.hasPrefix("~/") {
+			let rest = path.dropFirst(2).replacingOccurrences(of: "\"", with: "\\\"")
+			shellPath = "\"$HOME/\(rest)\""
+		} else {
+			let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
+			shellPath = "'\(escaped)'"
+		}
+		let cmd = "ls -1AF -- \(shellPath) 2>/dev/null || true"
+		NSLog("[Belve][folder-browser] ssh %@ %@", host, cmd)
+		guard let result = executeSSH(host: host, cmd) else {
+			NSLog("[Belve][folder-browser] ssh exec failed (host=%@)", host)
+			return []
+		}
+		guard result.status == 0 else {
+			NSLog("[Belve][folder-browser] ls exit=%d output=%@", result.status, result.output.prefix(200) as CVarArg)
+			return []
+		}
+		var items: [FileItem] = []
+		for raw in result.output.split(whereSeparator: { $0.isNewline }) {
+			let line = String(raw)
+			if line.isEmpty { continue }
+			let isDir = line.hasSuffix("/")
+			let trimmed = line.trimmingCharacters(in: CharacterSet(charactersIn: "/*@=|"))
+			if AppConfig.shared.shouldExclude(trimmed) { continue }
+			let fullPath = (path as NSString).appendingPathComponent(trimmed)
+			items.append(FileItem(name: trimmed, path: fullPath, isDirectory: isDir))
+		}
+		NSLog("[Belve][folder-browser] %d items", items.count)
+		return items.sortedLikeVSCode()
+	}
 
 	func fileExists(_ path: String) -> Bool {
 		rpcResult(op: "stat", params: ["path": path]) != nil

@@ -1,4 +1,47 @@
 import SwiftUI
+import UniformTypeIdentifiers
+import CoreTransferable
+
+/// Sidebar の session row を view 間 DD 移動するための payload。
+/// 直接 Data に encode する DataRepresentation を使う (= Codable + Proxy で
+/// 試したら SwiftUI の Attribute Graph 更新中に swift_bridgeObjectRelease で
+/// crash したため、最小依存の Data 経路に切替え。2026-05-05)。
+/// `.data` content type だが、within-app DD では typed dropDestination
+/// (= for: PaneTransferToken.self) で解決されるので他 Data drop と混線しない。
+struct PaneTransferToken: Transferable, Hashable {
+	let paneId: UUID
+	let sourceViewId: UUID
+	let projectId: UUID
+
+	private static let magic: [UInt8] = [0x42, 0x4C, 0x56, 0x50] // "BLVP"
+
+	static var transferRepresentation: some TransferRepresentation {
+		DataRepresentation(contentType: .data) { token in
+			var data = Data(magic)
+			data.append(token.paneId.uuidString.data(using: .utf8) ?? Data())
+			data.append(0x7C) // '|'
+			data.append(token.sourceViewId.uuidString.data(using: .utf8) ?? Data())
+			data.append(0x7C)
+			data.append(token.projectId.uuidString.data(using: .utf8) ?? Data())
+			return data
+		} importing: { data in
+			guard data.count > 4, Array(data.prefix(4)) == magic else {
+				throw CocoaError(.coderInvalidValue)
+			}
+			guard let payload = String(data: data.dropFirst(4), encoding: .utf8) else {
+				throw CocoaError(.coderInvalidValue)
+			}
+			let parts = payload.split(separator: "|")
+			guard parts.count == 3,
+			      let paneId = UUID(uuidString: String(parts[0])),
+			      let sourceViewId = UUID(uuidString: String(parts[1])),
+			      let projectId = UUID(uuidString: String(parts[2])) else {
+				throw CocoaError(.coderInvalidValue)
+			}
+			return PaneTransferToken(paneId: paneId, sourceViewId: sourceViewId, projectId: projectId)
+		}
+	}
+}
 
 struct ProjectListView: View {
 	let projects: [Project]
@@ -19,10 +62,19 @@ struct ProjectListView: View {
 	var uniqueGroupName: (() -> String)?
 	var onMoveProjectToSection: ((UUID, String) -> Void)?
 	@ObservedObject var activeCommandState: CommandAreaState
+	/// CommandAreaStateManager 全体を観測 (= cross-view DD で pane が移動した
+	/// 際に、active 以外の view の paneIdsForView lookup も再評価させるため)。
+	@ObservedObject var stateManager: CommandAreaStateManager
 	/// Returns the set of currently-existing pane UUIDs (as lowercase strings)
 	/// for a given project. Used to filter the session list to panes that still
 	/// exist in the UI.
 	var paneIdsForProject: ((UUID) -> Set<String>)?
+	/// 同上の view 版。view (= UI 主単位) 配下の pane UUID 集合を返す。
+	/// view row 配下に session row を nest 表示するための引数 (Phase 5)。
+	var paneIdsForView: ((UUID) -> Set<String>)?
+	/// Cross-view DD で session pane を移動。(paneId, fromViewId, toViewId)。
+	/// MainWindow が CommandAreaStateManager.movePane を呼ぶ。
+	var onMovePaneToView: ((UUID, UUID, UUID) -> Void)?
 	/// 親 (= MainWindow) から `projectStore.projectLoadingStatus[id]` を
 	/// 取得する。ProjectListView 自身が projectStore を持つと、git 等の
 	/// 無関係な @Published 変更で全 row が再 render → 選択 animation
@@ -32,8 +84,12 @@ struct ProjectListView: View {
 	private static let pinnedKey = "__pinned__"
 
 	@ObservedObject private var appConfig = AppConfig.shared
+	@ObservedObject private var viewStore = ProjectViewStore.shared
 	@State private var renamingProjectId: UUID?
 	@State private var renameText = ""
+	/// View row の inline rename 中の view id (= UUID set されてる時 TextField 表示)。
+	@State private var renamingViewId: UUID?
+	@State private var viewRenameText = ""
 	@State private var renamingGroupName: String?
 	@State private var groupRenameText: String = ""
 	@State private var draggingProjectId: UUID?
@@ -123,15 +179,6 @@ struct ProjectListView: View {
 						action: {
 							let next: ViewMode = (appConfig.viewMode == .tile) ? .project : .tile
 							withAnimation(ViewMode.toggleAnimation(showing: next == .tile)) {
-								appConfig.viewMode = next
-							}
-						}
-					)
-					SidebarIconButton(
-						icon: appConfig.viewMode == .stage ? "rectangle.center.inset.filled" : "rectangle.center.inset.filled.badge.plus",
-						action: {
-							let next: ViewMode = (appConfig.viewMode == .stage) ? .project : .stage
-							withAnimation(ViewMode.toggleAnimation(showing: next == .stage)) {
 								appConfig.viewMode = next
 							}
 						}
@@ -391,32 +438,217 @@ struct ProjectListView: View {
 				onMoveProjectToSection: onMoveProjectToSection
 			))
 
-			// Nested agent sessions for this project
-			let sessions = sessionsForProject(project.id)
-			if !sessions.isEmpty {
-				VStack(spacing: 1) {
-					ForEach(sessions) { session in
-						SessionRow(
-							session: session,
-							isFocused: session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId
-								&& selectedProject == project,
-							onDismiss: {
-								notificationStore.archiveSession(session.id)
-							}
-						)
-						.onTapGesture {
-							selectedProject = project
-							if let paneId = session.paneId {
-								onFocusPane?(project.id, paneId)
-							}
+			// Project → View → Session の 3 段 nest (Phase 5)。
+			// view rows が agent session を内包する形 = view の pane に属する
+			// session のみその view 配下に出る。Phase 2 までは "main" 1 view しか
+			// 無いので全 session が main 配下に集まる。
+			viewRows(for: project)
+		}
+	}
+
+	/// Project 配下の view rows。view ごとに「view 行 + その view 配下の
+	/// agent session 行」を nest 表示 (Phase 5)。最後尾に "+ New View" ボタン。
+	@ViewBuilder
+	private func viewRows(for project: Project) -> some View {
+		let views = viewStore.views(for: project.id)
+		let activeId = viewStore.activeView(for: project.id).id
+		VStack(spacing: 1) {
+			ForEach(views) { v in
+				viewRowButton(view: v, isActive: v.id == activeId, project: project)
+				let sessions = sessionsForView(viewId: v.id, projectId: project.id)
+				if !sessions.isEmpty {
+					VStack(spacing: 1) {
+						ForEach(sessions) { session in
+							sessionRowDraggable(session: session, view: v, project: project)
 						}
 					}
+					.padding(.leading, 12)
 				}
-				.padding(.leading, 16)
-				// 右端は ProjectRow の背景と揃える (= 0)。trailing に余白を
-				// 入れると session 行の hover/focus 背景だけ右にずれて崩れて見える。
-				.padding(.bottom, 4)
 			}
+			newViewButton(project: project)
+		}
+		.padding(.leading, 16)
+		.padding(.bottom, 4)
+	}
+
+	@ViewBuilder
+	private func sessionRowDraggable(session: AgentSession, view v: ProjectView, project: Project) -> some View {
+		let base = SessionRow(
+			session: session,
+			isFocused: session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId
+				&& selectedProject == project,
+			onDismiss: {
+				notificationStore.archiveSession(session.id)
+			}
+		)
+		.onTapGesture {
+			selectedProject = project
+			viewStore.setActiveView(v.id, for: project.id)
+			if let paneId = session.paneId {
+				onFocusPane?(project.id, paneId)
+			}
+		}
+
+		Group {
+			if let paneIdString = session.paneId, let paneUUID = UUID(uuidString: paneIdString) {
+				base.draggable(PaneTransferToken(
+					paneId: paneUUID,
+					sourceViewId: v.id,
+					projectId: project.id
+				)) {
+					Text(session.lastUserPrompt ?? session.label ?? "Session")
+						.font(.system(size: 11))
+						.padding(6)
+						.background(Theme.surface)
+						.cornerRadius(4)
+				}
+			} else {
+				base
+			}
+		}
+		.overlay(
+			RightClickArea { screenPoint in
+				showSessionContextMenu(session: session, at: screenPoint)
+			}
+		)
+	}
+
+	@ViewBuilder
+	private func viewRowButton(view v: ProjectView, isActive: Bool, project: Project) -> some View {
+		let canDelete = viewStore.views(for: project.id).count > 1
+		if renamingViewId == v.id {
+			HStack(spacing: 6) {
+				Image(systemName: isActive ? "circle.fill" : "circle")
+					.font(.system(size: 7))
+					.foregroundStyle(isActive ? Theme.accent : Theme.textTertiary)
+				ViewNameField(
+					text: $viewRenameText,
+					onCommit: {
+						let newName = viewRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
+						if !newName.isEmpty {
+							viewStore.renameView(v.id, in: project.id, to: newName)
+						}
+						renamingViewId = nil
+					},
+					onCancel: {
+						renamingViewId = nil
+					}
+				)
+			}
+			.padding(.horizontal, 6)
+			.padding(.vertical, 2)
+		} else {
+			Button(action: {
+				selectedProject = project
+				viewStore.setActiveView(v.id, for: project.id)
+			}) {
+				HStack(spacing: 6) {
+					Image(systemName: isActive ? "circle.fill" : "circle")
+						.font(.system(size: 7))
+						.foregroundStyle(isActive ? Theme.accent : Theme.textTertiary)
+					Text(v.name)
+						.font(.system(size: 11))
+						.foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
+						.lineLimit(1)
+					Spacer()
+				}
+				.padding(.horizontal, 6)
+				.padding(.vertical, 2)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.dropDestination(for: PaneTransferToken.self) { tokens, _ in
+				guard let token = tokens.first,
+				      token.projectId == project.id,
+				      token.sourceViewId != v.id else { return false }
+				onMovePaneToView?(token.paneId, token.sourceViewId, v.id)
+				selectedProject = project
+				viewStore.setActiveView(v.id, for: project.id)
+				return true
+			}
+			.contextMenu {
+				Button("Rename View") {
+					viewRenameText = v.name
+					renamingViewId = v.id
+				}
+				Button("Close View", role: .destructive) {
+					viewStore.deleteView(v.id, from: project.id)
+				}
+				.disabled(!canDelete)
+			}
+		}
+	}
+
+	private func newViewButton(project: Project) -> some View {
+		Button(action: {
+			let new = viewStore.createView(for: project.id)
+			selectedProject = project
+			NSLog("[Belve] Created new view '%@' for project %@", new.name, project.name)
+		}) {
+			HStack(spacing: 6) {
+				Image(systemName: "plus")
+					.font(.system(size: 8, weight: .semibold))
+					.foregroundStyle(Theme.textTertiary)
+				Text("New View")
+					.font(.system(size: 10))
+					.foregroundStyle(Theme.textTertiary)
+				Spacer()
+			}
+			.padding(.horizontal, 6)
+			.padding(.vertical, 2)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+	}
+
+	private func showSessionContextMenu(session: AgentSession, at screenPoint: NSPoint) {
+		let paneId = session.paneId ?? ""
+		let hasPane = !paneId.isEmpty
+		let isEnabled = hasPane && AgentCompanionStore.shared.isCompanionEnabled(for: paneId)
+		FloatingMenuPopup.shared.show(
+			at: screenPoint,
+			size: NSSize(width: 180, height: 90)
+		) {
+			VStack(alignment: .leading, spacing: 1) {
+				if hasPane {
+					ContextMenuItem(
+						label: isEnabled ? "Hide Companion" : "Show Companion",
+						icon: isEnabled ? "eye.slash" : "eye",
+						action: { [weak notificationStore] in
+							FloatingMenuPopup.shared.close()
+							if isEnabled {
+								AgentCompanionStore.shared.disableCompanion(for: paneId)
+							} else {
+								AgentCompanionStore.shared.enableCompanion(for: paneId)
+							}
+							_ = notificationStore
+						}
+					)
+					ContextMenuDivider()
+				}
+				ContextMenuItem(
+					label: "Dismiss Session",
+					icon: "xmark.circle",
+					isDestructive: true,
+					action: { [weak notificationStore] in
+						FloatingMenuPopup.shared.close()
+						notificationStore?.archiveSession(session.id)
+					}
+				)
+			}
+			.padding(.vertical, 4)
+			.frame(width: 160)
+			.background(
+				RoundedRectangle(cornerRadius: Theme.radiusSm)
+					.fill(.ultraThinMaterial)
+					.environment(\.colorScheme, .dark)
+			)
+			.overlay(
+				RoundedRectangle(cornerRadius: Theme.radiusSm)
+					.strokeBorder(Theme.border, lineWidth: 1)
+			)
+			.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+			.padding(4)
 		}
 	}
 
@@ -424,32 +656,28 @@ struct ProjectListView: View {
 	// the pane still exists.
 	private static let inactiveStatuses: Set<AgentStatus> = [.sessionEnd, .idle]
 
-	private func sessionsForProject(_ projectId: UUID) -> [AgentSession] {
-		let livePaneIds = paneIdsForProject?(projectId) ?? []
+	/// 指定 view 配下の agent sessions。session の paneId が view の pane tree
+	/// に含まれているものだけ返す。同 pane の重複は最新 updatedAt を残す。
+	private func sessionsForView(viewId: UUID, projectId: UUID) -> [AgentSession] {
+		let viewPaneIds = paneIdsForView?(viewId) ?? []
+		guard !viewPaneIds.isEmpty else { return [] }
 		let candidates = notificationStore.sessions.filter { s in
 			guard s.projectId == projectId,
 			      !s.isArchived,
 			      !Self.inactiveStatuses.contains(s.status) else { return false }
-			if livePaneIds.isEmpty { return true }
 			guard let paneId = s.paneId else { return false }
-			return livePaneIds.contains(paneId.lowercased())
+			return viewPaneIds.contains(paneId.lowercased())
 		}
-		// Collapse to one session per pane — keep the most recently updated.
 		var latestPerPane: [String: AgentSession] = [:]
-		var paneless: [AgentSession] = []
 		for s in candidates {
-			if let paneId = s.paneId {
-				if let existing = latestPerPane[paneId] {
-					if s.updatedAt > existing.updatedAt { latestPerPane[paneId] = s }
-				} else {
-					latestPerPane[paneId] = s
-				}
+			guard let paneId = s.paneId else { continue }
+			if let existing = latestPerPane[paneId] {
+				if s.updatedAt > existing.updatedAt { latestPerPane[paneId] = s }
 			} else {
-				paneless.append(s)
+				latestPerPane[paneId] = s
 			}
 		}
-		return (Array(latestPerPane.values) + paneless)
-			.sorted { $0.updatedAt > $1.updatedAt }
+		return Array(latestPerPane.values).sorted { $0.updatedAt > $1.updatedAt }
 	}
 
 	// MARK: - Click handling
@@ -628,44 +856,41 @@ private struct SessionRow: View {
 					.font(.system(size: 11, weight: isActive ? .medium : .regular))
 					.foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
 					.lineLimit(2)
+					.frame(maxWidth: .infinity, alignment: .leading)
 
-				if isActive || session.status == .completed {
-					VStack(alignment: .leading, spacing: 1) {
-						if let tool = session.currentTool {
-							HStack(spacing: 3) {
-								Image(systemName: "wrench.and.screwdriver")
-									.font(.system(size: 8))
-								Text(tool)
-									.lineLimit(1)
-							}
-							.font(.system(size: 9))
-							.foregroundStyle(Theme.accent)
-
-							if let detail = session.lastAgentActivity, !detail.isEmpty {
-								Text(detail)
-									.font(.system(size: 9))
-									.foregroundStyle(Theme.textTertiary)
-									.lineLimit(3)
-							}
-						} else if session.status == .waiting {
-							Text(session.message)
-								.font(.system(size: 9))
-								.foregroundStyle(Theme.yellow)
-								.lineLimit(3)
-						} else if session.status == .completed {
-							if let activity = session.lastAgentActivity {
-								Text(activity)
-									.font(.system(size: 9))
-									.foregroundStyle(Theme.textTertiary)
-									.lineLimit(3)
-							}
-						} else {
-							Text("Thinking...")
-								.font(.system(size: 9))
-								.foregroundStyle(Theme.textTertiary)
+				// 詳細行: 状態ごとに 1 行だけ表示。content によらず高さ揃えるため
+				// 常に Group を出して line を予約する (=空文字でも line height ぶん確保)。
+				Group {
+					if let tool = session.currentTool {
+						HStack(spacing: 3) {
+							Image(systemName: "wrench.and.screwdriver")
+								.font(.system(size: 8))
+							Text(tool)
+								.lineLimit(1)
 						}
+						.font(.system(size: 9))
+						.foregroundStyle(Theme.accent)
+					} else if session.status == .waiting {
+						Text(session.message)
+							.font(.system(size: 9))
+							.foregroundStyle(Theme.yellow)
+							.lineLimit(1)
+					} else if session.status == .completed {
+						Text(session.lastAgentActivity ?? "Completed")
+							.font(.system(size: 9))
+							.foregroundStyle(Theme.textTertiary)
+							.lineLimit(1)
+					} else if isActive {
+						Text("Thinking...")
+							.font(.system(size: 9))
+							.foregroundStyle(Theme.textTertiary)
+							.lineLimit(1)
+					} else {
+						Text(" ")
+							.font(.system(size: 9))
 					}
 				}
+				.frame(maxWidth: .infinity, alignment: .leading)
 
 				Text(session.updatedAt.relativeString)
 					.font(.system(size: 9))
@@ -676,6 +901,11 @@ private struct SessionRow: View {
 		}
 		.padding(.horizontal, 8)
 		.padding(.vertical, 5)
+		// 内容 (prompt / tool / detail) によって row の高さが伸縮しないように固定。
+		// 56pt = primary 2行 (= 11pt × 2) + 詳細 1行 (= 9pt) + timestamp 1行 (= 9pt)
+		// + padding 上下 5pt × 2 + 各行間隔 ≈ 56pt で収まる。
+		.frame(height: 56, alignment: .top)
+		.clipped()
 		.background(
 			RoundedRectangle(cornerRadius: 4)
 				.fill(isFocused ? Theme.surfaceActive : (isHovering ? Theme.surfaceHover : Color.clear))
@@ -991,6 +1221,39 @@ struct ContextMenuDivider: View {
 	}
 }
 
+// MARK: - Right Click Area (session row context menu 用)
+
+struct RightClickArea: NSViewRepresentable {
+	let onRightClick: (CGPoint) -> Void
+
+	func makeNSView(context: Context) -> RightClickNSView {
+		let v = RightClickNSView()
+		v.onRightClick = onRightClick
+		return v
+	}
+
+	func updateNSView(_ nsView: RightClickNSView, context: Context) {
+		nsView.onRightClick = onRightClick
+	}
+
+	final class RightClickNSView: NSView {
+		var onRightClick: ((CGPoint) -> Void)?
+
+		override func rightMouseDown(with event: NSEvent) {
+			let screenPoint = NSEvent.mouseLocation
+			onRightClick?(screenPoint)
+		}
+
+		override func hitTest(_ aPoint: NSPoint) -> NSView? {
+			// 左クリックは素通し (= tap gesture を邪魔しない)。
+			// 右クリックだけ intercept。
+			let event = NSApp.currentEvent
+			if event?.type == .rightMouseDown { return super.hitTest(aPoint) }
+			return nil
+		}
+	}
+}
+
 // MARK: - Drag Source
 
 struct DragSourceView: NSViewRepresentable {
@@ -1204,6 +1467,28 @@ struct RenameField: View {
 			.onAppear { isFocused = true }
 			.onSubmit { onCommit() }
 			.onExitCommand { onCommit() }
+	}
+}
+
+/// View row inline rename 用 small TextField (RenameField より paddingsmall, font 11pt)。
+struct ViewNameField: View {
+	@Binding var text: String
+	let onCommit: () -> Void
+	let onCancel: () -> Void
+	@FocusState private var isFocused: Bool
+
+	var body: some View {
+		TextField("View name", text: $text)
+			.textFieldStyle(.plain)
+			.font(.system(size: 11))
+			.foregroundStyle(Theme.textPrimary)
+			.padding(.horizontal, 4)
+			.padding(.vertical, 1)
+			.background(RoundedRectangle(cornerRadius: 3).fill(Theme.surfaceActive))
+			.focused($isFocused)
+			.onAppear { isFocused = true }
+			.onSubmit { onCommit() }
+			.onExitCommand { onCancel() }
 	}
 }
 

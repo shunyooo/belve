@@ -626,16 +626,30 @@ struct FileTreeView: View {
 	/// `belveRevealFileInTree` notification を受け取れないため、onAppear で
 	/// 自分から reveal する。
 	var currentFilePath: String? = nil
+	/// 親 project が現在 selected か。MainWindow から `\.projectActive` env で渡る。
+	/// 非選択 project の FileTreeView は SwiftUI level では opacity=0 + allowsHitTesting=false
+	/// だが、NSView (FileURLDropArea) は AppKit drag system に直接 register されてるため
+	/// 非選択でも drag を受け取ってしまう。projectActive を見て drag register を gate する。
+	@Environment(\.projectActive) private var projectActive
 	@FocusState private var isTreeFocused: Bool
 	// Mirror of isTreeFocused that we mutate inside withAnimation so matchedGeometryEffect
 	// can observe the change through normal @State observation (SwiftUI @FocusState bool
 	// changes are not reliably treated as animatable state).
 	@State private var treeBorderActive: Bool = false
-	/// ツリー全体への drop hover (= 空白部分でも root に投げ込めるよ表示)。
-	@State private var isTreeDropTargeted: Bool = false
+	/// ツリー全体への drop hover。@State だと dropDestination の callback 経由で
+	/// 値変えても overlay closure が観測できない事象に遭遇したので
+	/// @StateObject + ObservableObject で確実に発火させる。
+	@StateObject private var dropState = TreeDropState()
 
 	private var isEditing: Bool {
 		state.renamingPath != nil || state.creatingInPath != nil
+	}
+
+	@ViewBuilder
+	private var dropBorderOverlay: some View {
+		let _ = NSLog("[Belve][drop] overlay project=%@ targeted=%d projectActive=%d", project.name, dropState.isTargeted ? 1 : 0, projectActive ? 1 : 0)
+		Color.red.opacity(dropState.isTargeted ? 0.5 : 0)
+			.allowsHitTesting(false)
 	}
 
 	var body: some View {
@@ -692,19 +706,14 @@ struct FileTreeView: View {
 			}
 			.overlay(FocusBorderOverlay(isActive: treeBorderActive))
 			// Tree-level drop indicator: row に hit しなかった drop を root に逃がす。
-			// `isTargeted` で枠線を accent にして「ここに drop できる」を見せる。
-			.overlay {
-				if isTreeDropTargeted {
-					RoundedRectangle(cornerRadius: 6)
-						.strokeBorder(Theme.accent.opacity(0.7), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
-						.allowsHitTesting(false)
-						.transition(.opacity)
-				}
-			}
-			.onDrop(of: [.fileURL], isTargeted: $isTreeDropTargeted) { providers in
-				handleFileDrop(providers: providers, destination: rootPath)
-				return true
-			}
+			// 視認性確保のため枠線を太く + 鮮やかな赤に (= debug 中)。
+			.overlay { dropBorderOverlay }
+			// Remote は SwiftUI dropDestination が反応 (per-row hover + border)、
+			// Local は SwiftUI が取りこぼすので NSView 経路 (background) も同居させる。
+			// どちらが発火しても isTreeDropTargeted (= OR) で border 表示。
+			// dropDestination は MainWindow level の単一 handler に集約 (= per-project だと
+			// SwiftUI dropDestination が allowsHitTesting を無視して非選択 project にも attach
+			// されてしまい drag が誤誘導されるため)
 			// `.focusable()` (default — [.activate, .edit]) is required for onKeyPress
 			// handlers to fire while focused. Stale focus from the editor/terminal
 			// side is cleared by the belveEditorWebViewDidFocus / belveTerminalFocused
@@ -886,6 +895,26 @@ struct FileTreeView: View {
 			}
 		}
 	}
+
+	/// `.dropDestination(for: URL.self)` 経由の drop ハンドラ。NSItemProvider 経由の
+	/// `.onDrop` だと local Finder drag で isTargeted が反応しない事象があるため、
+	/// modern Transferable API に統一する。
+	private func handleURLDrop(urls: [URL], destination: String) {
+		let provider = project.provider
+		for url in urls {
+			let destPath = (destination as NSString).appendingPathComponent(url.lastPathComponent)
+			DispatchQueue.global(qos: .userInitiated).async {
+				let ok = provider.uploadFile(localURL: url, to: destPath)
+				DispatchQueue.main.async {
+					if ok {
+						state.refreshVisible(project: project, rootPath: rootPath)
+					} else {
+						NSLog("[Belve] upload failed: \(url.lastPathComponent) -> \(destPath)")
+					}
+				}
+			}
+		}
+	}
 }
 
 /// ルート直下に新規ファイル作成中だけ表示される TextField row。
@@ -935,6 +964,8 @@ struct FileTreeRow: View {
 	let rootPath: String
 	let onFileSelect: (String) -> Void
 	var gitFileStatus: [String: String] = [:]
+	/// 親 project が currently selected か。Tree-level と同じ理由で per-row drop も gate する。
+	@Environment(\.projectActive) private var projectActive
 	@State private var isHovering = false
 	@State private var isDropTargeted = false
 	/// Spring-loaded folder expansion: drop hover が一定時間続くと自動展開する
@@ -1045,20 +1076,17 @@ struct FileTreeRow: View {
 		springExpandWork = nil
 	}
 
-	private func handleRowDrop(providers: [NSItemProvider], destination: String) {
+	private func handleRowURLDrop(urls: [URL], destination: String) {
 		let provider = project.provider
-		for item in providers {
-			_ = item.loadObject(ofClass: URL.self) { url, _ in
-				guard let url else { return }
-				let destPath = (destination as NSString).appendingPathComponent(url.lastPathComponent)
-				DispatchQueue.global(qos: .userInitiated).async {
-					let ok = provider.uploadFile(localURL: url, to: destPath)
-					DispatchQueue.main.async {
-						if ok {
-							state.refreshVisible(project: project, rootPath: rootPath)
-						} else {
-							NSLog("[Belve] upload failed: \(url.lastPathComponent) -> \(destPath)")
-						}
+		for url in urls {
+			let destPath = (destination as NSString).appendingPathComponent(url.lastPathComponent)
+			DispatchQueue.global(qos: .userInitiated).async {
+				let ok = provider.uploadFile(localURL: url, to: destPath)
+				DispatchQueue.main.async {
+					if ok {
+						state.refreshVisible(project: project, rootPath: rootPath)
+					} else {
+						NSLog("[Belve] upload failed: \(url.lastPathComponent) -> \(destPath)")
 					}
 				}
 			}
@@ -1147,13 +1175,9 @@ struct FileTreeRow: View {
 			.onHover { hovering in
 				isHovering = hovering
 			}
-			// Per-row drop. Folder なら自身、file なら親 folder にアップロード。
-			// `isTargeted` で行ハイライト + spring-load expand トリガ。
-			.onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-				cancelSpringExpand()
-				handleRowDrop(providers: providers, destination: dropDestination)
-				return true
-			}
+			// per-row drop は一旦撤去 (= 同 active project gate 問題のため)。
+			// 必要なら MainWindow level の global drop handler から coordinates 経由で
+			// 行特定する形で復活させる予定。
 			.onChange(of: isDropTargeted) { _, targeted in
 				// Spring-load: folder の上に 0.6s 留まったら自動展開して
 				// ネストした folder にも drop できるようにする (= Finder 互換)。
@@ -1315,5 +1339,141 @@ private struct FileTreeLoadingLine: View {
 private struct DirectoryLoadingLine: View {
 	var body: some View {
 		LoadingTrack(trackHeight: 2, widthFactor: 0.45, minimumWidth: 18, capsuleTrack: true)
+	}
+}
+
+/// Tree 全体への drop hover state を保持する。@State でうまく overlay closure に
+/// 反映されない事象 (= dropDestination の callback で setter 呼んでも observer が
+/// 反映されない) があったため ObservableObject にして確実に通知する。
+final class TreeDropState: ObservableObject {
+	@Published var isTargeted: Bool = false
+}
+
+/// 行レベル drop の同 conditional 適用版。FileTreeRow 用。
+struct RowDropModifier: ViewModifier {
+	let active: Bool
+	let item: FileItem
+	let dropDestination: String
+	let onTargeted: (Bool) -> Void
+	let onDrop: ([URL], String) -> Void
+
+	func body(content: Content) -> some View {
+		if active {
+			content.dropDestination(for: URL.self, action: { urls, _ in
+				NSLog("[Belve][drop] row action path=%@ urls=%d", item.path, urls.count)
+				onDrop(urls, dropDestination)
+				return true
+			}, isTargeted: { targeted in
+				if targeted { NSLog("[Belve][drop] row isTargeted=true path=%@", item.path) }
+				onTargeted(targeted)
+			})
+		} else {
+			content
+		}
+	}
+}
+
+/// SwiftUI の `.dropDestination` は `.allowsHitTesting(false)` を尊重しないので、
+/// 非選択 project の dropDestination まで active になってしまう (= 隠れた project に
+/// drag が持ってかれる)。active 時のみ modifier を適用するための conditional wrapper。
+struct ProjectScopedDropModifier: ViewModifier {
+	let active: Bool
+	let project: Project
+	let dropState: TreeDropState
+	let rootPath: String
+	let onDrop: ([URL], String) -> Void
+
+	func body(content: Content) -> some View {
+		let _ = NSLog("[Belve][drop] modifier.body project=%@ active=%d", project.name, active ? 1 : 0)
+		if active {
+			content.dropDestination(for: URL.self, action: { urls, _ in
+				NSLog("[Belve][drop] SwiftUI action project=%@ urls=%d", project.name, urls.count)
+				onDrop(urls, rootPath)
+				return true
+			}, isTargeted: { targeted in
+				NSLog("[Belve][drop] SwiftUI isTargeted=%d project=%@", targeted ? 1 : 0, project.name)
+				dropState.isTargeted = targeted
+			})
+		} else {
+			content
+		}
+	}
+}
+
+// MARK: - File URL drop receiver (NSDraggingDestination)
+
+/// SwiftUI の `.dropDestination(for: URL.self)` が macOS の Local Finder drag を
+/// **isTargeted で反応せず無音** で受けないケースがあるため、AppKit の
+/// `NSDraggingDestination` を直接使う薄い NSView wrapper。
+///
+/// - `.background` に被せて使う想定。SwiftUI 側の hit-test が click/scroll を
+///   優先消費するので drag だけがここに落ちる。
+/// - `registerForDraggedTypes([.fileURL])` で Finder からの local file を確実に
+///   受ける。draggingEntered/Exited で `onTargeted` を投げて hover ハイライトに連動。
+struct FileURLDropArea: NSViewRepresentable {
+	var enabled: Bool
+	var onTargeted: (Bool) -> Void
+	var onDrop: ([URL]) -> Bool
+
+	func makeNSView(context: Context) -> DragView {
+		let v = DragView()
+		v.onTargeted = onTargeted
+		v.onDropFiles = onDrop
+		if enabled { v.registerForDraggedTypes([.fileURL]) }
+		NSLog("[Belve][drop] FileURLDropArea.makeNSView enabled=%d", enabled ? 1 : 0)
+		return v
+	}
+
+	func updateNSView(_ view: DragView, context: Context) {
+		view.onTargeted = onTargeted
+		view.onDropFiles = onDrop
+		if enabled {
+			view.registerForDraggedTypes([.fileURL])
+		} else {
+			view.unregisterDraggedTypes()
+		}
+		NSLog("[Belve][drop] FileURLDropArea.updateNSView enabled=%d types=%d frame=%@", enabled ? 1 : 0, view.registeredDraggedTypes.count, NSStringFromRect(view.frame))
+	}
+
+	final class DragView: NSView {
+		var onTargeted: ((Bool) -> Void)?
+		var onDropFiles: (([URL]) -> Bool)?
+
+		override func awakeFromNib() {
+			super.awakeFromNib()
+			NSLog("[Belve][drop] DragView awakeFromNib frame=%@", NSStringFromRect(self.frame))
+		}
+
+		override func viewDidMoveToWindow() {
+			super.viewDidMoveToWindow()
+			NSLog("[Belve][drop] DragView viewDidMoveToWindow window=%@ frame=%@", String(describing: window), NSStringFromRect(self.frame))
+		}
+
+		override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+			NSLog("[Belve][drop] draggingEntered")
+			onTargeted?(true)
+			return .copy
+		}
+
+		override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+			.copy
+		}
+
+		override func draggingExited(_ sender: NSDraggingInfo?) {
+			NSLog("[Belve][drop] draggingExited")
+			onTargeted?(false)
+		}
+
+		override func draggingEnded(_ sender: NSDraggingInfo) {
+			NSLog("[Belve][drop] draggingEnded")
+			onTargeted?(false)
+		}
+
+		override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+			NSLog("[Belve][drop] performDragOperation")
+			onTargeted?(false)
+			let urls = (sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL]) ?? []
+			return onDropFiles?(urls) ?? false
+		}
 	}
 }

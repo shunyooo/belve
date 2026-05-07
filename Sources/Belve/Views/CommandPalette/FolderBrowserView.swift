@@ -264,7 +264,15 @@ struct FolderBrowserView: View {
 	private func loadDirectory() {
 		let pathAtStart = currentPath
 		DispatchQueue.global().async {
-			let dirs = provider.listDirectory(pathAtStart).filter { $0.isDirectory }
+			// Remote DevContainer browser は project に bind されてない (= RPC client
+			// 無し) なので、SSHProvider.listDirectory (RPC ONLY) は空を返す。
+			// 直接 SSH 経由の listing を使う。
+			let dirs: [FileItem]
+			if highlightDevContainers, let sshProvider = provider as? SSHProvider {
+				dirs = sshProvider.listDirectoryViaSSH(pathAtStart).filter { $0.isDirectory }
+			} else {
+				dirs = provider.listDirectory(pathAtStart).filter { $0.isDirectory }
+			}
 
 			// Second pass for DevContainer mode: batch-check which subdirs contain
 			// .devcontainer/devcontainer.json, plus whether the current directory itself does.
@@ -272,7 +280,11 @@ struct FolderBrowserView: View {
 			var currentHasDC = false
 			if highlightDevContainers, let sshProvider = provider as? SSHProvider {
 				dcMatches = sshProvider.findDevContainerDirs(in: dirs.map { $0.path })
-				currentHasDC = sshProvider.fileExists("\(pathAtStart)/.devcontainer/devcontainer.json")
+				// `fileExists` は RPC ONLY なので folder browser context (=
+				// RPC client 無し) では false 固定になる → 「no devcontainer」
+				// 誤表示。findDevContainerDirs (= 直 SSH) で current path 自体も
+				// チェックする。
+				currentHasDC = !sshProvider.findDevContainerDirs(in: [pathAtStart]).isEmpty
 			}
 
 			DispatchQueue.main.async {

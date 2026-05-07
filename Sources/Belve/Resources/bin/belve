@@ -7,12 +7,32 @@
 set -euo pipefail
 
 PANE_ID="${BELVE_PANE_ID:-unknown}"
+# Stale session fallback: BELVE_PANE_ID が env に無い (= session が古いバージョンで
+# 作られた) 場合、broker が書き出した per-session env file から読む。
+# BELVE_SESSION_NAME は belve-persist が自動 export する session 識別子。
+if [ "$PANE_ID" = "unknown" ] && [ -n "${BELVE_SESSION_NAME:-}" ]; then
+    _envfile="/tmp/belve-session-env/${BELVE_SESSION_NAME}.env"
+    if [ -f "$_envfile" ]; then
+        _pid=$(grep '^BELVE_PANE_ID=' "$_envfile" | head -1 | cut -d= -f2-)
+        [ -n "$_pid" ] && PANE_ID="$_pid"
+    fi
+fi
+# Set on first parse_json call (= per-hook subprocess). 同 hook invocation で
+# 後続 emit_event に session_id が乗る。OSC 形式 BELVE2 (= sessionId 付き) の
+# ための前置情報。
+SESSION_ID=""
 
 emit_event() {
     local status="$1"
     local message="$2"
     local osc
-    osc=$(printf '\033]9;BELVE:%s:%s:%s\007' "$PANE_ID" "$status" "$message")
+    # 新 OSC 形式 (BELVE2) は paneId, sessionId, status, message の 4 セグメント。
+    # NotificationStore はこの sessionId を使って「pane あたりの primary session」
+    # を識別し、Stop hook で spawn された別 claude (= 別 session_id) からの通知を
+    # 抑制する。session_id が空 (= 古い hook 等) の場合は「unknown」を入れて
+    # 受信側で空扱いさせる。
+    local sid="${SESSION_ID:-}"
+    osc=$(printf '\033]9;BELVE2:%s:%s:%s:%s\007' "$PANE_ID" "$sid" "$status" "$message")
     if [ -n "${BELVE_TTY:-}" ] && [ -w "$BELVE_TTY" ]; then
         echo -n "$osc" > "$BELVE_TTY" 2>/dev/null
     elif echo -n "$osc" > /dev/tty 2>/dev/null; then
@@ -22,11 +42,31 @@ emit_event() {
     fi
 }
 
-# Parse stdin JSON with node (available in most environments)
+# Cache JSON payload from stdin (stdin can only be read once, so we buffer it
+# in a variable and feed parse_json from echo).
+JSON_PAYLOAD=""
+
+# Read stdin once into JSON_PAYLOAD, then extract session_id. Subsequent
+# parse_json calls operate on the cached payload.
+read_payload() {
+    JSON_PAYLOAD=$(cat 2>/dev/null || true)
+    if [ -n "$JSON_PAYLOAD" ] && command -v node > /dev/null 2>&1; then
+        SESSION_ID=$(printf '%s' "$JSON_PAYLOAD" | node -e "
+            let d='';
+            process.stdin.on('data',c=>d+=c);
+            process.stdin.on('end',()=>{
+                try{const j=JSON.parse(d);process.stdout.write(String(j.session_id||''))}
+                catch{process.stdout.write('')}
+            })
+        " 2>/dev/null || echo "")
+    fi
+}
+
+# Parse cached JSON payload with node (no stdin reading).
 parse_json() {
     local expr="$1"
-    if command -v node > /dev/null 2>&1; then
-        node -e "
+    if [ -n "$JSON_PAYLOAD" ] && command -v node > /dev/null 2>&1; then
+        printf '%s' "$JSON_PAYLOAD" | node -e "
             let d='';
             process.stdin.on('data',c=>d+=c);
             process.stdin.on('end',()=>{
@@ -35,21 +75,20 @@ parse_json() {
             })
         " 2>/dev/null || echo ""
     else
-        cat > /dev/null 2>&1
         echo ""
     fi
 }
 
 case "${1:-}" in
     claude-hook)
+        # 全 hook subcommand 共通で stdin を一度だけ読み、session_id 抽出。
+        read_payload
         case "${2:-}" in
             session-start)
-                cat > /dev/null
                 emit_event "session_start" "started"
                 ;;
 
             session-end)
-                cat > /dev/null
                 emit_event "session_end" "ended"
                 ;;
 

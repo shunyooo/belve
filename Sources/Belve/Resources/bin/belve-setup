@@ -240,8 +240,9 @@ if [ "$REBUILD" = "1" ] && [ -n "$PROJ_SHORT" ]; then
     if [ -f "$ENV_FILE" ]; then
         . "$ENV_FILE"
         if [ -n "${CID:-}" ]; then
-            echo "[belve-setup] stopping and removing container ${CID:0:12}..." >&2
+            echo "==> Stopping existing container ${CID:0:12}"
             docker stop "$CID" 2>&1 || true
+            echo "==> Removing existing container ${CID:0:12}"
             docker rm -f "$CID" 2>&1 || true
         fi
         rm -f "$ENV_FILE"
@@ -260,7 +261,10 @@ if [ -f "$ENV_FILE" ]; then
             printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$NEW_CIP" > "$ENV_FILE"
             CIP="$NEW_CIP"
         fi
+        echo "==> Reusing existing container ${CID:0:12}"
+        echo "==> Ensuring container broker is running"
         ensure_container_broker "$CID" "$RWS" "$CIP"
+        echo "==> Container ready"
         exit 0
     fi
     # Container gone; fall through to full bootstrap
@@ -268,6 +272,7 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # Full bootstrap: devcontainer up + deploy + start broker.
+echo "==> Building / pulling container image (devcontainer up)"
 TMPOUT=$(mktemp)
 TMPERR=$(mktemp)
 
@@ -335,6 +340,10 @@ if [ -z "$CID" ]; then
 fi
 
 CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | head -1)
+echo "==> Container started (id=${CID:0:12} ip=${CIP})"
 printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$CIP" > "$ENV_FILE"
 
+echo "==> Deploying belve binaries to container"
+echo "==> Starting broker in container"
 ensure_container_broker "$CID" "$RWS" "$CIP"
+echo "==> Container ready"

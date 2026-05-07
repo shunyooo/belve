@@ -107,7 +107,32 @@ class CommandAreaStateManager: ObservableObject {
 		let state = CommandAreaState()
 		state.onLayoutChanged = { [weak self] in self?.scheduleSave() }
 		states[projectId] = state
+		// 新 view 作成直後に paneId を pane-layouts.json へ即時永続化する。
+		// scheduleSave (200ms debounce) だと、view 作成 → すぐに Belve quit
+		// (or crash) で保存漏れ → 次回起動で fresh paneId 割当 → belve-persist
+		// の元 session に reconnect できず「フレッシュ pane」になる症状が出る
+		// (2026-05-05 報告)。Synchronous save は JSON 書き込み数 ms なので
+		// view 作成パスでは許容コスト。
+		save()
 		return state
+	}
+
+	/// Cross-view で pane を移動。source view が 1 pane だけなら no-op (= 最後の
+	/// pane は移動不可、CommandAreaState.removePane の振る舞いに準拠)。
+	/// session 名を保持するため source の paneIndex を target で再利用。
+	func movePane(_ paneId: UUID, fromViewId: UUID, toViewId: UUID) {
+		guard fromViewId != toViewId else { return }
+		let source = state(for: fromViewId)
+		let target = state(for: toViewId)
+		guard source.orderedPaneIds().count > 1 else { return }
+		let paneIndex = source.paneIndex(for: paneId) ?? 0
+		source.removePane(paneId)
+		target.adoptPane(paneId, paneIndex: paneIndex)
+		// Manager 自体は @Published を持たないので、明示的に
+		// objectWillChange を発火しないと sidebar 等の paneIdsForView() lookup
+		// が再評価されない (= 移動後 view を切替えるまで session 行が源 view
+		// に残って見える)。
+		objectWillChange.send()
 	}
 
 	func scheduleSave() {
@@ -162,6 +187,42 @@ class CommandAreaState: ObservableObject {
 			objectWillChange.send()
 			onLayoutChanged?()
 		}
+	}
+
+	/// 既存 paneId を leaf として取り込む (= cross-view DD で session を別 view に
+	/// 移動する用)。target view が単一 pane の時は分割、複数 pane の時は active
+	/// pane の隣に split 追加。pane index は source の値を引き継いで session 名
+	/// (`belve-<projShort>-<idx>`) を保持する。
+	func adoptPane(_ paneId: UUID, paneIndex: Int, direction: SplitDirection = .vertical) {
+		// root が PaneNode init で常に 1 leaf を持つので「空 tree」ケースは無い。
+		// → adopt は常に「既存 leaf との split」になる。
+		let targetPaneId = activePaneId ?? firstLeaf(root)?.paneId ?? root.paneId
+		guard let targetPaneId else { return }
+		if spawnNode(targetPaneId, newPaneId: paneId, direction: direction, in: root) {
+			// spawnNode は新 pane を「nextPaneIndex」で加える。今回は外部 paneIndex
+			// を使いたいので後追いで上書きする。
+			if let leaf = findLeaf(paneId: paneId, in: root) {
+				leaf.paneIndex = paneIndex
+			}
+			// 新たに採用した pane を active に。
+			activePaneId = paneId
+			objectWillChange.send()
+			onLayoutChanged?()
+		}
+	}
+
+	private func findLeaf(paneId: UUID, in node: PaneNode) -> PaneNode? {
+		if node.isLeaf, node.paneId == paneId { return node }
+		for child in node.children ?? [] {
+			if let f = findLeaf(paneId: paneId, in: child) { return f }
+		}
+		return nil
+	}
+
+	/// 指定 paneId の pane index を取得 (= cross-view 移動時に session 名を保持
+	/// するために source view から取り出す)。
+	func paneIndex(for paneId: UUID) -> Int? {
+		findLeaf(paneId: paneId, in: root)?.paneIndex
 	}
 
 	/// 新 pane を spawn して、その新 pane の id を返す (Stage view の "+ New Agent" 用)。

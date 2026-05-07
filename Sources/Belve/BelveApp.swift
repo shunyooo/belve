@@ -37,10 +37,6 @@ struct BelveApp: App {
 					NotificationCenter.default.post(name: .belveToggleTile, object: nil)
 				}
 				.keyboardShortcut("t", modifiers: .command)
-				Button("Toggle Stage View") {
-					NotificationCenter.default.post(name: .belveToggleStage, object: nil)
-				}
-				.keyboardShortcut("y", modifiers: .command)
 			}
 			CommandGroup(replacing: .newItem) {
 				Button("New Project") {
@@ -121,7 +117,8 @@ extension Notification.Name {
 	static let belveShowChanges = Notification.Name("belveShowChanges")
 	static let belveToggleTile = Notification.Name("belveToggleTile")
 	static let belveTileOpenFocused = Notification.Name("belveTileOpenFocused")
-	static let belveToggleStage = Notification.Name("belveToggleStage")
+	static let belveSelectNextView = Notification.Name("belveSelectNextView")
+	static let belveSelectPreviousView = Notification.Name("belveSelectPreviousView")
 }
 
 class CommandPaletteState: ObservableObject {
@@ -201,6 +198,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Request notification permission
 		notificationStore.requestNotificationPermission()
 
+		// Agent companions: floating panel ごとに claude session の活動を表示。
+		// NotificationStore.sessions を観測して active 化で自動 spawn / 終了で dismiss。
+		AgentCompanionStore.shared.attach(
+			notificationStore: notificationStore,
+			projectStore: projectStore
+		)
+
 		// Global hotkey: Cmd+Shift+. to toggle app visibility
 		// Uses Carbon RegisterEventHotKey — no Accessibility permission needed.
 		registerGlobalHotkey()
@@ -256,13 +260,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			case ";" where !shift:
 				NotificationCenter.default.post(name: .belveFocusPreviousPane, object: nil)
 				return nil
-			case "]" where !shift:
+			case "]":
 				if AppConfig.shared.viewMode.isDedicatedView { return nil }
-				NotificationCenter.default.post(name: .belveSelectNextProject, object: nil)
+				if shift {
+					NotificationCenter.default.post(name: .belveSelectNextProject, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveSelectNextView, object: nil)
+				}
 				return nil
-			case "[" where !shift:
+			case "[":
 				if AppConfig.shared.viewMode.isDedicatedView { return nil }
-				NotificationCenter.default.post(name: .belveSelectPreviousProject, object: nil)
+				if shift {
+					NotificationCenter.default.post(name: .belveSelectPreviousProject, object: nil)
+				} else {
+					NotificationCenter.default.post(name: .belveSelectPreviousView, object: nil)
+				}
 				return nil
 			case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 				if shift { return event }
@@ -283,9 +295,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				return nil
 			case "t" where !shift:
 				NotificationCenter.default.post(name: .belveToggleTile, object: nil)
-				return nil
-			case "y" where !shift:
-				NotificationCenter.default.post(name: .belveToggleStage, object: nil)
 				return nil
 			case "-", "_":
 				AppConfig.shared.terminalFontSize -= 1

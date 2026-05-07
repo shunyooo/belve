@@ -147,6 +147,16 @@ final class RemoteRPCClient: @unchecked Sendable {
 	}
 
 	private func connectInternal(then cont: CheckedContinuation<Void, Error>) {
+		// 古い connection を先に同期で片付ける。`disconnect()` は queue.async で
+		// 遅延実行されるため、先に enqueue された disconnect が「新しく作った
+		// conn を cancel してしまう」「既に死んだ conn の handler が新 conn の
+		// state を上書きする」といった race を防ぐ。
+		if let old = connection {
+			old.stateUpdateHandler = nil
+			old.cancel()
+			connection = nil
+			connectionReady = false
+		}
 		let endpoint = NWEndpoint.hostPort(
 			host: NWEndpoint.Host(host),
 			port: NWEndpoint.Port(integerLiteral: port)
@@ -176,6 +186,11 @@ final class RemoteRPCClient: @unchecked Sendable {
 				self.disconnect()
 			case .cancelled:
 				self.connectionReady = false
+				// .ready / .failed / .waiting に到達する前に cancel されると
+				// cont が永遠に未 resume となり、ensureConnected 呼び出し元が
+				// 全停止する (= GitHub issue #1 の "SWIFT TASK CONTINUATION
+				// MISUSE" の根本原因)。connectionLost で resume して回復可能に。
+				if !resumed { resumed = true; cont.resume(throwing: RPCError.connectionLost) }
 			default: break
 			}
 		}

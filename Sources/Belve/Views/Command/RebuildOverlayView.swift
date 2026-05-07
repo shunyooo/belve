@@ -81,20 +81,20 @@ struct RebuildOverlayView: View {
 	}
 
 	private var logScroll: some View {
-		ScrollViewReader { proxy in
+		// 全 log を 1 つの Text にまとめる (= 行をまたいだ選択コピーを可能にする)。
+		// 個別 Text を ForEach すると textSelection は行ごとにしか効かない。
+		let joined = state.log.joined(separator: "\n")
+		return ScrollViewReader { proxy in
 			ScrollView {
-				VStack(alignment: .leading, spacing: 1) {
-					ForEach(Array(state.log.enumerated()), id: \.offset) { idx, line in
-						Text(line)
-							.font(.system(size: 11, design: .monospaced))
-							.foregroundStyle(Theme.textSecondary)
-							.frame(maxWidth: .infinity, alignment: .leading)
-							.padding(.horizontal, 14)
-							.id(idx)
-					}
-					Color.clear.frame(height: 1).id("__bottom__")
-				}
-				.padding(.vertical, 8)
+				Text(joined)
+					.font(.system(size: 11, design: .monospaced))
+					.foregroundStyle(Theme.textSecondary)
+					.frame(maxWidth: .infinity, alignment: .leading)
+					.padding(.horizontal, 14)
+					.padding(.vertical, 8)
+					.textSelection(.enabled)
+					.id("__log__")
+				Color.clear.frame(height: 1).id("__bottom__")
 			}
 			.onChange(of: state.log.count) {
 				withAnimation(.easeOut(duration: 0.1)) {

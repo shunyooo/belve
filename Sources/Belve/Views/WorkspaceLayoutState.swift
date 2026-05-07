@@ -55,6 +55,21 @@ final class ProjectLayoutState: ObservableObject, Codable {
 	@Published var browserViewport: StoredViewport? = nil {
 		didSet { onChanged?() }
 	}
+	/// ChangesView の左 tree pane の幅。drag で調整可能、project 単位で永続化。
+	@Published var changesTreeWidth: CGFloat = 220 {
+		didSet { onChanged?() }
+	}
+	/// ChangesView の filter (= staged/unstaged/committed のチェックボックス)。
+	/// project 単位で永続化して、開き直した時も同じ filter で表示される。
+	@Published var diffFilterStaged: Bool = true {
+		didSet { onChanged?() }
+	}
+	@Published var diffFilterUnstaged: Bool = true {
+		didSet { onChanged?() }
+	}
+	@Published var diffFilterCommitted: Bool = false {
+		didSet { onChanged?() }
+	}
 
 	var onChanged: (() -> Void)?
 
@@ -70,6 +85,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 
 	enum CodingKeys: String, CodingKey {
 		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile, showChanges, previewMode, browserURL, browserOpen, browserThumbnail, browserFrame, browserViewport
+		case changesTreeWidth, diffFilterStaged, diffFilterUnstaged, diffFilterCommitted
 	}
 
 	required init(from decoder: Decoder) throws {
@@ -86,6 +102,10 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		browserThumbnail = try container.decodeIfPresent(Bool.self, forKey: .browserThumbnail) ?? false
 		browserFrame = try container.decodeIfPresent(StoredFrame.self, forKey: .browserFrame)
 		browserViewport = try container.decodeIfPresent(StoredViewport.self, forKey: .browserViewport)
+		changesTreeWidth = try container.decodeIfPresent(CGFloat.self, forKey: .changesTreeWidth) ?? 220
+		diffFilterStaged = try container.decodeIfPresent(Bool.self, forKey: .diffFilterStaged) ?? true
+		diffFilterUnstaged = try container.decodeIfPresent(Bool.self, forKey: .diffFilterUnstaged) ?? true
+		diffFilterCommitted = try container.decodeIfPresent(Bool.self, forKey: .diffFilterCommitted) ?? false
 	}
 
 	func encode(to encoder: Encoder) throws {
@@ -102,6 +122,10 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		try container.encode(browserThumbnail, forKey: .browserThumbnail)
 		try container.encodeIfPresent(browserFrame, forKey: .browserFrame)
 		try container.encodeIfPresent(browserViewport, forKey: .browserViewport)
+		try container.encode(changesTreeWidth, forKey: .changesTreeWidth)
+		try container.encode(diffFilterStaged, forKey: .diffFilterStaged)
+		try container.encode(diffFilterUnstaged, forKey: .diffFilterUnstaged)
+		try container.encode(diffFilterCommitted, forKey: .diffFilterCommitted)
 	}
 }
 

@@ -105,6 +105,9 @@ class ProjectStore: ObservableObject {
 	private var lastGitRefresh: Date = .distantPast
 
 	private var gitPollTimer: Timer?
+	/// Local project の selected 時に動かす FSEventStream watcher (local 専用)。
+	/// remote は RPC push 経由で別系統。selectedProject が変わるたびに rebind。
+	private let localFileWatcher = LocalFileWatcher()
 	/// fsevent push 購読済みの project ID。多重購読を防ぐ。
 	private var rpcSubscribed: Set<UUID> = []
 	/// fsevent → refresh の debounce タイマー (project ごと)。
@@ -113,6 +116,16 @@ class ProjectStore: ObservableObject {
 	init() {
 		if let saved = UserDefaults.standard.string(forKey: "Belve.defaultGroupName"), !saved.isEmpty {
 			defaultGroupName = saved
+		}
+		// Local file watcher: callback で .git 配下を除外しつつ debounced refresh
+		// を発火 (= 既存の scheduleFsRefresh と同じ debounce 経路に乗せる)。
+		localFileWatcher.onChanged = { [weak self] paths in
+			guard let self, let projectId = self.selectedProject?.id else { return }
+			let nonGit = paths.contains { p in
+				!p.contains("/.git/") && !p.hasSuffix("/.git")
+			}
+			guard nonGit else { return }
+			self.scheduleFsRefresh(projectId: projectId)
 		}
 		loadProjects()
 		loadCollapsedGroups()
@@ -219,6 +232,12 @@ class ProjectStore: ObservableObject {
 		if selectedProject?.id == project?.id { return }
 		let t0 = Date()
 		selectedProject = project
+		// 永続化: 起動時に同じ project を復元するため UserDefaults へ id を保存。
+		if let id = project?.id {
+			UserDefaults.standard.set(id.uuidString, forKey: "Belve.selectedProjectId")
+		} else {
+			UserDefaults.standard.removeObject(forKey: "Belve.selectedProjectId")
+		}
 		defer {
 			let dt = Date().timeIntervalSince(t0) * 1000
 			if dt > 30 { NSLog("[Belve][select][slow] %.0fms project=%@", dt, project?.name ?? "nil") }
@@ -238,6 +257,24 @@ class ProjectStore: ObservableObject {
 			Task { @MainActor in
 				await self.setupRemoteRPC(for: p)
 			}
+			// Remote project に切替えたので local watcher は止める。
+			localFileWatcher.stop()
+		} else if let p = project, !p.isRemote {
+			// Local project に切替え: rootPath を watch する。同 path なら no-op。
+			// SwiftUI が select() 起因の layout pass を終えてから watcher を
+			// 起動 (= FSEventStream callback が in-flight render と race して
+			// NSView removal で crash する症状の回避、2026-05-05)。
+			let root = p.effectivePath
+			DispatchQueue.main.async { [weak self] in
+				guard let self else { return }
+				if !root.isEmpty {
+					self.localFileWatcher.start(rootPath: root)
+				} else {
+					self.localFileWatcher.stop()
+				}
+			}
+		} else {
+			localFileWatcher.stop()
 		}
 	}
 
@@ -346,6 +383,11 @@ class ProjectStore: ObservableObject {
 
 	/// If any projects are pinned, cycle only through the pinned set. Otherwise
 	/// cycle through every project (falls back to the full list).
+	/// Cmd+] / Cmd+[ の cycle 対象 (= pinned があれば pinned のみ、なければ全
+	/// project)。MainWindow からも view 横断 cycle で同じスコープを使うために
+	/// 公開している。alias: `cycleProjects`。
+	var cycleProjects: [Project] { cycleScope }
+
 	private var cycleScope: [Project] {
 		let pinned = projects.filter { $0.isPinned }
 		return pinned.isEmpty ? projects : pinned
@@ -566,6 +608,8 @@ class ProjectStore: ObservableObject {
 		)
 		projects.append(project)
 		saveProjects()
+		let newProjectId = project.id
+		Task { @MainActor in ProjectViewStore.shared.ensureMainView(for: newProjectId) }
 		select(project)
 		return project
 	}
@@ -580,6 +624,7 @@ class ProjectStore: ObservableObject {
 		if selectedProject?.id == id {
 			select(projects.first)
 		}
+		Task { @MainActor in ProjectViewStore.shared.teardown(projectId: id) }
 		saveProjects()
 	}
 
@@ -1132,7 +1177,24 @@ class ProjectStore: ObservableObject {
 		if didMigrate {
 			saveProjects()
 		}
-		selectedProject = decoded.first
+		// Phase 1: 既存 project が ProjectViewStore に未登録 (= views.json 移行
+		// 後に新規追加された project や、views.json 自体が存在しない初回起動) の
+		// 場合に備えて、全 project に main view を保証する。idempotent なので
+		// 多重呼び出しでも害なし。
+		Task { @MainActor in
+			for p in migrated {
+				ProjectViewStore.shared.ensureMainView(for: p.id)
+			}
+		}
+		// 永続化された前回 select の project を復元 (= 起動毎に top にリセットされる
+		// のを防ぐ)。UUID が現存する project と一致しなければ先頭に fallback。
+		let savedId = UserDefaults.standard.string(forKey: "Belve.selectedProjectId")
+			.flatMap { UUID(uuidString: $0) }
+		if let sid = savedId, let restored = decoded.first(where: { $0.id == sid }) {
+			selectedProject = restored
+		} else {
+			selectedProject = decoded.first
+		}
 		let initialActiveId = selectedProject?.id
 		Task { @MainActor in PortForwardManager.shared.setActiveProjectId(initialActiveId) }
 		// RPC client の eager 登録は AppDelegate.didFinishLaunching が

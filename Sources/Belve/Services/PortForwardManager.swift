@@ -69,9 +69,11 @@ final class PortForwardManager: ObservableObject {
 
 	private init() {
 		startHealthTimer()
-		// active project のみ 4 秒ごとに scan する形で復活。
-		// 全 project scan は SSH master 詰まりの元なので無し。
-		startScanTimer()
+		// 2026-04-27: 一旦 scan は無効化。
+		// 過去に hung SSH command が累積して MaxSessions 到達 → 全 pane disconnect
+		// になった事例があり、scan の運用ロジックを見直すまで停止する。
+		// 必要になったら startScanTimer() を再有効化する。
+		// startScanTimer()
 	}
 
 	// MARK: - Public API
@@ -393,12 +395,35 @@ final class PortForwardManager: ObservableObject {
 				proc.standardError = FileHandle.nullDevice
 				do {
 					try proc.run()
-					proc.waitUntilExit()
-					let data = out.fileHandleForReading.readDataToEndOfFile()
-					continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
 				} catch {
 					continuation.resume(returning: "")
+					return
 				}
+				// Hard-timeout 8s。docker exec が container hang / network 問題で
+				// 永久に返らないと、scanTimer (= 4s 周期) で SSH が累積し
+				// SSH MaxSessions に到達する (= 2026-04-30 の "Session open refused
+				// by peer" の根本原因)。8s で kill して semaphore 状態を保つ。
+				let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+				let timedOut = NSLock()
+				var didTimeout = false
+				timer.schedule(deadline: .now() + 8.0)
+				timer.setEventHandler {
+					timedOut.withLock { didTimeout = true }
+					proc.terminate()
+					DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+						if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+					}
+				}
+				timer.activate()
+				proc.waitUntilExit()
+				timer.cancel()
+				if timedOut.withLock({ didTimeout }) {
+					NSLog("[Belve] PortForwardManager runSSHWithOutput timed out (host=%@)", host)
+					continuation.resume(returning: "")
+					return
+				}
+				let data = out.fileHandleForReading.readDataToEndOfFile()
+				continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
 			}
 		}
 	}
@@ -512,16 +537,35 @@ final class PortForwardManager: ObservableObject {
 				proc.standardError = FileHandle.nullDevice
 				do {
 					try proc.run()
-					proc.waitUntilExit()
-					let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-					let str = String(data: data, encoding: .utf8)?
-						.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-					if proc.terminationStatus == 0, !str.isEmpty {
-						continuation.resume(returning: str)
-					} else {
-						continuation.resume(returning: nil)
-					}
 				} catch {
+					continuation.resume(returning: nil)
+					return
+				}
+				let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+				let timedOut = NSLock()
+				var didTimeout = false
+				timer.schedule(deadline: .now() + 8.0)
+				timer.setEventHandler {
+					timedOut.withLock { didTimeout = true }
+					proc.terminate()
+					DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+						if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+					}
+				}
+				timer.activate()
+				proc.waitUntilExit()
+				timer.cancel()
+				if timedOut.withLock({ didTimeout }) {
+					NSLog("[Belve] PortForwardManager fetchContainerIP timed out (host=%@)", host)
+					continuation.resume(returning: nil)
+					return
+				}
+				let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+				let str = String(data: data, encoding: .utf8)?
+					.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+				if proc.terminationStatus == 0, !str.isEmpty {
+					continuation.resume(returning: str)
+				} else {
 					continuation.resume(returning: nil)
 				}
 			}
@@ -541,11 +585,30 @@ final class PortForwardManager: ObservableObject {
 				proc.standardError = FileHandle.nullDevice
 				do {
 					try proc.run()
-					proc.waitUntilExit()
-					continuation.resume(returning: proc.terminationStatus == 0)
 				} catch {
 					continuation.resume(returning: false)
+					return
 				}
+				let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+				let timedOut = NSLock()
+				var didTimeout = false
+				timer.schedule(deadline: .now() + 8.0)
+				timer.setEventHandler {
+					timedOut.withLock { didTimeout = true }
+					proc.terminate()
+					DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+						if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+					}
+				}
+				timer.activate()
+				proc.waitUntilExit()
+				timer.cancel()
+				if timedOut.withLock({ didTimeout }) {
+					NSLog("[Belve] PortForwardManager runSSH timed out (host=%@ args=%@)", host, args.joined(separator: " "))
+					continuation.resume(returning: false)
+					return
+				}
+				continuation.resume(returning: proc.terminationStatus == 0)
 			}
 		}
 	}

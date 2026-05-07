@@ -67,12 +67,40 @@ class NotificationStore: ObservableObject {
 			.max(by: { $0.updatedAt < $1.updatedAt })
 	}
 
-	func updateAgentStatus(paneId: String, status: String, message: String) {
+	/// `(paneId, sessionId)` あたり「初回観測した sessionId = primary」を記録。
+	/// Stop hook 等で spawn された別 claude (= 別 session_id) からの通知を抑制
+	/// するために使う。`session_end` で entry を消すので、parent claude が
+	/// 完全終了した後に new claude を立ち上げると新 primary が記録される。
+	private var primarySessionPerPane: [String: String] = [:]
+
+	/// `sessionId` がこの pane の primary かどうか判定する。空 sessionId (=
+	/// 旧 BELVE 形式の event 等) は常に true (= filter なし)。
+	private func isPrimarySession(paneId: String, sessionId: String) -> Bool {
+		if sessionId.isEmpty { return true }
+		guard let primary = primarySessionPerPane[paneId] else { return true }
+		return primary == sessionId
+	}
+
+	func updateAgentStatus(paneId: String, sessionId: String, status: String, message: String) {
 		guard let projectId = paneToProject[paneId],
 			  let agentStatus = AgentStatus(rawValue: status) else { return }
 
+		// Primary session の更新ルール:
+		//   - sessionStart で primary 未設定なら新規 primary に。
+		//   - 既存 primary がある場合は **上書きしない** (= Stop hook spawn の
+		//     別 claude が sessionStart を出しても original を保護)。
+		//   - sessionEnd で primary が一致したら entry 削除 → 次の sessionStart で
+		//     新 primary 受け入れ可能になる。
+		if !sessionId.isEmpty {
+			if agentStatus == .sessionStart && primarySessionPerPane[paneId] == nil {
+				primarySessionPerPane[paneId] = sessionId
+			} else if agentStatus == .sessionEnd && primarySessionPerPane[paneId] == sessionId {
+				primarySessionPerPane.removeValue(forKey: paneId)
+			}
+		}
+
 		self.agentStatus[projectId] = AgentState(status: agentStatus, message: message)
-		NSLog("[Belve] Agent status: %@ - %@ (pane: %@)", status, message, paneId)
+		NSLog("[Belve] Agent status: %@ - %@ (pane: %@ sid: %@)", status, message, paneId, sessionId)
 
 		switch agentStatus {
 		case .sessionStart:
@@ -153,7 +181,11 @@ class NotificationStore: ObservableObject {
 				session.currentTool = nil
 				session.isRead = false
 			}
-			sendDesktopNotification(title: "Claude Code", body: message, projectId: projectId)
+			if isPrimarySession(paneId: paneId, sessionId: sessionId) {
+				sendDesktopNotification(title: "Claude Code", body: message, projectId: projectId, paneId: paneId)
+			} else {
+				NSLog("[Belve][notif] suppress (non-primary session) pane=%@ sid=%@", paneId, sessionId)
+			}
 
 		case .completed:
 			// Find session by active index first, fallback to latest for this pane
@@ -176,7 +208,11 @@ class NotificationStore: ObservableObject {
 			// 抽出失敗時は (2) が来ないので通知も無し (= 体感の害はほぼ無い、UI 側
 			// の sidebar dot は (1) で既に更新されてる)。
 			if !message.isEmpty && message != "Done" {
-				sendDesktopNotification(title: "Claude Code — Done", body: message, projectId: projectId)
+				if isPrimarySession(paneId: paneId, sessionId: sessionId) {
+					sendDesktopNotification(title: "Claude Code — Done", body: message, projectId: projectId, paneId: paneId)
+				} else {
+					NSLog("[Belve][notif] suppress (non-primary session) pane=%@ sid=%@", paneId, sessionId)
+				}
 			}
 
 		case .sessionEnd:
@@ -269,7 +305,38 @@ class NotificationStore: ObservableObject {
 		UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 	}
 
-	func sendDesktopNotification(title: String, body: String, projectId: UUID? = nil) {
+	/// 「この paneId は現在 sidebar (= live view 群) に出ているか」の判定 closure。
+	/// MainWindow が起動時に stateManager 経由でセットする。nil ならフィルタ
+	/// 無効 (= 全て通知)。
+	///
+	/// 用途: program code から呼ばれた claude (= 親 view の pane に紐付かない
+	/// session) の通知を抑止するため。
+	var isPaneLive: ((String) -> Bool)?
+
+	/// Pane ごとの通知抑制 deadline。terminal reload 直後に belve-persist が
+	/// 過去の出力を replay する際、含まれてた OSC イベントが再 dispatch されて
+	/// 通知が flooded になる。reload 側 (XTermTerminalView.startPTY) が
+	/// `suppressNotifications(for:seconds:)` で warm-up window を設定すれば、
+	/// その期間の通知は drop する。
+	private var notificationSuppressedUntil: [String: Date] = [:]
+
+	func suppressNotifications(for paneId: String, seconds: TimeInterval) {
+		notificationSuppressedUntil[paneId] = Date().addingTimeInterval(seconds)
+	}
+
+	func sendDesktopNotification(title: String, body: String, projectId: UUID? = nil, paneId: String? = nil) {
+		if let paneId {
+			// reload warm-up 中なら drop。
+			if let until = notificationSuppressedUntil[paneId], Date() < until {
+				NSLog("[Belve][notif] suppress (reload warm-up) pane=%@", paneId)
+				return
+			}
+			// sidebar に居ない pane (= program 経由 claude 等) は drop。
+			if let isLive = isPaneLive, !isLive(paneId) {
+				NSLog("[Belve][notif] suppress (not live) pane=%@", paneId)
+				return
+			}
+		}
 		let content = UNMutableNotificationContent()
 		content.title = title
 		content.body = body

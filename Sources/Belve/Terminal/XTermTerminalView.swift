@@ -329,9 +329,7 @@ struct XTermTerminalView: NSViewRepresentable {
 						self?.webView?.evaluateJavaScript("window.terminalSetFontSize(\(size))", completionHandler: nil)
 					}
 				// Delayed fit to get correct size after SwiftUI layout settles.
-				// Stage mode は hero animation (~0.42s spring) で WebView が中間サイズを
-				// 経由するため、長めに待ってから fit (= PTY 初期 cols/rows を最終サイズで)。
-				let initialFitDelay: TimeInterval = AppConfig.shared.viewMode == .stage ? 0.7 : 0.15
+				let initialFitDelay: TimeInterval = 0.15
 				DispatchQueue.main.asyncAfter(deadline: .now() + initialFitDelay) { [weak self] in
 					guard let self, let webView = self.webView, self.ptyService == nil else { return }
 					webView.evaluateJavaScript("window.terminalFit()") { [weak self] result, _ in
@@ -576,10 +574,16 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 
 				// Agent notification transport
-				if paneId != nil {
-					pty.agentTransport.onAgentStatus = { [weak self] agentPaneId, status, message in
+				if let paneId {
+					self.notificationStore?.suppressNotifications(for: paneId, seconds: 3.0)
+					pty.agentTransport.onAgentStatus = { [weak self] agentPaneId, sessionId, status, message in
+						// Remote (DevContainer / SSH) は BELVE_PANE_ID が shell に
+						// 渡らない (= TCP tunnel 経由で env が伝播しない) ため、
+						// hook script が paneId="unknown" で OSC を出す。
+						// Mac 側で正しい paneId に書き換えて dispatch する。
+						let effectivePaneId = (agentPaneId == "unknown") ? paneId : agentPaneId
 						self?.notificationStore?.updateAgentStatus(
-							paneId: agentPaneId, status: status, message: message
+							paneId: effectivePaneId, sessionId: sessionId, status: status, message: message
 						)
 					}
 				}
