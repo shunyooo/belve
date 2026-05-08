@@ -8,9 +8,8 @@ struct MainWindow: View {
 	@ObservedObject private var appConfig = AppConfig.shared
 	@ObservedObject private var viewStore = ProjectViewStore.shared
 	@State private var sidebarWidthAtDragStart: CGFloat = 0
-	/// Per-project open file cache. Keeping the loaded `OpenFile` around avoids
-	/// re-fetching (SSH read for remote projects) on every project switch.
-	@State private var openFilesByProject: [UUID: OpenFile] = [:]
+	/// Per-view open file cache. view 切替で独立した editor 状態を維持する。
+	@State private var openFilesByView: [UUID: OpenFile] = [:]
 	@State private var showSettings = false
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
@@ -445,11 +444,10 @@ struct MainWindow: View {
 					project: project,
 					layoutState: projectLayout,
 					openFile: Binding(
-						get: { openFilesByProject[project.id] },
-						set: { openFilesByProject[project.id] = $0 }
+						get: { openFilesByView[activeViewId(of: project.id)] },
+						set: { openFilesByView[activeViewId(of: project.id)] = $0 }
 					)
 				)
-				.id(project.hashValue)
 				.frame(width: previewWidth)
 				.clipped()
 				.modifier(PreviewVisibilityModifier(
@@ -625,7 +623,7 @@ struct MainWindow: View {
 			if projectLayout.showFileTree { stops.append(.fileTree) }
 			// Editor is only a cycle stop when a file is actually open; otherwise
 			// there's nothing to focus and the placeholder is just a blank area.
-			if openFilesByProject[project.id] != nil { stops.append(.editor) }
+			if openFilesByView[activeViewId(of: project.id)] != nil { stops.append(.editor) }
 		}
 		guard !stops.isEmpty else { return }
 

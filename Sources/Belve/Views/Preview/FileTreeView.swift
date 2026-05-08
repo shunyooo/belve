@@ -792,6 +792,11 @@ struct FileTreeView: View {
 				state.performUndo(project: project)
 				return .handled
 			}
+			.onKeyPress(characters: CharacterSet(charactersIn: "v"), phases: .down) { press in
+				guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
+				pasteFromClipboard()
+				return .handled
+			}
 			.onKeyPress(characters: CharacterSet(charactersIn: "e"), phases: .down) { press in
 				guard !isEditing, press.modifiers.contains(.command) else { return .ignored }
 				if press.modifiers.contains(.shift) {
@@ -890,6 +895,51 @@ struct FileTreeView: View {
 						} else {
 							NSLog("[Belve] upload failed: \(url.lastPathComponent) -> \(destPath)")
 						}
+					}
+				}
+			}
+		}
+	}
+
+	/// Cmd+V: クリップボードからファイル/フォルダをアップロード。
+	/// フォーカス中のフォルダ (or ファイルの親ディレクトリ) を送信先にする。
+	private func pasteFromClipboard() {
+		let pb = NSPasteboard.general
+		guard let urls = pb.readObjects(forClasses: [NSURL.self], options: [
+			.urlReadingFileURLsOnly: true
+		]) as? [URL], !urls.isEmpty else {
+			state.showStatus("No files in clipboard")
+			return
+		}
+
+		// 送信先: フォーカス中のパスがディレクトリならそのまま、ファイルなら親
+		let destination: String
+		if let focused = state.focusedPath {
+			if state.items.contains(where: { $0.path == focused && $0.isDirectory }) ||
+			   state.childrenCache.keys.contains(focused) {
+				destination = focused
+			} else {
+				destination = (focused as NSString).deletingLastPathComponent
+			}
+		} else {
+			destination = rootPath
+		}
+
+		let provider = project.provider
+		var uploaded = 0
+		for url in urls {
+			let destPath = (destination as NSString).appendingPathComponent(url.lastPathComponent)
+			DispatchQueue.global(qos: .userInitiated).async {
+				let ok = provider.uploadFile(localURL: url, to: destPath)
+				DispatchQueue.main.async {
+					if ok {
+						uploaded += 1
+						state.refreshVisible(project: project, rootPath: rootPath)
+						if uploaded == urls.count {
+							state.showStatus("\(uploaded) file(s) pasted")
+						}
+					} else {
+						NSLog("[Belve] paste upload failed: \(url.lastPathComponent) -> \(destPath)")
 					}
 				}
 			}
