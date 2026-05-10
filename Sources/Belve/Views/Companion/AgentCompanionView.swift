@@ -4,7 +4,7 @@ import SwiftUI
 /// 各 agent の avatar が並び、発話中の agent の上に speech bubble が出る。
 struct AgentDockView: View {
 	@ObservedObject var store = AgentCompanionStore.shared
-	@EnvironmentObject var notificationStore: NotificationStore
+	@ObservedObject var notificationStore: NotificationStore
 	/// Bubble 表示状態。`.auto` = 新発話で自動表示、N 秒で消える。`.pinned` = tap で固定。
 	enum BubbleState { case auto(expiry: Date), pinned }
 	@State private var visibleBubbles: [String: BubbleState] = [:]
@@ -59,8 +59,9 @@ struct AgentDockView: View {
 					.shadow(color: .black.opacity(0.3), radius: 8, y: 2)
 			)
 		}
-		// 新発話検出 → auto-show
-		.onChange(of: store.companions) { _, newVal in
+		// 新発話検出 → auto-show (onChange は NSHostingController で発火しないため
+		// Combine publisher 経由で observe する)
+		.onReceive(store.$companions) { newVal in
 			for (paneId, companion) in newVal {
 				let oldCount = lastMessageCounts[paneId] ?? 0
 				let newCount = companion.messages.count

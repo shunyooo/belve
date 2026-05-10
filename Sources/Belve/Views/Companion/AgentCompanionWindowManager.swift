@@ -60,12 +60,12 @@ final class AgentCompanionWindowManager {
 
 /// Dock 用の floating NSPanel。画面下部中央に配置。
 final class AgentDockPanel: NSPanel {
-	private let host: NSHostingController<AnyView>
+	private let host: NSHostingController<AgentDockView>
 
 	init() {
 		let notifStore = (NSApp.delegate as? AppDelegate)?.notificationStore ?? NotificationStore()
 		self.host = NSHostingController(
-			rootView: AnyView(AgentDockView().environmentObject(notifStore))
+			rootView: AgentDockView(notificationStore: notifStore)
 		)
 		let initialFrame = NSRect(x: 0, y: 0, width: 500, height: 300)
 		super.init(
@@ -88,7 +88,7 @@ final class AgentDockPanel: NSPanel {
 		hostView.frame = self.contentView!.bounds
 		hostView.autoresizingMask = [.width, .height]
 		self.contentView!.addSubview(hostView)
-		// SwiftUI content に合わせて panel を auto-resize
-		host.sizingOptions = [.preferredContentSize]
+		// sizingOptions は AnyView + onChange の組み合わせで rendering が壊れるので使わない。
+		// Panel は十分大きめに確保し、SwiftUI content は内部で適切にサイズ調整する。
 	}
 }

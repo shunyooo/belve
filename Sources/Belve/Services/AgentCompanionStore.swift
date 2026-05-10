@@ -135,9 +135,6 @@ final class AgentCompanionStore: ObservableObject {
 	private var messageHistory: [String: [CompanionMessage]] = [:]
 	/// 前回の message text (連続重複 dedup 用)。
 	private var lastMessageText: [String: String] = [:]
-	/// Content hash dedup: 同一テキストの bubble を防ぐ (= replay 等で同じ text が
-	/// 複数回届いても 1 件に)。hash は pane ごと、user prompt 変更でリセット。
-	private var seenTextHashes: [String: Set<Int>] = [:]
 	private var lastSeenPrompt: [String: String] = [:]
 	private let maxMessages = 3
 
@@ -196,37 +193,33 @@ final class AgentCompanionStore: ObservableObject {
 			avatarStyles[paneId] = style
 			let projectName = projectStore?.projects.first(where: { $0.id == session.projectId })?.name ?? "?"
 
-			// ユーザーが新しい prompt を submit したら bubble + hash をリセット
+			// ユーザーが新しい prompt を submit したら bubble をリセット
 			let currentPrompt = session.lastUserPrompt ?? ""
 			if !currentPrompt.isEmpty && currentPrompt != lastSeenPrompt[paneId] {
 				lastSeenPrompt[paneId] = currentPrompt
 				messageHistory.removeValue(forKey: paneId)
 				lastMessageText.removeValue(forKey: paneId)
-				seenTextHashes.removeValue(forKey: paneId)
 			}
 
-			// Bubble-worthy message: transcript 由来 agent 発話 / waiting 等。
-			// Replay warm-up 中は skip、content hash dedup で同一テキスト重複も防ぐ。
+			// Bubble-worthy message: transcript 由来 agent 発話 / result / waiting 等。
+			// Replay warm-up 中は skip。Dedup は consecutive only (= lastMessageText)。
 			let inReplay = notificationStore?.isInReloadWarmup(for: paneId) ?? false
 			let bubbleText = bubbleWorthyText(for: session)
+			NSLog("[Belve][companion] pane=%@ inReplay=%d bubbleText=%@ lastMsg=%@ msgCount=%d",
+				String(paneId.prefix(8)), inReplay ? 1 : 0,
+				bubbleText ?? "nil", lastMessageText[paneId] ?? "nil",
+				messageHistory[paneId]?.count ?? 0)
 			if !inReplay, let text = bubbleText, text != lastMessageText[paneId] {
-				let hash = text.hashValue
-				var hashes = seenTextHashes[paneId] ?? Set<Int>()
-				if !hashes.contains(hash) {
-					hashes.insert(hash)
-					seenTextHashes[paneId] = hashes
-					lastMessageText[paneId] = text
-					let msg = CompanionMessage(id: UUID(), text: text, timestamp: Date())
-					var history = messageHistory[paneId] ?? []
-					history.append(msg)
-					if history.count > maxMessages {
-						history = Array(history.suffix(maxMessages))
-					}
-					messageHistory[paneId] = history
+				lastMessageText[paneId] = text
+				let msg = CompanionMessage(id: UUID(), text: text, timestamp: Date())
+				var history = messageHistory[paneId] ?? []
+				history.append(msg)
+				if history.count > maxMessages {
+					history = Array(history.suffix(maxMessages))
 				}
+				messageHistory[paneId] = history
 			} else if inReplay, let text = bubbleText {
 				lastMessageText[paneId] = text
-				seenTextHashes[paneId, default: Set<Int>()].insert(text.hashValue)
 			}
 
 			let snapshot = AgentCompanion(
@@ -262,19 +255,26 @@ final class AgentCompanionStore: ObservableObject {
 	private func bubbleWorthyText(for session: AgentSession) -> String? {
 		// Waiting (= agent がユーザーに聞いてる) → 最も重要な bubble
 		if session.status == .waiting { return session.message }
+		// Completed の最終応答
+		if session.status == .completed, !session.message.isEmpty, session.message != "Done" {
+			return session.message
+		}
 		let msg = session.message
-		// `speech:` prefix = transcript 由来の agent 中間発話 (= belve hook が
-		// pre/post-tool-use で transcript を読んで flush)。中身を bubble に出す。
+		// `speech:` prefix = transcript 由来の agent 中間発話
 		if msg.hasPrefix("speech:") {
 			return String(msg.dropFirst("speech:".count))
 		}
+		// `result:` prefix = tool 完了後の結果サマリ (= agent が何をしたかの報告)
+		if msg.hasPrefix("result:") {
+			return String(msg.dropFirst("result:".count))
+		}
 		// User prompt / label と同じテキストは bubble に出さない (= header で既に表示)
 		if msg == session.lastUserPrompt || msg == session.label { return nil }
-		// Tool prefix / result / lifecycle / Generating / 空は skip
-		if msg.hasPrefix("tool:") || msg.hasPrefix("result:") || msg.hasPrefix("subagent") { return nil }
+		// Tool 実行中 / subagent / lifecycle / 空は skip
+		if msg.hasPrefix("tool:") || msg.hasPrefix("subagent") { return nil }
 		if ["Generating", "started", "ended", "Done", "Ready"].contains(msg) { return nil }
 		if msg.isEmpty { return nil }
-		// それ以外 (= agent の思考テキスト等) → bubble
+		// それ以外 → bubble
 		return msg
 	}
 
