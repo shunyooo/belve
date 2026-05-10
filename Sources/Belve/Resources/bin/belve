@@ -62,6 +62,72 @@ read_payload() {
     fi
 }
 
+# Transcript polling: pre/post-tool-use hook から呼んで、前回以降の assistant
+# message text を抽出 → 1 OSC で `speech` status として flush。Cursor (= 直前まで
+# 読んだ line index) を per-session file に保存する。
+# 複数の新 message があれば "\n\n" で連結して 1 OSC にまとめる (= TTY interleave 防止)。
+flush_assistant_messages() {
+    [ -z "${BELVE_SESSION_NAME:-}" ] && return 0
+    [ -z "$JSON_PAYLOAD" ] && return 0
+    command -v node > /dev/null 2>&1 || return 0
+    local cursor_dir="/tmp/belve-session-env"
+    local cursor_file="$cursor_dir/${BELVE_SESSION_NAME}.tsx-cursor"
+    mkdir -p "$cursor_dir" 2>/dev/null || true
+    local prev_cursor=""
+    [ -f "$cursor_file" ] && prev_cursor=$(cat "$cursor_file" 2>/dev/null || echo "")
+    local result
+    result=$(printf '%s' "$JSON_PAYLOAD" | node -e "
+        let d='';
+        process.stdin.on('data',c=>d+=c);
+        process.stdin.on('end',()=>{
+            try {
+                const j = JSON.parse(d);
+                const tp = j.transcript_path || '';
+                if (!tp) { process.stdout.write(''); return; }
+                const fs = require('fs');
+                const lines = fs.readFileSync(tp, 'utf8').split('\n').filter(Boolean);
+                // cursor が未設定 (= Belve 再起動 or 初回) の場合、transcript 末尾に
+                // 飛ばす (= 過去全文 push を防ぐ)。新 session なら lines=0 なので差なし。
+                const rawCursor = '${prev_cursor}';
+                const start = rawCursor === '' ? lines.length : parseInt(rawCursor, 10) || 0;
+                if (start >= lines.length) {
+                    process.stdout.write('___CURSOR___' + lines.length);
+                    return;
+                }
+                // 範囲内の assistant text を「最後だけ」採用 (= claude stream の
+                // partial / cumulative text で fragment 化するのを回避)。
+                let lastText = '';
+                for (let i = start; i < lines.length; i++) {
+                    try {
+                        const e = JSON.parse(lines[i]);
+                        if (e.type === 'assistant') {
+                            const blocks = (e.message||{}).content||[];
+                            for (const b of blocks) {
+                                if (b.type === 'text' && b.text && b.text.trim()) {
+                                    lastText = b.text.trim();
+                                }
+                            }
+                        }
+                    } catch {}
+                }
+                let out = lastText;
+                if (out) {
+                    out = out.replace(/\r/g,'').replace(/\n/g,'\\\\n').replace(/\t/g,' ').replace(/[\x00-\x08\x0b-\x1f\x7f]/g,'').substring(0,4000);
+                }
+                process.stdout.write(out + '___CURSOR___' + lines.length);
+            } catch { process.stdout.write(''); }
+        })
+    " 2>/dev/null || echo "")
+    if [ -n "$result" ]; then
+        local text="${result%___CURSOR___*}"
+        local new_cursor="${result##*___CURSOR___}"
+        [ -n "$new_cursor" ] && echo "$new_cursor" > "$cursor_file"
+        if [ -n "$text" ]; then
+            emit_event "running" "speech:$text"
+        fi
+    fi
+}
+
 # Parse cached JSON payload with node (no stdin reading).
 parse_json() {
     local expr="$1"
@@ -96,7 +162,10 @@ case "${1:-}" in
                 ;;
 
             prompt-submit)
-                msg=$(parse_json 'return (j.prompt||"").substring(0,500).replace(/[\n\r]/g," ").trim()')
+                # \n / \r を literal "\n" (= 2 chars: backslash + n) に escape。
+                # OSC payload 内の生改行はターミナル emulator が OSC を切る可能性が
+                # あるため避ける。Mac 側 NotificationStore で復元する。
+                msg=$(parse_json 'return (j.prompt||"").substring(0,2000).replace(/\r/g,"").replace(/\n/g,"\\n").trim()')
                 emit_event "running" "${msg:-Generating}"
                 ;;
 
@@ -106,6 +175,8 @@ case "${1:-}" in
                 ;;
 
             pre-tool-use)
+                # まず transcript の新 assistant message を flush (= tool 直前の中間発話)
+                flush_assistant_messages
                 msg=$(parse_json '
                     const t=j.tool_name||"";
                     const i=j.tool_input||{};
@@ -126,6 +197,8 @@ case "${1:-}" in
                 ;;
 
             post-tool-use)
+                # tool 完了後に追加の assistant message があれば flush
+                flush_assistant_messages
                 msg=$(parse_json '
                     const t=j.tool_name||"";
                     const o=j.tool_output||j.output||"";
@@ -166,7 +239,7 @@ case "${1:-}" in
                     try {
                         let t = extract();
                         if (!t) { const{execSync:s}=require("child_process"); s("sleep 0.1"); t = extract(); }
-                        if (t) return t.replace(/[\x00-\x1f\x7f]/g,"").replace(/[\n\r\t]/g," ").substring(0,500).trim();
+                        if (t) return t.replace(/\r/g,"").replace(/\n/g,"\\n").replace(/\t/g," ").replace(/[\x00-\x08\x0b-\x1f\x7f]/g,"").substring(0,2000).trim();
                     } catch {}
                     return ""
                 ')

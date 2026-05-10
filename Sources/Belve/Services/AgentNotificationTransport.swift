@@ -21,6 +21,11 @@ protocol AgentNotificationTransport: AnyObject {
 class OSCAgentTransport: AgentNotificationTransport {
 	var onAgentStatus: ((String, String, String, String) -> Void)?
 	private var partialBuffer = ""
+	/// Warm-up window: この時刻まで BELVE OSC event を全て drop する。
+	/// Terminal reload 時の replay で過去 OSC が大量再 dispatch されて status が
+	/// 高速で循環 (running → waiting → completed → ...) する事象を防ぐ。
+	/// XTermTerminalView.startPTY で PTY 起動時に set する。
+	var suppressUntil: Date?
 
 	func scan(_ data: Data) {
 		guard let str = String(data: data, encoding: .utf8) else { return }
@@ -36,9 +41,24 @@ class OSCAgentTransport: AgentNotificationTransport {
 		let oscPrefix = "\u{1b}]9;"
 
 		while let startRange = partialBuffer.range(of: oscPrefix) {
-			guard let endRange = partialBuffer.range(of: bel, range: startRange.upperBound..<partialBuffer.endIndex) else {
-				// Incomplete sequence — keep buffered, but limit buffer size
-				if partialBuffer.count > 2000 {
+			let bodyStart = startRange.upperBound
+			let belRange = partialBuffer.range(of: bel, range: bodyStart..<partialBuffer.endIndex)
+			// 次の OSC start prefix。前 OSC の BEL terminator が欠落した場合の
+			// 防御 (= 次 OSC の prefix までを「ここで terminate されたとみなす」)。
+			let nextStart = partialBuffer.range(of: oscPrefix, range: bodyStart..<partialBuffer.endIndex)
+
+			let endIdx: String.Index
+			if let belR = belRange, let nextR = nextStart {
+				// BEL も次 OSC も見えてる → 早く来た方を terminator に
+				endIdx = belR.lowerBound < nextR.lowerBound ? belR.lowerBound : nextR.lowerBound
+			} else if let belR = belRange {
+				endIdx = belR.lowerBound
+			} else if let nextR = nextStart {
+				// 次 OSC が見えてるが BEL が無い → 前 OSC は truncated。次 OSC 直前で切る。
+				endIdx = nextR.lowerBound
+			} else {
+				// どちらも見えてない → buffer 続行 (size cap で stale 切り詰め)
+				if partialBuffer.count > 4000 {
 					if let lastEsc = partialBuffer.range(of: "\u{1b}", options: .backwards) {
 						partialBuffer = String(partialBuffer[lastEsc.lowerBound...])
 					} else {
@@ -48,10 +68,21 @@ class OSCAgentTransport: AgentNotificationTransport {
 				return
 			}
 
-			let payload = String(partialBuffer[startRange.upperBound..<endRange.lowerBound])
-			partialBuffer = String(partialBuffer[endRange.upperBound...])
+			let payload = String(partialBuffer[bodyStart..<endIdx])
+			// terminator が BEL なら 1 文字、次 OSC start なら何もスキップしない
+			let consumeUpTo: String.Index
+			if endIdx < partialBuffer.endIndex, partialBuffer[endIdx] == "\u{07}" {
+				consumeUpTo = partialBuffer.index(after: endIdx)
+			} else {
+				consumeUpTo = endIdx
+			}
+			partialBuffer = String(partialBuffer[consumeUpTo...])
 
 			// BELVE2: 4 fields (paneId, sessionId, status, message)
+			// Warm-up window 中は BELVE event を全 drop (= terminal reload 時の
+			// replay で status が高速循環する事象の防止)。parse はするが dispatch しない。
+			if let until = suppressUntil, Date() < until { continue }
+
 			if payload.hasPrefix("BELVE2:") {
 				let body = String(payload.dropFirst("BELVE2:".count))
 				let parts = body.split(separator: ":", maxSplits: 3)
@@ -64,7 +95,6 @@ class OSCAgentTransport: AgentNotificationTransport {
 					self?.onAgentStatus?(paneId, sessionId, status, message)
 				}
 			} else if payload.hasPrefix("BELVE:") {
-				// Legacy 形式: 3 fields。sessionId 空で通知。
 				let body = String(payload.dropFirst("BELVE:".count))
 				let parts = body.split(separator: ":", maxSplits: 2)
 				guard parts.count >= 2 else { continue }

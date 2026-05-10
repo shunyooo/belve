@@ -579,7 +579,12 @@ struct XTermTerminalView: NSViewRepresentable {
 
 				// Agent notification transport
 				if let paneId {
-					self.notificationStore?.suppressNotifications(for: paneId, seconds: 3.0)
+					// belve-persist の replay buffer が大きい (= 4MB) と、過去 OSC が
+					// 大量に再ディスパッチされる。Transport レベルで BELVE event を全 drop
+					// する warm-up を設定。status 循環 / bubble flood / 通知 spam を一括防止。
+					let warmupDuration: TimeInterval = 8.0
+					pty.agentTransport.suppressUntil = Date().addingTimeInterval(warmupDuration)
+					self.notificationStore?.suppressNotifications(for: paneId, seconds: warmupDuration)
 					pty.agentTransport.onAgentStatus = { [weak self] agentPaneId, sessionId, status, message in
 						// Remote (DevContainer / SSH) は BELVE_PANE_ID が shell に
 						// 渡らない (= TCP tunnel 経由で env が伝播しない) ため、
@@ -587,7 +592,7 @@ struct XTermTerminalView: NSViewRepresentable {
 						// Mac 側で正しい paneId に書き換えて dispatch する。
 						let effectivePaneId = (agentPaneId == "unknown") ? paneId : agentPaneId
 						self?.notificationStore?.updateAgentStatus(
-							paneId: effectivePaneId, sessionId: sessionId, status: status, message: message
+							paneId: effectivePaneId, sessionId: sessionId, status: status, messageRaw: message
 						)
 					}
 				}

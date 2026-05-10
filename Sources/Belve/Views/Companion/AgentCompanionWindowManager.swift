@@ -1,109 +1,73 @@
 import AppKit
 import SwiftUI
 
-/// Companion 用の floating NSPanel を 1 paneId = 1 panel で生成 / 更新 / 破棄。
-/// Phase 1 MVP: 画面右上に縦 stack で配置 (offset で重ねない)。
-/// Phase 2 で drag 配置 + 永続化を足す予定。
+/// Agent Dock の floating NSPanel を 1 つだけ管理する。
+/// 複数 companion が dock 内に並ぶ (= panel 1 つ、SwiftUI 側が複数 avatar を描画)。
 @MainActor
 final class AgentCompanionWindowManager {
 	static let shared = AgentCompanionWindowManager()
 
-	private var panels: [String: AgentCompanionPanel] = [:]
-	private var stackOrder: [String] = []  // paneId 順、配置 stack 用
+	private var dockPanel: AgentDockPanel?
 
 	private init() {}
 
-	func upsert(companion: AgentCompanion) {
-		if let existing = panels[companion.paneId] {
-			existing.update(companion: companion)
-			return
-		}
-		let panel = AgentCompanionPanel(companion: companion)
-		panels[companion.paneId] = panel
-		stackOrder.append(companion.paneId)
-		// 保存済み位置があれば復元、無ければデフォルト stack 配置。
-		if let saved = AgentCompanionPanel.restoredOrigin(for: companion.paneId) {
-			panel.setOriginByLayout(saved)
-			panel.hasUserPosition = true
+	/// Companion が 1 つ以上あれば dock を表示、0 なら非表示。
+	/// AgentCompanionStore.reconcile から呼ばれる。
+	func updateDock(hasCompanions: Bool) {
+		if hasCompanions {
+			if dockPanel == nil {
+				let panel = AgentDockPanel()
+				dockPanel = panel
+				positionDock(panel)
+				panel.orderFrontRegardless()
+			}
 		} else {
-			positionInStack(panel: panel, indexInStack: stackOrder.count - 1)
+			dismissDock()
 		}
-		panel.orderFrontRegardless()
 	}
 
+	/// Companion 個別の dismiss 用 (= 互換 API)。Store 側で companion を消した後に呼ぶ。
 	func dismiss(paneId: String) {
-		guard let panel = panels.removeValue(forKey: paneId) else { return }
-		panel.close()
-		if let idx = stackOrder.firstIndex(of: paneId) {
-			stackOrder.remove(at: idx)
-			repositionAll()
-		}
+		// Dock は single panel なので個別 dismiss は不要。
+		// Store 側で companion が消えれば dock view が自動で更新される。
+		// companions が 0 になれば updateDock(hasCompanions: false) で dock ごと消える。
 	}
 
 	func dismissAll() {
-		for panel in panels.values { panel.close() }
-		panels.removeAll()
-		stackOrder.removeAll()
+		dismissDock()
 	}
 
-	/// `sourcePaneId` が動いた時に、他の選択中 companion を同じ delta で動かす。
-	/// 自分自身は除外、伝播先の windowDidMove 連鎖は ignoreNextMove flag で抑止。
-	func propagateMove(from sourcePaneId: String, delta: NSPoint) {
-		let selected = AgentCompanionStore.shared.selectedPaneIds
-		guard selected.contains(sourcePaneId), selected.count > 1 else { return }
-		for paneId in selected where paneId != sourcePaneId {
-			guard let panel = panels[paneId] else { continue }
-			let new = NSPoint(x: panel.frame.origin.x + delta.x, y: panel.frame.origin.y + delta.y)
-			panel.setOriginByPropagation(new)
-		}
+	// 旧 API 互換: upsert は何もしない (= dock は store observe で自動更新)
+	func upsert(companion: AgentCompanion) {}
+
+	// 旧 API 互換: propagateMove は dock では不要
+	func propagateMove(from sourcePaneId: String, delta: NSPoint) {}
+
+	private func dismissDock() {
+		dockPanel?.close()
+		dockPanel = nil
 	}
 
-	private func positionInStack(panel: AgentCompanionPanel, indexInStack: Int) {
-		// User が drag で動かした panel はユーザー配置を尊重 (= 触らない)。
-		guard !panel.hasUserPosition else { return }
+	private func positionDock(_ panel: AgentDockPanel) {
 		guard let screen = NSScreen.main else { return }
-		let panelSize = panel.frame.size
-		let margin: CGFloat = 16
-		let gap: CGFloat = 8
 		let visible = screen.visibleFrame
-		let x = visible.maxX - panelSize.width - margin
-		let y = visible.maxY - panelSize.height - margin - (panelSize.height + gap) * CGFloat(indexInStack)
-		panel.setOriginByLayout(NSPoint(x: x, y: y))
-	}
-
-	private func repositionAll() {
-		// 既に drag された panel は skip しつつ、index は stackOrder の元 index で
-		// そのまま使う (= 詰めない)。詰めると残ってる panel のデフォルト位置が
-		// ガクッと上にズレて違和感、また user-positioned の隙間に被る恐れがある。
-		for (i, paneId) in stackOrder.enumerated() {
-			if let panel = panels[paneId] {
-				positionInStack(panel: panel, indexInStack: i)
-			}
-		}
+		let panelSize = panel.frame.size
+		let x = visible.midX - panelSize.width / 2
+		let y = visible.minY + 16
+		panel.setFrameOrigin(NSPoint(x: x, y: y))
 	}
 }
 
-/// SwiftUI コンテンツを乗せる NSPanel。floating + 非アクティブ化 (= main app の
-/// frontmost を奪わない) + 透過背景。`windowDidMove` を観測して
-/// 「複数選択中の他 panel に delta を伝播」する (= まとめて移動)。
-final class AgentCompanionPanel: NSPanel, NSWindowDelegate {
-	private let host: NSHostingController<AgentCompanionView>
-	private let model: AgentCompanionViewModel
-	let paneId: String
-	private var lastOrigin: NSPoint = .zero
-	/// 伝播由来 (= 他 panel が動いたから動かされた) の windowDidMove を抑止する。
-	private var ignoreNextMove = false
-	/// User が drag (or 伝播 drag) で動かしたら true。一度でも動かされた panel は
-	/// reconcile / dismiss 時の再 stack 配置の対象から外す (= ユーザー配置を尊重)。
-	var hasUserPosition = false
+/// Dock 用の floating NSPanel。画面下部中央に配置。
+final class AgentDockPanel: NSPanel {
+	private let host: NSHostingController<AnyView>
 
-	init(companion: AgentCompanion) {
-		self.paneId = companion.paneId
-		self.model = AgentCompanionViewModel(companion: companion)
-		self.host = NSHostingController(rootView: AgentCompanionView(model: model))
-		// 透過パネルなので大きめ frame でも見た目は SwiftUI content のみ。
-		// 展開時にテキストが溢れないよう十分な高さを確保。
-		let initialFrame = NSRect(x: 0, y: 0, width: 400, height: 600)
+	init() {
+		let notifStore = (NSApp.delegate as? AppDelegate)?.notificationStore ?? NotificationStore()
+		self.host = NSHostingController(
+			rootView: AnyView(AgentDockView().environmentObject(notifStore))
+		)
+		let initialFrame = NSRect(x: 0, y: 0, width: 500, height: 300)
 		super.init(
 			contentRect: initialFrame,
 			styleMask: [.borderless, .nonactivatingPanel],
@@ -119,91 +83,12 @@ final class AgentCompanionPanel: NSPanel, NSWindowDelegate {
 		self.hidesOnDeactivate = false
 		self.isMovableByWindowBackground = true
 		self.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-		// contentViewController 経由ではなく直接 subview 追加 + autoresizing。
-		// contentViewController を使うと sizingOptions 周りの挙動が不安定で
-		// content が 0 サイズに潰れたり panel が見えなくなる。
 		let hostView = host.view
 		hostView.wantsLayer = true
 		hostView.frame = self.contentView!.bounds
 		hostView.autoresizingMask = [.width, .height]
 		self.contentView!.addSubview(hostView)
-		self.delegate = self
-		self.lastOrigin = self.frame.origin
-	}
-
-	/// コンテンツの intrinsicContentSize に合わせてパネルをリサイズ。
-	/// bottom-left を固定して上方向に伸縮する。
-	private let panelWidth: CGFloat = 400
-
-	/// SwiftUI 側から通知されたコンテンツサイズに合わせてパネルをリサイズ。
-	func fitToSize(_ contentSize: CGSize) {
-		guard contentSize.height > 0 else { return }
-		let newH = max(contentSize.height + 8, 80)  // 余白
-		let newW = max(contentSize.width + 8, panelWidth)
-		let oldFrame = frame
-		// bottom-left 固定: origin.y を調整して上に伸びる
-		let newY = oldFrame.origin.y + oldFrame.height - newH
-		let newFrame = NSRect(x: oldFrame.origin.x, y: newY, width: newW, height: newH)
-		if abs(newFrame.height - oldFrame.height) > 2 {
-			ignoreNextMove = true
-			setFrame(newFrame, display: true, animate: false)
-			lastOrigin = newFrame.origin
-		}
-	}
-
-	func update(companion: AgentCompanion) {
-		model.companion = companion
-	}
-
-	/// 伝播経由の origin 移動。windowDidMove の chain reaction を防ぐため flag を立てる。
-	func setOriginByPropagation(_ origin: NSPoint) {
-		ignoreNextMove = true
-		setFrameOrigin(origin)
-		lastOrigin = origin
-		hasUserPosition = true
-		persistOrigin(origin)
-	}
-
-	/// Manager が初期 stack 配置 / repositionAll で呼ぶ。userPosition flag は立てない。
-	func setOriginByLayout(_ origin: NSPoint) {
-		ignoreNextMove = true
-		setFrameOrigin(origin)
-		lastOrigin = origin
-	}
-
-	func windowDidMove(_ notification: Notification) {
-		if ignoreNextMove { ignoreNextMove = false; return }
-		let new = frame.origin
-		let delta = NSPoint(x: new.x - lastOrigin.x, y: new.y - lastOrigin.y)
-		lastOrigin = new
-		guard delta.x != 0 || delta.y != 0 else { return }
-		hasUserPosition = true
-		persistOrigin(new)
-		AgentCompanionWindowManager.shared.propagateMove(from: paneId, delta: delta)
-	}
-
-	/// origin を per-pane UserDefaults に保存。
-	private func persistOrigin(_ origin: NSPoint) {
-		let key = "Belve.companionPosition.\(paneId)"
-		UserDefaults.standard.set([origin.x, origin.y], forKey: key)
-	}
-
-	/// 保存済みの origin があれば復元。無ければ nil。
-	static func restoredOrigin(for paneId: String) -> NSPoint? {
-		let key = "Belve.companionPosition.\(paneId)"
-		guard let arr = UserDefaults.standard.array(forKey: key) as? [Double], arr.count == 2 else { return nil }
-		return NSPoint(x: arr[0], y: arr[1])
-	}
-
-	/// 保存済み size を復元。
-}
-
-/// ViewModel: SwiftUI 側で観測する。Window manager から差し替えられる。
-@MainActor
-final class AgentCompanionViewModel: ObservableObject {
-	@Published var companion: AgentCompanion
-
-	init(companion: AgentCompanion) {
-		self.companion = companion
+		// SwiftUI content に合わせて panel を auto-resize
+		host.sizingOptions = [.preferredContentSize]
 	}
 }

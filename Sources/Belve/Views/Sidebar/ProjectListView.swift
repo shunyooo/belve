@@ -447,28 +447,46 @@ struct ProjectListView: View {
 	}
 
 	/// Project 配下の view rows。view ごとに「view 行 + その view 配下の
-	/// agent session 行」を nest 表示 (Phase 5)。最後尾に "+ New View" ボタン。
+	/// agent session 行」を nest 表示 (Phase 5)。
+	/// View が 1 つだけ (= "main" のみ) なら view 行は省略して session 行だけ
+	/// project 直下に出す (= UI のノイズ削減)。2 view 以上で初めて view 行を出す。
+	/// View 追加は project context menu からのみ (sidebar の "+ New View" 削除)。
 	@ViewBuilder
 	private func viewRows(for project: Project) -> some View {
 		let views = viewStore.views(for: project.id)
 		let activeId = viewStore.activeView(for: project.id).id
-		VStack(spacing: 1) {
-			ForEach(views) { v in
-				viewRowButton(view: v, isActive: v.id == activeId, project: project)
-				let sessions = sessionsForView(viewId: v.id, projectId: project.id)
-				if !sessions.isEmpty {
-					VStack(spacing: 1) {
-						ForEach(sessions) { session in
-							sessionRowDraggable(session: session, view: v, project: project)
-						}
+		if views.count <= 1 {
+			// View 1 個 → view 行を省略、session のみ project 直下に並べる
+			let v = views.first ?? ProjectView.main(for: project.id)
+			let sessions = sessionsForView(viewId: v.id, projectId: project.id)
+			if !sessions.isEmpty {
+				VStack(spacing: 1) {
+					ForEach(sessions) { session in
+						sessionRowDraggable(session: session, view: v, project: project)
 					}
-					.padding(.leading, 12)
+				}
+				.padding(.leading, 16)
+				.padding(.bottom, 4)
+			}
+		} else {
+			// View 2 個以上 → view 行 + その下に session 行を nest
+			VStack(spacing: 1) {
+				ForEach(views) { v in
+					viewRowButton(view: v, isActive: v.id == activeId, project: project)
+					let sessions = sessionsForView(viewId: v.id, projectId: project.id)
+					if !sessions.isEmpty {
+						VStack(spacing: 1) {
+							ForEach(sessions) { session in
+								sessionRowDraggable(session: session, view: v, project: project)
+							}
+						}
+						.padding(.leading, 12)
+					}
 				}
 			}
-			newViewButton(project: project)
+			.padding(.leading, 16)
+			.padding(.bottom, 4)
 		}
-		.padding(.leading, 16)
-		.padding(.bottom, 4)
 	}
 
 	@ViewBuilder
@@ -751,6 +769,12 @@ struct ProjectListView: View {
 				currentGroup: project.groupName,
 				existingGroups: groupNames,
 				bulkCount: bulk ? targets.count : nil,
+				onAddView: bulk ? nil : {
+					FloatingMenuPopup.shared.close()
+					let new = viewStore.createView(for: project.id)
+					selectedProject = project
+					NSLog("[Belve] Created new view '%@' via context menu for project %@", new.name, project.name)
+				},
 				onTogglePin: {
 					FloatingMenuPopup.shared.close()
 					for id in targets { onTogglePin?(id) }
@@ -847,8 +871,11 @@ private struct SessionRow: View {
 		HStack(alignment: .top, spacing: 10) {
 			VStack {
 				Spacer().frame(height: 3)
-				// subagent 走行中は親 status (running/waiting/etc) より優先表示
-				StatusIndicator(status: session.subagentCount > 0 ? .runningSubagent : session.status)
+				// Per-session avatar (= companion と同期)。未設定なら global style。
+				StatusIndicator(
+					status: session.subagentCount > 0 ? .runningSubagent : session.status,
+					styleOverride: session.paneId.flatMap { AgentCompanionStore.shared.avatarStyle(for: $0) }
+				)
 			}
 
 			VStack(alignment: .leading, spacing: 2) {
@@ -1074,6 +1101,8 @@ struct ProjectContextMenu: View {
 	/// Rename is hidden (no sensible bulk semantics); a header row announces
 	/// the count so the user knows the action is bulk.
 	var bulkCount: Int? = nil
+	/// nil の時は "Add View" 項目を出さない (= bulk 選択時など)。
+	var onAddView: (() -> Void)? = nil
 	var onTogglePin: (() -> Void)?
 	var onSetGroup: ((String?) -> Void)?
 	var onNewGroup: (() -> Void)?
@@ -1090,6 +1119,10 @@ struct ProjectContextMenu: View {
 					.foregroundStyle(Theme.accent)
 					.padding(.horizontal, 10)
 					.padding(.vertical, 4)
+				ContextMenuDivider()
+			}
+			if let onAddView {
+				ContextMenuItem(label: "Add View", icon: "plus.rectangle.on.rectangle", action: onAddView)
 				ContextMenuDivider()
 			}
 			if let onTogglePin {

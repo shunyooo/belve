@@ -63,6 +63,30 @@ final class AgentCompanionStore: ObservableObject {
 		enabledPaneIds.contains(paneId)
 	}
 
+	/// Sidebar と同じ project 順序 (= projectStore.projects の id 配列)。
+	/// Dock の avatar 並び順に使用。
+	var projectOrder: [UUID] {
+		projectStore?.projects.map(\.id) ?? []
+	}
+
+	/// Per-session avatar style を取得。Sidebar の SessionRow と companion が同じ
+	/// avatar を表示するための共通 accessor。未設定 (= 一度も companion 表示されてない
+	/// session) なら nil を返す (= 呼び出し側が global style を使う)。
+	func avatarStyle(for paneId: String) -> SpinnerStyle? {
+		if let cached = avatarStyles[paneId] { return cached }
+		// UserDefaults に保存済みなら復元
+		if let saved = UserDefaults.standard.string(forKey: "Belve.companionAvatar.\(paneId)"),
+		   let style = SpinnerStyle(rawValue: saved) {
+			avatarStyles[paneId] = style
+			return style
+		}
+		// 未設定: deterministic random で初期化 + persist
+		let picked = randomAvatar(seed: paneId)
+		avatarStyles[paneId] = picked
+		UserDefaults.standard.set(picked.rawValue, forKey: "Belve.companionAvatar.\(paneId)")
+		return picked
+	}
+
 	/// Avatar を次の style に cycle (= right-click > Change Avatar)。
 	func cycleAvatar(_ paneId: String) {
 		let pool: [SpinnerStyle] = [.invader, .ghost, .chibiCat, .rainbowCat, .partyParrot]
@@ -107,11 +131,13 @@ final class AgentCompanionStore: ObservableObject {
 	private func persistEnabledPaneIds() {
 		UserDefaults.standard.set(Array(enabledPaneIds), forKey: Self.enabledPaneIdsKey)
 	}
-	/// Per-pane message history。最新 3 件を保持。「前回と同じ text なら追加しない」
-	/// でデデュプ。session 終了でクリア。
+	/// Per-pane message history。最新 3 件を保持。session 終了でクリア。
 	private var messageHistory: [String: [CompanionMessage]] = [:]
-	/// 前回の message text (デデュプ判定用)。
+	/// 前回の message text (連続重複 dedup 用)。
 	private var lastMessageText: [String: String] = [:]
+	/// Content hash dedup: 同一テキストの bubble を防ぐ (= replay 等で同じ text が
+	/// 複数回届いても 1 件に)。hash は pane ごと、user prompt 変更でリセット。
+	private var seenTextHashes: [String: Set<Int>] = [:]
 	private var lastSeenPrompt: [String: String] = [:]
 	private let maxMessages = 3
 
@@ -170,26 +196,37 @@ final class AgentCompanionStore: ObservableObject {
 			avatarStyles[paneId] = style
 			let projectName = projectStore?.projects.first(where: { $0.id == session.projectId })?.name ?? "?"
 
-			// ユーザーが新しい prompt を submit したら bubble をリセット
+			// ユーザーが新しい prompt を submit したら bubble + hash をリセット
 			let currentPrompt = session.lastUserPrompt ?? ""
 			if !currentPrompt.isEmpty && currentPrompt != lastSeenPrompt[paneId] {
 				lastSeenPrompt[paneId] = currentPrompt
 				messageHistory.removeValue(forKey: paneId)
 				lastMessageText.removeValue(forKey: paneId)
+				seenTextHashes.removeValue(forKey: paneId)
 			}
 
-			// Bubble-worthy message: tool / result / subagent 以外 (= agent の思考、
-			// user prompt、waiting 等)。tool 系は currentTool として小さくインライン表示。
+			// Bubble-worthy message: transcript 由来 agent 発話 / waiting 等。
+			// Replay warm-up 中は skip、content hash dedup で同一テキスト重複も防ぐ。
+			let inReplay = notificationStore?.isInReloadWarmup(for: paneId) ?? false
 			let bubbleText = bubbleWorthyText(for: session)
-			if let text = bubbleText, text != lastMessageText[paneId] {
-				lastMessageText[paneId] = text
-				let msg = CompanionMessage(id: UUID(), text: text, timestamp: Date())
-				var history = messageHistory[paneId] ?? []
-				history.append(msg)
-				if history.count > maxMessages {
-					history = Array(history.suffix(maxMessages))
+			if !inReplay, let text = bubbleText, text != lastMessageText[paneId] {
+				let hash = text.hashValue
+				var hashes = seenTextHashes[paneId] ?? Set<Int>()
+				if !hashes.contains(hash) {
+					hashes.insert(hash)
+					seenTextHashes[paneId] = hashes
+					lastMessageText[paneId] = text
+					let msg = CompanionMessage(id: UUID(), text: text, timestamp: Date())
+					var history = messageHistory[paneId] ?? []
+					history.append(msg)
+					if history.count > maxMessages {
+						history = Array(history.suffix(maxMessages))
+					}
+					messageHistory[paneId] = history
 				}
-				messageHistory[paneId] = history
+			} else if inReplay, let text = bubbleText {
+				lastMessageText[paneId] = text
+				seenTextHashes[paneId, default: Set<Int>()].insert(text.hashValue)
 			}
 
 			let snapshot = AgentCompanion(
@@ -203,8 +240,9 @@ final class AgentCompanionStore: ObservableObject {
 				currentTool: currentToolText(for: session)
 			)
 			companions[paneId] = snapshot
-			AgentCompanionWindowManager.shared.upsert(companion: snapshot)
 		}
+		// Dock panel の表示 / 非表示を更新
+		AgentCompanionWindowManager.shared.updateDock(hasCompanions: !companions.isEmpty)
 	}
 
 	/// Sidebar の session row と同じ表示条件。archived / sessionEnd / idle は非表示。
@@ -225,6 +263,11 @@ final class AgentCompanionStore: ObservableObject {
 		// Waiting (= agent がユーザーに聞いてる) → 最も重要な bubble
 		if session.status == .waiting { return session.message }
 		let msg = session.message
+		// `speech:` prefix = transcript 由来の agent 中間発話 (= belve hook が
+		// pre/post-tool-use で transcript を読んで flush)。中身を bubble に出す。
+		if msg.hasPrefix("speech:") {
+			return String(msg.dropFirst("speech:".count))
+		}
 		// User prompt / label と同じテキストは bubble に出さない (= header で既に表示)
 		if msg == session.lastUserPrompt || msg == session.label { return nil }
 		// Tool prefix / result / lifecycle / Generating / 空は skip
