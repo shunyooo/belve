@@ -21,11 +21,14 @@ protocol AgentNotificationTransport: AnyObject {
 class OSCAgentTransport: AgentNotificationTransport {
 	var onAgentStatus: ((String, String, String, String) -> Void)?
 	private var partialBuffer = ""
-	/// Warm-up window: この時刻まで BELVE OSC event を全て drop する。
+	/// Warm-up window: この時刻まで BELVE OSC event を buffer する。
 	/// Terminal reload 時の replay で過去 OSC が大量再 dispatch されて status が
-	/// 高速で循環 (running → waiting → completed → ...) する事象を防ぐ。
-	/// XTermTerminalView.startPTY で PTY 起動時に set する。
+	/// 高速で循環する事象を防ぎつつ、warm-up 終了時に最後の event だけ dispatch して
+	/// 現在の status を復元する。
 	var suppressUntil: Date?
+	/// Warm-up 中に受け取った最後の event (= per paneId)。warm-up 終了後に dispatch。
+	private var bufferedEvents: [(String, String, String, String)] = []
+	private var warmupFlushed = false
 
 	func scan(_ data: Data) {
 		guard let str = String(data: data, encoding: .utf8) else { return }
@@ -79,31 +82,48 @@ class OSCAgentTransport: AgentNotificationTransport {
 			partialBuffer = String(partialBuffer[consumeUpTo...])
 
 			// BELVE2: 4 fields (paneId, sessionId, status, message)
-			// Warm-up window 中は BELVE event を全 drop (= terminal reload 時の
-			// replay で status が高速循環する事象の防止)。parse はするが dispatch しない。
-			if let until = suppressUntil, Date() < until { continue }
-
+			// Parse event
+			var parsed: (String, String, String, String)?
 			if payload.hasPrefix("BELVE2:") {
 				let body = String(payload.dropFirst("BELVE2:".count))
 				let parts = body.split(separator: ":", maxSplits: 3)
-				guard parts.count >= 3 else { continue }
-				let paneId = String(parts[0])
-				let sessionId = String(parts[1])
-				let status = String(parts[2])
-				let message = parts.count > 3 ? String(parts[3]) : ""
-				DispatchQueue.main.async { [weak self] in
-					self?.onAgentStatus?(paneId, sessionId, status, message)
+				if parts.count >= 3 {
+					parsed = (String(parts[0]), String(parts[1]), String(parts[2]),
+							  parts.count > 3 ? String(parts[3]) : "")
 				}
 			} else if payload.hasPrefix("BELVE:") {
 				let body = String(payload.dropFirst("BELVE:".count))
 				let parts = body.split(separator: ":", maxSplits: 2)
-				guard parts.count >= 2 else { continue }
-				let paneId = String(parts[0])
-				let status = String(parts[1])
-				let message = parts.count > 2 ? String(parts[2]) : ""
-				DispatchQueue.main.async { [weak self] in
-					self?.onAgentStatus?(paneId, "", status, message)
+				if parts.count >= 2 {
+					parsed = (String(parts[0]), "", String(parts[1]),
+							  parts.count > 2 ? String(parts[2]) : "")
 				}
+			}
+			guard let event = parsed else { continue }
+
+			// Warm-up window 中は buffer に貯める (= 全 drop ではなく最後を保持)。
+			// Warm-up 終了後に最後の event を dispatch → 現在 status が復元される。
+			if let until = suppressUntil, Date() < until {
+				bufferedEvents.append(event)
+				continue
+			}
+
+			// Warm-up 終了: buffer に貯まってた最後の event を 1 回だけ flush
+			if !warmupFlushed && !bufferedEvents.isEmpty {
+				warmupFlushed = true
+				// Per-paneId で最後の event だけ dispatch (= 最新 status を復元)
+				var lastPerPane: [String: (String, String, String, String)] = [:]
+				for e in bufferedEvents { lastPerPane[e.0] = e }
+				bufferedEvents.removeAll()
+				for (_, e) in lastPerPane {
+					DispatchQueue.main.async { [weak self] in
+						self?.onAgentStatus?(e.0, e.1, e.2, e.3)
+					}
+				}
+			}
+
+			DispatchQueue.main.async { [weak self] in
+				self?.onAgentStatus?(event.0, event.1, event.2, event.3)
 			}
 			// その他の OSC 9 (= claude 自身の terminal title 設定等) は素通し。
 		}

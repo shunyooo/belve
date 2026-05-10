@@ -443,7 +443,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		      let data = try? Data(contentsOf: url),
 		      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
 		else { return result }
-		for (projectIDString, root) in json {
+		for (projectIDString, rawRoot) in json {
+			// pane-layouts.json の新フォーマットは {"root": {...}, "nextPaneIndex": N}。
+			// 旧フォーマットは PaneNode 直接。どちらも対応。
+			let root: Any
+			if let wrapper = rawRoot as? [String: Any], let r = wrapper["root"] {
+				root = r
+			} else {
+				root = rawRoot
+			}
 			let projShort = String(projectIDString.prefix(8)).uppercased()
 			collectPaneSessions(node: root, projShort: projShort, into: &result)
 		}
