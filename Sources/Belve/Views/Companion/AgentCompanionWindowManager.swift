@@ -67,7 +67,8 @@ final class AgentDockPanel: NSPanel {
 		self.host = NSHostingController(
 			rootView: AgentDockView(notificationStore: notifStore)
 		)
-		let initialFrame = NSRect(x: 0, y: 0, width: 500, height: 300)
+		let screenWidth = NSScreen.main?.frame.width ?? 1920
+		let initialFrame = NSRect(x: 0, y: 0, width: screenWidth, height: 300)
 		super.init(
 			contentRect: initialFrame,
 			styleMask: [.borderless, .nonactivatingPanel],

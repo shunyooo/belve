@@ -54,7 +54,9 @@ function buildFullUrl(buf, startY, urlStart) {
 	var firstLine = buf.getLine(startY);
 	if (!firstLine) return { url: url, continuations: continuations };
 	var firstText = firstLine.translateToString(true);
-	var prevEndsAtEdge = firstText.endsWith(urlStart) && firstText.length >= term.cols;
+	// URL が行末で終わってればほぼ確実に wrap (= term.cols ピッタリじゃなくても許容)。
+	// 厳密な width check は claude code みたいに余白残して wrap する出力を取りこぼす。
+	var prevEndsAtEdge = firstText.endsWith(urlStart);
 
 	var nextY = startY + 1;
 	while (nextY < buf.length) {
@@ -161,8 +163,8 @@ term.registerLinkProvider({
 			if (prevLine) {
 				var prevText = prevLine.translateToString(true);
 				var prevMatch = prevText.match(/(https?:\/\/[^\s<>"'`)\]]+)$/);
-				var prevEndsAtEdge = prevMatch && prevText.length >= term.cols;
-				if (prevMatch && (line.isWrapped || prevEndsAtEdge)) {
+				// URL が prev 行末で終わってればほぼ wrap (= cols 厳密 check 不要)
+				if (prevMatch) {
 					// Indented continuation も許容 (^\s* で先頭空白を skip)。URL を改行 +
 					// インデントで折り返す TUI 出力 (例: claude code) に対応。
 					var cont = text.match(/^(\s*)([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);

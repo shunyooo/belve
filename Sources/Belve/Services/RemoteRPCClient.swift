@@ -232,6 +232,9 @@ final class RemoteRPCClient: @unchecked Sendable {
 				}
 				cont?.resume(returning: RPCResponse(raw: obj))
 			} else if let type = obj["type"] as? String {
+				if type == "fsevent" {
+					NSLog("[Belve][RPC] push fsevent: %@", String(describing: obj))
+				}
 				let handlers = stateLock.withLock { pushHandlers }
 				for h in handlers { h(type, obj) }
 			}

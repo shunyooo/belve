@@ -503,12 +503,8 @@ struct XTermTerminalView: NSViewRepresentable {
 							postDisconnectedState(isDisconnected: true)
 							return
 						}
-						let sessionName: String
-						if paneIndex != 0 {
-							sessionName = "belve-\(projShort)-\(paneIndex)"
-						} else {
-							sessionName = "belve-\(projShort)"
-						}
+						let paneIdShort = String((paneId ?? UUID().uuidString).prefix(8))
+						let sessionName = "belve-\(projShort)-\(paneIdShort)"
 						let sockPath = "/tmp/belve-shell/sessions/\(sessionName).sock"
 						try? FileManager.default.createDirectory(
 							atPath: "/tmp/belve-shell/sessions",

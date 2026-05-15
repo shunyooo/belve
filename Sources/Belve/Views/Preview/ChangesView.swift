@@ -7,6 +7,135 @@ struct DiffFilter {
 	var committed: Bool = false
 }
 
+/// File tree の node。directory なら children あり。file なら ChangedFile を持つ。
+fileprivate struct TreeNode {
+	let name: String
+	let fullPath: String
+	let isDirectory: Bool
+	let file: ChangedFile?
+	var children: [TreeNode] = []
+}
+
+/// 再帰描画する tree row。直接 ViewBuilder で recursive にすると opaque type が
+/// 自己参照で破綻するので別 struct に切り出して View 経由で recurse する。
+fileprivate struct TreeNodeRow: View {
+	let node: TreeNode
+	let depth: Int
+	@Binding var collapsedDirs: Set<String>
+	@Binding var selectedFilePath: String?
+	@Binding var hoveredFilePath: String?
+	let onSelect: (String) -> Void
+	let onOpen: (String) -> Void
+
+	var body: some View {
+		if node.isDirectory {
+			directoryRow
+			if !collapsedDirs.contains(node.fullPath) {
+				ForEach(Array(node.children.enumerated()), id: \.element.fullPath) { _, child in
+					TreeNodeRow(
+						node: child,
+						depth: depth + 1,
+						collapsedDirs: $collapsedDirs,
+						selectedFilePath: $selectedFilePath,
+						hoveredFilePath: $hoveredFilePath,
+						onSelect: onSelect,
+						onOpen: onOpen
+					)
+				}
+			}
+		} else if let file = node.file {
+			FileTreeFileRow(
+				file: file,
+				depth: depth,
+				selectedFilePath: $selectedFilePath,
+				hoveredFilePath: $hoveredFilePath,
+				onSelect: onSelect,
+				onOpen: onOpen
+			)
+		}
+	}
+
+	private var directoryRow: some View {
+		let isCollapsed = collapsedDirs.contains(node.fullPath)
+		let fileCount = countFiles(in: node)
+		return Button {
+			if isCollapsed { collapsedDirs.remove(node.fullPath) } else { collapsedDirs.insert(node.fullPath) }
+		} label: {
+			HStack(spacing: 4) {
+				Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+					.font(.system(size: 8, weight: .semibold))
+					.foregroundStyle(Theme.textSecondary)
+				Image(systemName: "folder")
+					.font(.system(size: 10))
+					.foregroundStyle(Theme.textSecondary)
+				Text(node.name)
+					.font(.system(size: 11))
+					.foregroundStyle(Theme.textSecondary)
+					.lineLimit(1)
+				Spacer()
+				Text("\(fileCount)")
+					.font(.system(size: 9))
+					.foregroundStyle(Theme.textSecondary)
+			}
+			.padding(.horizontal, 8)
+			.padding(.vertical, 4)
+			.padding(.leading, CGFloat(depth) * 12)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+	}
+
+	private func countFiles(in node: TreeNode) -> Int {
+		if !node.isDirectory { return 1 }
+		return node.children.reduce(0) { $0 + countFiles(in: $1) }
+	}
+}
+
+fileprivate struct FileTreeFileRow: View {
+	let file: ChangedFile
+	let depth: Int
+	@Binding var selectedFilePath: String?
+	@Binding var hoveredFilePath: String?
+	let onSelect: (String) -> Void
+	let onOpen: (String) -> Void
+
+	var body: some View {
+		let isSelected = selectedFilePath == file.path
+		let isHovered = hoveredFilePath == file.path
+		HStack(spacing: 6) {
+			Text(file.statusLabel)
+				.font(.system(size: 9, weight: .bold, design: .monospaced))
+				.foregroundStyle(file.statusColor)
+				.frame(width: 14)
+			Text(file.filename)
+				.font(.system(size: 11))
+				.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+				.lineLimit(1)
+			Spacer()
+			if isHovered {
+				Button { onOpen(file.path) } label: {
+					Image(systemName: "arrow.up.forward.square")
+						.font(.system(size: 10))
+						.foregroundStyle(Theme.textSecondary)
+				}
+				.buttonStyle(.plain)
+				.help("Open in editor")
+			}
+		}
+		.padding(.horizontal, 8)
+		.padding(.vertical, 3)
+		.padding(.leading, CGFloat(depth) * 12)
+		.background(
+			RoundedRectangle(cornerRadius: 4)
+				.fill(isSelected ? Theme.surfaceActive : Color.clear)
+		)
+		.contentShape(Rectangle())
+		.onTapGesture { onSelect(file.path) }
+		.onHover { hovering in hoveredFilePath = hovering ? file.path : nil }
+		.id(file.path)
+	}
+}
+
 struct ChangedFile {
 	let status: String
 	let path: String
@@ -35,9 +164,17 @@ struct ChangedFile {
 
 struct ChangesView: View {
 	let project: Project
+	@ObservedObject var layoutState: ProjectLayoutState
 	var onOpenFile: ((String) -> Void)? = nil
 	var onDismiss: (() -> Void)? = nil
-	@State private var filter = DiffFilter()
+	/// filter は layoutState に永続化されてる field を直接 binding で使う。
+	private var filter: DiffFilter {
+		DiffFilter(
+			staged: layoutState.diffFilterStaged,
+			unstaged: layoutState.diffFilterUnstaged,
+			committed: layoutState.diffFilterCommitted
+		)
+	}
 	@State private var changedFiles: [ChangedFile] = []
 	@State private var isLoading = false
 	@State private var totalAdded = 0
@@ -52,9 +189,9 @@ struct ChangesView: View {
 		VStack(spacing: 0) {
 			// Header
 			HStack(spacing: 10) {
-				filterToggle("Staged", isOn: $filter.staged)
-				filterToggle("Unstaged", isOn: $filter.unstaged)
-				filterToggle("Committed", isOn: $filter.committed)
+				filterToggle("Staged", isOn: $layoutState.diffFilterStaged)
+				filterToggle("Unstaged", isOn: $layoutState.diffFilterUnstaged)
+				filterToggle("Committed", isOn: $layoutState.diffFilterCommitted)
 
 				Theme.borderSubtle.frame(width: 1, height: 14)
 
@@ -118,36 +255,44 @@ struct ChangesView: View {
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.background(Theme.surface)
 			} else {
-				HStack(spacing: 0) {
-					// File tree (left)
-					ScrollViewReader { proxy in
-						ScrollView {
-							VStack(alignment: .leading, spacing: 0) {
-								fileTree
+				GeometryReader { geo in
+					HStack(spacing: 0) {
+						// File tree (left)
+						ScrollViewReader { proxy in
+							ScrollView {
+								VStack(alignment: .leading, spacing: 0) {
+									fileTree
+								}
+								.padding(.vertical, 4)
 							}
-							.padding(.vertical, 4)
-						}
-						.onChange(of: selectedFilePath) {
-							if let path = selectedFilePath {
-								withAnimation(.easeInOut(duration: 0.2)) {
-									proxy.scrollTo(path, anchor: .center)
+							.onChange(of: selectedFilePath) {
+								if let path = selectedFilePath {
+									withAnimation(.easeInOut(duration: 0.2)) {
+										proxy.scrollTo(path, anchor: .center)
+									}
 								}
 							}
 						}
+						.frame(width: layoutState.changesTreeWidth)
+						.background(Theme.bg)
+
+						SplitDivider(
+							position: $layoutState.changesTreeWidth,
+							minLeft: 140,
+							minRight: 280,
+							availableWidth: geo.size.width
+						)
+						.frame(width: DividerMetrics.absoluteHitWidth)
+
+						// Unified diff (right)
+						UnifiedDiffWebView(files: changedFiles, onWebViewReady: { wv in
+							diffWebView = wv
+						}, onOpenFile: { path in
+							openFileInEditor(path)
+						}, onVisibleFileChanged: { path in
+							selectedFilePath = path
+						})
 					}
-					.frame(width: 220)
-					.background(Theme.bg)
-
-					Theme.borderSubtle.frame(width: 1)
-
-					// Unified diff (right)
-					UnifiedDiffWebView(files: changedFiles, onWebViewReady: { wv in
-						diffWebView = wv
-					}, onOpenFile: { path in
-						openFileInEditor(path)
-					}, onVisibleFileChanged: { path in
-						selectedFilePath = path
-					})
 				}
 			}
 		}
@@ -156,9 +301,9 @@ struct ChangesView: View {
 			startPolling()
 		}
 		.onDisappear { stopPolling() }
-		.onChange(of: filter.staged) { loadAll() }
-		.onChange(of: filter.unstaged) { loadAll() }
-		.onChange(of: filter.committed) { loadAll() }
+		.onChange(of: layoutState.diffFilterStaged) { loadAll() }
+		.onChange(of: layoutState.diffFilterUnstaged) { loadAll() }
+		.onChange(of: layoutState.diffFilterCommitted) { loadAll() }
 	}
 
 	private func filterToggle(_ label: String, isOn: Binding<Bool>) -> some View {
@@ -177,52 +322,75 @@ struct ChangesView: View {
 		.buttonStyle(.plain)
 	}
 
-	// MARK: - File Tree
+	// MARK: - File Tree (= 再帰 tree 構造)
+
+	private func buildTree(from files: [ChangedFile]) -> [TreeNode] {
+		// Build nested dict structure first
+		var rootChildren: [String: [ChangedFile]] = [:]
+		for file in files {
+			let comps = file.path.split(separator: "/").map(String.init)
+			if comps.isEmpty { continue }
+			let topLevel = comps[0]
+			rootChildren[topLevel, default: []].append(file)
+		}
+		var result: [TreeNode] = []
+		for key in rootChildren.keys.sorted() {
+			let bucket = rootChildren[key] ?? []
+			let directFile = bucket.first(where: { $0.path == key })
+			if bucket.count == 1, let only = directFile {
+				// file at root
+				result.append(TreeNode(name: only.filename, fullPath: only.path, isDirectory: false, file: only))
+			} else {
+				// folder
+				let stripped = bucket.compactMap { f -> ChangedFile? in
+					guard f.path != key else { return nil }
+					let rest = String(f.path.dropFirst(key.count + 1))
+					return ChangedFile(status: f.status, path: rest, diff: f.diff)
+				}
+				let children = buildTree(from: stripped).map { node -> TreeNode in
+					// child の fullPath を親 prefix で再構成
+					var n = node
+					n = TreeNode(
+						name: node.name,
+						fullPath: "\(key)/\(node.fullPath)",
+						isDirectory: node.isDirectory,
+						file: node.file.map { ChangedFile(status: $0.status, path: "\(key)/\($0.path)", diff: $0.diff) },
+						children: node.children.map { reattachPrefix($0, prefix: key) }
+					)
+					return n
+				}
+				result.append(TreeNode(name: key, fullPath: key, isDirectory: true, file: nil, children: children))
+			}
+		}
+		return result
+	}
+
+	/// 再帰的に node の fullPath / file.path に prefix を付け直す。
+	private func reattachPrefix(_ node: TreeNode, prefix: String) -> TreeNode {
+		TreeNode(
+			name: node.name,
+			fullPath: "\(prefix)/\(node.fullPath)",
+			isDirectory: node.isDirectory,
+			file: node.file.map { ChangedFile(status: $0.status, path: "\(prefix)/\($0.path)", diff: $0.diff) },
+			children: node.children.map { reattachPrefix($0, prefix: prefix) }
+		)
+	}
 
 	private var fileTree: some View {
-		let grouped = Dictionary(grouping: changedFiles, by: { $0.directory })
-		let sortedDirs = grouped.keys.sorted()
-
-		return ForEach(sortedDirs, id: \.self) { dir in
-			let files = grouped[dir] ?? []
-			if dir.isEmpty {
-				ForEach(Array(files.enumerated()), id: \.element.path) { _, file in
-					fileRow(file)
-				}
-			} else {
-				let isCollapsed = collapsedDirs.contains(dir)
-				Button {
-					if isCollapsed { collapsedDirs.remove(dir) } else { collapsedDirs.insert(dir) }
-				} label: {
-					HStack(spacing: 4) {
-						Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-							.font(.system(size: 8, weight: .semibold))
-							.foregroundStyle(Theme.textSecondary)
-						Image(systemName: "folder")
-							.font(.system(size: 10))
-							.foregroundStyle(Theme.textSecondary)
-						Text(dir)
-							.font(.system(size: 11))
-							.foregroundStyle(Theme.textSecondary)
-							.lineLimit(1)
-						Spacer()
-						Text("\(files.count)")
-							.font(.system(size: 9))
-							.foregroundStyle(Theme.textSecondary)
-					}
-					.padding(.horizontal, 8)
-					.padding(.vertical, 4)
-					.contentShape(Rectangle())
-				}
-				.buttonStyle(.plain)
-
-				if !isCollapsed {
-					ForEach(Array(files.enumerated()), id: \.element.path) { _, file in
-						fileRow(file)
-							.padding(.leading, 16)
-					}
-				}
-			}
+		let tree = buildTree(from: changedFiles)
+		return ForEach(Array(tree.enumerated()), id: \.element.fullPath) { _, node in
+			TreeNodeRow(
+				node: node,
+				depth: 0,
+				collapsedDirs: $collapsedDirs,
+				selectedFilePath: $selectedFilePath,
+				hoveredFilePath: $hoveredFilePath,
+				onSelect: { path in
+					selectedFilePath = path
+					scrollToFile(path)
+				},
+				onOpen: { path in openFileInEditor(path) }
+			)
 		}
 	}
 
@@ -463,7 +631,21 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		let newHash = files.map(\.path).joined(separator: ",")
 		if context.coordinator.lastHash != newHash {
 			context.coordinator.lastHash = newHash
-			nsView.loadHTMLString(buildHTML(), baseURL: nil)
+			// Reload で scroll position が初期化されるのを防ぐため、reload 前に Y を
+			// 取得 → reload 完了後に同 Y へ復元する。Polling 更新時の UX 維持。
+			nsView.evaluateJavaScript("window.scrollY") { result, _ in
+				let scrollY = (result as? Double) ?? 0
+				nsView.loadHTMLString(buildHTML(), baseURL: nil)
+				// 復元: page reload 完了後に scrollTo。WKWebView.reload は async なので
+				// didFinish navigation 経由が理想だが、簡単のため delay で対応。
+				// 100ms で大半の reload が終わる。複数 retry で取りこぼし防止。
+				let restoreScript = "window.scrollTo(0, \(scrollY))"
+				for delay in [0.1, 0.25, 0.5] {
+					DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+						nsView.evaluateJavaScript(restoreScript)
+					}
+				}
+			}
 		}
 		DispatchQueue.main.async { onWebViewReady?(nsView) }
 	}

@@ -10,7 +10,7 @@
 			--fg-muted: #9aa5ce;
 			--border: #2c2f3a;
 			--accent: #7aa2f7;
-			--code-bg: #1f2030;
+			--code-bg: #282a3a;
 		}
 		html, body {
 			margin: 0;
@@ -42,6 +42,7 @@
 			background: var(--code-bg);
 			padding: 0.15em 0.4em;
 			border-radius: 4px;
+			border: 1px solid var(--border);
 			font-family: ui-monospace, SF Mono, monospace;
 			font-size: 0.92em;
 		}
@@ -49,6 +50,7 @@
 			background: var(--code-bg);
 			padding: 12px 16px;
 			border-radius: 6px;
+			border: 1px solid var(--border);
 			overflow-x: auto;
 		}
 		#preview pre code { background: transparent; padding: 0; font-size: 0.88em; }
@@ -81,6 +83,35 @@
 			color: #f7768e;
 			background: rgba(247, 118, 142, 0.08);
 			border-left: 3px solid #f7768e;
+		}
+		/* Diff highlight animations */
+		@keyframes diff-added {
+			0%   { background-color: rgba(115, 218, 141, 0.25); }
+			100% { background-color: transparent; }
+		}
+		@keyframes diff-removed {
+			0%   { background-color: rgba(247, 118, 142, 0.3); max-height: 200px; opacity: 1; }
+			70%  { background-color: rgba(247, 118, 142, 0.15); max-height: 200px; opacity: 0.7; }
+			100% { max-height: 0; opacity: 0; padding: 0; margin: 0; overflow: hidden; }
+		}
+		@keyframes diff-modified {
+			0%   { background-color: rgba(122, 162, 247, 0.25); }
+			100% { background-color: transparent; }
+		}
+		.belve-diff-added {
+			animation: diff-added 2s ease-out forwards;
+			border-radius: 3px;
+		}
+		.belve-diff-removed {
+			animation: diff-removed 2s ease-out forwards;
+			border-radius: 3px;
+			color: var(--fg-muted);
+			text-decoration: line-through;
+			opacity: 0.7;
+		}
+		.belve-diff-modified {
+			animation: diff-modified 2s ease-out forwards;
+			border-radius: 3px;
 		}
 	</style>
 </head>

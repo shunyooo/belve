@@ -93,7 +93,7 @@ struct PreviewArea: View {
 				}
 
 				if layoutState.showChanges {
-					ChangesView(project: project, onOpenFile: { path in
+					ChangesView(project: project, layoutState: layoutState, onOpenFile: { path in
 						layoutState.showChanges = false
 						loadFile(at: path)
 					}, onDismiss: {
@@ -693,15 +693,24 @@ struct PreviewArea: View {
 			// Remote project は **必ず RPC 経路**。silent fallback はしない
 			// (= 11 inactive project が永遠に ssh stat を叩いて入力ラグの
 			// 元になっていた過去の事例。CLAUDE.md の「優しい fallback 禁止」
-			// 参照)。RPC client が無ければ「監視されてない」状態で続行。
-			// client は ProjectStore が起動時 + select 時に eager 登録する
-			// 責務を持つ。
-			guard let client = RemoteRPCRegistry.shared.client(for: project.id) else {
-				NSLog("[Belve][filewatch] no RPC client for project=%@ — file watch disabled (will not poll)",
-				      project.name)
+			// 参照)。RPC client が無ければリトライして待つ。
+			if let client = RemoteRPCRegistry.shared.client(for: project.id) {
+				startFileWatchRPC(file: file, client: client)
 				return
 			}
-			startFileWatchRPC(file: file, client: client)
+			// RPC client が未登録 (= 起動直後で PTY setup がまだ完了してない)。
+			// 3 秒後にリトライして client が登録されてれば watch 開始。
+			NSLog("[Belve][filewatch] no RPC client for project=%@ — will retry in 3s", project.name)
+			let projectId = project.id
+			DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in
+				guard let file = openFile else { return }
+				if let client = RemoteRPCRegistry.shared.client(for: projectId) {
+					NSLog("[Belve][filewatch] retry succeeded for project=%@", project.name)
+					startFileWatchRPC(file: file, client: client)
+				} else {
+					NSLog("[Belve][filewatch] retry failed — no RPC client for project=%@, file watch disabled", project.name)
+				}
+			}
 			return
 		}
 		// Local: macOS FSEvents 化は別仕事、当面 2 秒 polling のまま。
@@ -709,7 +718,19 @@ struct PreviewArea: View {
 	}
 
 	private func startFileWatchRPC(file: OpenFile, client: RemoteRPCClient) {
-		let dir = (file.path as NSString).deletingLastPathComponent
+		let rawDir = (file.path as NSString).deletingLastPathComponent
+		// 相対パス (DevContainer の effectivePath="." 由来) を broker の cwd で
+		// 絶対パスに解決。broker 側の fsnotify は CWD 非依存で動くため、
+		// 相対パスのまま送ると wrong dir を watch する。
+		let dir: String
+		if rawDir.hasPrefix("/") {
+			dir = rawDir
+		} else if let cwd = RemoteRPCRegistry.shared.cwd(for: project.id) {
+			let joined = rawDir == "." ? cwd : (cwd as NSString).appendingPathComponent(rawDir)
+			dir = (joined as NSString).standardizingPath
+		} else {
+			dir = rawDir
+		}
 		// 同じ dir なら watch 流用 — re-watch コストを節約。
 		if fileWatchRPCDir != dir {
 			// 古い watch を解除
@@ -723,7 +744,10 @@ struct PreviewArea: View {
 				do {
 					let res = try await client.send(op: "watch", params: ["path": dir])
 					if let id = res.result?["watchId"] as? String {
+						NSLog("[Belve][filewatch] watch registered dir=%@ watchId=%@", dir, id)
 						await MainActor.run { fileWatchRPCID = id }
+					} else {
+						NSLog("[Belve][filewatch] watch returned no watchId for dir=%@ res=%@", dir, String(describing: res.raw))
 					}
 				} catch {
 					NSLog("[Belve][filewatch] watch failed: %@", error.localizedDescription)
@@ -736,10 +760,10 @@ struct PreviewArea: View {
 		if !fileWatchRPCSubscribed {
 			fileWatchRPCSubscribed = true
 			client.subscribePush { type, msg in
-				// 高頻度に来るので NSLog は出さない (= CPU 食う)。
 				guard type == "fsevent",
 				      let evPath = msg["path"] as? String,
-				      let kind = msg["kind"] as? String, kind == "modify"
+				      let kind = msg["kind"] as? String,
+				      kind == "modify" || kind == "create"
 				else { return }
 				DispatchQueue.main.async {
 					handleExternalFileChange(at: evPath)
@@ -748,16 +772,39 @@ struct PreviewArea: View {
 		}
 	}
 
+	/// openFile.path (相対 or 絶対) と fsevent path (絶対) を比較。
+	/// DevContainer は openFile.path が "./foo" で fsevent が "/workspace/foo" のように
+	/// 不一致になるので、cwd で解決して比較する。
+	private func resolveFilePath(_ path: String) -> String {
+		if path.hasPrefix("/") { return path }
+		if let cwd = RemoteRPCRegistry.shared.cwd(for: project.id) {
+			let joined = path == "." ? cwd : (cwd as NSString).appendingPathComponent(path)
+			return (joined as NSString).standardizingPath
+		}
+		return path
+	}
+
 	private func handleExternalFileChange(at evPath: String) {
-		guard let current = openFile, current.path == evPath, !isDirty else { return }
+		guard let current = openFile else { return }
+		let resolvedCurrent = resolveFilePath(current.path)
+		guard resolvedCurrent == evPath || current.path == evPath, !isDirty else { return }
+		// readFile と openFile 更新は元の相対パス (= current.path) を使う。
+		// evPath は fsevent 由来の絶対パスなので provider.readFile に渡すと
+		// 相対パスベースの provider (DevContainer 等) で読めない。
+		let originalPath = current.path
+		NSLog("[Belve][filewatch] change detected evPath=%@ originalPath=%@", evPath, originalPath)
 		let provider = project.provider
 		DispatchQueue.global(qos: .utility).async {
-			guard let newContent = provider.readFile(evPath) else { return }
+			guard let newContent = provider.readFile(originalPath) else {
+				NSLog("[Belve][filewatch] readFile returned nil for %@", originalPath)
+				return
+			}
 			DispatchQueue.main.async {
-				guard let currentFile = openFile, currentFile.path == evPath, !isDirty else { return }
+				guard let currentFile = openFile, currentFile.path == originalPath, !isDirty else { return }
 				if newContent != currentFile.content {
+					NSLog("[Belve][filewatch] updating preview for %@ (len %d→%d)", originalPath, currentFile.content.count, newContent.count)
 					openFile = OpenFile(
-						path: evPath,
+						path: originalPath,
 						content: newContent,
 						line: currentFile.line,
 						column: currentFile.column

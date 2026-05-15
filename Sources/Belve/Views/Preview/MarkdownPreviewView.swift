@@ -12,6 +12,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
 		config.userContentController.add(context.coordinator, name: "markdownPreviewHandler")
 		let webView = WKWebView(frame: .zero, configuration: config)
 		webView.setValue(false, forKey: "drawsBackground")
+		// trackpad pinch でズーム可能に (= mermaid 図等の拡大確認用)
+		webView.allowsMagnification = true
+		webView.magnification = 1.0
 		context.coordinator.webView = webView
 		context.coordinator.pendingContent = content
 		if let html = Self.buildHTML() {

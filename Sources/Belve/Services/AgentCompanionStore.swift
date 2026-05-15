@@ -43,7 +43,7 @@ final class AgentCompanionStore: ObservableObject {
 
 	/// Sidebar context menu → "Show Companion" で呼ぶ。
 	func enableCompanion(for paneId: String) {
-		enabledPaneIds.insert(paneId)
+		manuallyEnabled.insert(paneId)
 		manuallyDismissed.remove(paneId)
 		if let store = notificationStore {
 			reconcile(sessions: store.sessions)
@@ -52,7 +52,8 @@ final class AgentCompanionStore: ObservableObject {
 
 	/// Sidebar context menu → "Hide Companion" / companion 右クリック → Dismiss で呼ぶ。
 	func disableCompanion(for paneId: String) {
-		enabledPaneIds.remove(paneId)
+		manuallyEnabled.remove(paneId)
+		manuallyDismissed.insert(paneId)
 		companions.removeValue(forKey: paneId)
 		AgentCompanionWindowManager.shared.dismiss(paneId: paneId)
 		selectedPaneIds.remove(paneId)
@@ -60,7 +61,7 @@ final class AgentCompanionStore: ObservableObject {
 
 	/// paneId の companion が有効化されてるか。Sidebar の context menu 表示用。
 	func isCompanionEnabled(for paneId: String) -> Bool {
-		enabledPaneIds.contains(paneId)
+		!manuallyDismissed.contains(paneId)
 	}
 
 	/// Sidebar と同じ project 順序 (= projectStore.projects の id 配列)。
@@ -115,22 +116,8 @@ final class AgentCompanionStore: ObservableObject {
 	/// ユーザーが手動 dismiss した paneId。session が active でも companion 出さない。
 	/// session 終了 (= reconcile から消える) でリセット → 次回 session 開始で再出現。
 	private var manuallyDismissed = Set<String>()
-	/// Companion を表示する paneId 集合。sidebar の context menu から明示的に
-	/// 有効化したもののみ表示 (= デフォルト非表示)。UserDefaults に永続化。
-	private var enabledPaneIds: Set<String> {
-		didSet { persistEnabledPaneIds() }
-	}
-
-	private static let enabledPaneIdsKey = "Belve.companionEnabledPaneIds"
-
-	private func loadEnabledPaneIds() -> Set<String> {
-		let arr = UserDefaults.standard.stringArray(forKey: Self.enabledPaneIdsKey) ?? []
-		return Set(arr)
-	}
-
-	private func persistEnabledPaneIds() {
-		UserDefaults.standard.set(Array(enabledPaneIds), forKey: Self.enabledPaneIdsKey)
-	}
+	/// 非 pinned project の pane で、sidebar から明示的に有効化されたもの。
+	private var manuallyEnabled = Set<String>()
 	/// Per-pane message history。最新 3 件を保持。session 終了でクリア。
 	private var messageHistory: [String: [CompanionMessage]] = [:]
 	/// 前回の message text (連続重複 dedup 用)。
@@ -138,9 +125,7 @@ final class AgentCompanionStore: ObservableObject {
 	private var lastSeenPrompt: [String: String] = [:]
 	private let maxMessages = 3
 
-	private init() {
-		self.enabledPaneIds = Set(UserDefaults.standard.stringArray(forKey: Self.enabledPaneIdsKey) ?? [])
-	}
+	private init() {}
 
 	/// AppDelegate.didFinishLaunching から呼ぶ。NotificationStore の sessions を
 	/// 観測して companion lifecycle を駆動する。
@@ -174,8 +159,10 @@ final class AgentCompanionStore: ObservableObject {
 		// active session に対応する companion が無ければ追加 / 既存は更新
 		for session in activeSessions {
 			guard let paneId = session.paneId else { continue }
-			// 明示的に有効化されたもののみ表示 (= デフォルト非表示)
-			if !enabledPaneIds.contains(paneId) { continue }
+			let project = projectStore?.projects.first(where: { $0.id == session.projectId })
+			guard let project else { continue }
+			// Pinned project → 自動追加。非 pinned → 明示的に有効化されたもののみ。
+			if !project.isPinned && !manuallyEnabled.contains(paneId) { continue }
 			if manuallyDismissed.contains(paneId) { continue }
 			let saved = UserDefaults.standard.string(forKey: "Belve.companionAvatar.\(paneId)")
 				.flatMap { SpinnerStyle(rawValue: $0) }
@@ -191,7 +178,7 @@ final class AgentCompanionStore: ObservableObject {
 				style = picked
 			}
 			avatarStyles[paneId] = style
-			let projectName = projectStore?.projects.first(where: { $0.id == session.projectId })?.name ?? "?"
+			let projectName = project.name
 
 			// ユーザーが新しい prompt を submit したら bubble をリセット
 			let currentPrompt = session.lastUserPrompt ?? ""
@@ -246,12 +233,12 @@ final class AgentCompanionStore: ObservableObject {
 		!session.isArchived && !Self.inactiveStatuses.contains(session.status)
 	}
 
-	/// Bubble として追加すべきテキスト。Agent の「発話」に相当するもの:
+	/// Bubble として追加すべきテキスト。Agent の行動・発話を可視化する:
+	/// - tool 実行 (= 何をしようとしているか)
+	/// - speech (= transcript 由来の中間発話・思考)
 	/// - waiting message (= ユーザーへの問いかけ)
 	/// - result summary (= 何をやったか)
-	/// - status 変化テキスト
 	/// User prompt は header 固定表示なので bubble には出さない。
-	/// Tool call は inline 表示なので bubble には出さない。
 	private func bubbleWorthyText(for session: AgentSession) -> String? {
 		// Waiting (= agent がユーザーに聞いてる) → 最も重要な bubble
 		if session.status == .waiting { return session.message }
@@ -268,10 +255,24 @@ final class AgentCompanionStore: ObservableObject {
 		if msg.hasPrefix("result:") {
 			return String(msg.dropFirst("result:".count))
 		}
+		// `tool:` prefix = tool 実行中 (= 何をしようとしているか)
+		if msg.hasPrefix("tool:") {
+			let detail = String(msg.dropFirst("tool:".count))
+			let parts = detail.split(separator: ":", maxSplits: 1)
+			let toolName = parts.first.map(String.init) ?? detail
+			let activity = parts.count > 1 ? String(parts[1]) : nil
+			if let activity, !activity.isEmpty {
+				return "\(toolName): \(activity)"
+			}
+			return toolName
+		}
+		// subagent 起動
+		if msg.hasPrefix("subagent:") {
+			return "Agent: \(String(msg.dropFirst("subagent:".count)))"
+		}
 		// User prompt / label と同じテキストは bubble に出さない (= header で既に表示)
 		if msg == session.lastUserPrompt || msg == session.label { return nil }
-		// Tool 実行中 / subagent / lifecycle / 空は skip
-		if msg.hasPrefix("tool:") || msg.hasPrefix("subagent") { return nil }
+		if msg.hasPrefix("subagent-done:") { return nil }
 		if ["Generating", "started", "ended", "Done", "Ready"].contains(msg) { return nil }
 		if msg.isEmpty { return nil }
 		// それ以外 → bubble

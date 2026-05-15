@@ -328,6 +328,17 @@ class NotificationStore: ObservableObject {
 		}
 		// Keep only last 50 sessions
 		sessions = Array(decoded.prefix(50))
+		// Rebuild activeSessionIndex so that OSC events arriving after restart
+		// can update the correct session. Without this, updateActiveSession
+		// silently drops all updates (index lookup returns nil).
+		activeSessionIndex.removeAll()
+		for (idx, session) in sessions.enumerated() {
+			guard let paneId = session.paneId else { continue }
+			if session.status == .sessionEnd || session.isArchived { continue }
+			if activeSessionIndex[paneId] == nil {
+				activeSessionIndex[paneId] = idx
+			}
+		}
 	}
 
 	private func saveSessions() {

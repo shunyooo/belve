@@ -11,8 +11,9 @@ struct AgentDockView: View {
 	@State private var expandedBubbles: Set<String> = []
 	/// 前回観測した messages count (= 新発話検出用)
 	@State private var lastMessageCounts: [String: Int] = [:]
-	/// Dock bar の幅。agent 数に auto-fit。
+	/// Dock bar の幅。グリップドラッグでユーザーが調整可能。
 	@State private var dockWidthOverride: CGFloat? = nil
+	@State private var widthAtDragStart: CGFloat? = nil
 	private let autoDisplayDuration: TimeInterval = 8
 	private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -20,10 +21,13 @@ struct AgentDockView: View {
 	private let dockPadding: CGFloat = 32 // 左右 padding 合計
 
 	/// Agent 数に応じた auto-fit 幅。override があればそちら優先。
+	private func naturalDockWidth(agentCount: Int) -> CGFloat {
+		CGFloat(max(1, agentCount)) * slotWidth + dockPadding
+	}
+
 	private func effectiveDockWidth(agentCount: Int) -> CGFloat {
-		if let w = dockWidthOverride { return w }
-		let fit = CGFloat(max(1, agentCount)) * slotWidth + dockPadding
-		return max(160, min(fit, 800))
+		if let w = dockWidthOverride { return max(160, w) }
+		return max(160, naturalDockWidth(agentCount: agentCount))
 	}
 
 	var body: some View {
@@ -34,20 +38,20 @@ struct AgentDockView: View {
 			if ia != ib { return ia < ib }
 			return a.paneId < b.paneId
 		}
-		let dockWidth = effectiveDockWidth(agentCount: companions.count)
+		let natural = naturalDockWidth(agentCount: companions.count)
+		let dockScale = dockWidthOverride.map { max(0.3, $0 / natural) } ?? 1.0
 		VStack(spacing: 0) {
-			ScrollView(.horizontal, showsIndicators: false) {
-				HStack(alignment: .bottom, spacing: 12) {
-					ForEach(companions) { companion in
-						agentSlot(companion)
-					}
+			Spacer()
+			// Dock bar（下部固定）+ バブルは overlay で上方向に展開
+			HStack(alignment: .bottom, spacing: 12) {
+				ForEach(companions) { companion in
+					agentSlot(companion)
 				}
-				.padding(.horizontal, 16)
-				.frame(maxWidth: .infinity)
 			}
+			.padding(.horizontal, 16)
 			.padding(.vertical, 10)
 			.padding(.top, 4)
-			.frame(width: dockWidth)
+			.frame(width: natural)
 			.background(
 				RoundedRectangle(cornerRadius: 16, style: .continuous)
 					.fill(.ultraThinMaterial)
@@ -58,6 +62,36 @@ struct AgentDockView: View {
 					)
 					.shadow(color: .black.opacity(0.3), radius: 8, y: 2)
 			)
+			.overlay(alignment: .bottomTrailing) {
+				resizeGrip
+			}
+			// Bubble layer: dock の上端から上方向に展開。
+			// height:0 のアンカーを dock 上端に置き、ZStack の bottomLeading で
+			// バブルが上方向に伸びる。overlay なので dock 位置に影響しない。
+			.overlay(alignment: .topLeading) {
+				ZStack(alignment: .bottomLeading) {
+					ForEach(Array(companions.enumerated()), id: \.element.paneId) { index, companion in
+						let showBubble = visibleBubbles[companion.paneId] != nil && hasBubbleContent(companion)
+						if showBubble {
+							let bubbleMaxW = min(380, natural - 24)
+							let avatarCenterX = 16 + CGFloat(index) * (slotWidth) + slotWidth / 2
+							let bubbleCenterX = max(bubbleMaxW / 2 + 12, min(avatarCenterX, natural - bubbleMaxW / 2 - 12))
+							let tailFrac = (avatarCenterX - bubbleCenterX + bubbleMaxW / 2) / bubbleMaxW
+							bubbleView(companion, maxWidth: bubbleMaxW, tailFraction: tailFrac)
+								.frame(width: bubbleMaxW, alignment: .leading)
+								.offset(x: bubbleCenterX - bubbleMaxW / 2)
+								.transition(.move(edge: .bottom).combined(with: .opacity))
+						}
+					}
+				}
+				.frame(width: natural, height: 0, alignment: .bottomLeading)
+				.offset(y: -6)
+			}
+		}
+		.scaleEffect(dockScale, anchor: .bottom)
+		// agent 数が変わったら width override をリセットして auto-fit に戻す
+		.onChange(of: store.companions.count) {
+			dockWidthOverride = nil
 		}
 		// 新発話検出 → auto-show (onChange は NSHostingController で発火しないため
 		// Combine publisher 経由で observe する)
@@ -92,6 +126,22 @@ struct AgentDockView: View {
 		}
 	}
 
+	// MARK: - Resize grip (NSView ベース — borderless panel でもドラッグが効く)
+
+	private var resizeGrip: some View {
+		DockResizeHandle { delta in
+			let companions = store.companions.count
+			if widthAtDragStart == nil {
+				widthAtDragStart = dockWidthOverride ?? naturalDockWidth(agentCount: companions)
+			}
+			dockWidthOverride = max(160, widthAtDragStart! + delta.width)
+		} onEnd: {
+			widthAtDragStart = nil
+		}
+		.frame(width: 16, height: 16)
+		.padding(4)
+	}
+
 	// MARK: - Agent slot (= 1 個の avatar + label)
 
 	private func agentSlot(_ companion: AgentCompanion) -> some View {
@@ -115,14 +165,6 @@ struct AgentDockView: View {
 					.stroke(isSelected ? Theme.accent : Color.clear, lineWidth: 2)
 					.frame(width: 52, height: 52)
 			)
-			// Bubble: この avatar の真上に表示。overlay で相対配置。
-			.overlay(alignment: .bottom) {
-				if showBubble {
-					bubbleView(companion)
-						.offset(y: -56)
-						.transition(.move(edge: .bottom).combined(with: .opacity))
-				}
-			}
 
 			Text(companion.projectName)
 				.font(.system(size: 11, weight: .medium))
@@ -163,57 +205,59 @@ struct AgentDockView: View {
 
 	// MARK: - Speech bubble
 
-	private func bubbleView(_ companion: AgentCompanion) -> some View {
+	private func bubbleHeight(_ companion: AgentCompanion) -> CGFloat {
+		var lines: CGFloat = 1 // project name
+		if !companion.userPrompt.isEmpty { lines += 2 }
+		lines += CGFloat(min(companion.messages.count, 3)) * 2
+		if companion.currentTool != nil { lines += 1 }
+		return max(60, lines * 14 + 24)
+	}
+
+	private func bubbleView(_ companion: AgentCompanion, maxWidth: CGFloat = 380, tailFraction: CGFloat = 0.5) -> some View {
 		let isExpanded = expandedBubbles.contains(companion.paneId)
-		return ScrollView(.vertical, showsIndicators: false) {
-			VStack(alignment: .leading, spacing: 4) {
-				// 誰の bubble か明示
-				Text(companion.projectName)
-					.font(.system(size: 10, weight: .bold))
-					.foregroundStyle(Theme.accent)
+		return VStack(alignment: .leading, spacing: 4) {
+			Text(companion.projectName)
+				.font(.system(size: 10, weight: .bold))
+				.foregroundStyle(Theme.accent)
 
-				// User prompt
-				if !companion.userPrompt.isEmpty {
-					HStack(alignment: .top, spacing: 4) {
-						Text(">")
-							.font(.system(size: 11, weight: .bold, design: .monospaced))
-							.foregroundStyle(Theme.yellow)
-						Text(Self.attributed(companion.userPrompt))
-							.font(.system(size: 11))
-							.foregroundStyle(Theme.textSecondary)
-							.lineLimit(isExpanded ? nil : 2)
-					}
-				}
-
-				// Agent messages
-				ForEach(companion.messages) { msg in
-					Text(Self.attributed(msg.text))
-						.font(.system(size: 12, weight: .medium))
-						.foregroundStyle(Theme.textPrimary)
-						.lineLimit(isExpanded ? nil : 4)
-				}
-
-				// Tool
-				if let tool = companion.currentTool {
-					HStack(spacing: 4) {
-						Image(systemName: "wrench.and.screwdriver")
-							.font(.system(size: 8))
-						Text(tool)
-							.lineLimit(1)
-					}
-					.font(.system(size: 9))
-					.foregroundStyle(Theme.accent.opacity(0.8))
+			if !companion.userPrompt.isEmpty {
+				HStack(alignment: .top, spacing: 4) {
+					Text(">")
+						.font(.system(size: 11, weight: .bold, design: .monospaced))
+						.foregroundStyle(Theme.yellow)
+					Text(Self.attributed(companion.userPrompt))
+						.font(.system(size: 11))
+						.foregroundStyle(Theme.textSecondary)
+						.lineLimit(isExpanded ? nil : 2)
 				}
 			}
+
+			ForEach(companion.messages) { msg in
+				Text(Self.attributed(msg.text))
+					.font(.system(size: 12, weight: .medium))
+					.foregroundStyle(Theme.textPrimary)
+					.lineLimit(isExpanded ? nil : 4)
+			}
+
+			if let tool = companion.currentTool {
+				HStack(spacing: 4) {
+					Image(systemName: "wrench.and.screwdriver")
+						.font(.system(size: 8))
+					Text(tool)
+						.lineLimit(1)
+				}
+				.font(.system(size: 9))
+				.foregroundStyle(Theme.accent.opacity(0.8))
+			}
 		}
-		.frame(maxWidth: effectiveDockWidth(agentCount: store.companions.count) - 24, maxHeight: isExpanded ? 300 : nil, alignment: .leading)
+		.frame(maxWidth: .infinity, maxHeight: isExpanded ? 300 : nil, alignment: .leading)
 		.padding(.horizontal, 12)
 		.padding(.vertical, 8)
 		.background(
-			SpeechBubbleShape(tailOnLeft: false, tailOnBottom: true)
+			SpeechBubbleShape(tailOnLeft: false, tailOnBottom: true, tailFraction: tailFraction)
 				.fill(Theme.surface.opacity(0.95))
 				.overlay(
-					SpeechBubbleShape(tailOnLeft: false, tailOnBottom: true)
+					SpeechBubbleShape(tailOnLeft: false, tailOnBottom: true, tailFraction: tailFraction)
 						.stroke(borderColor(for: companion).opacity(0.3), lineWidth: 1)
 				)
 				.shadow(color: .black.opacity(0.15), radius: 4, y: 1)
@@ -275,10 +319,85 @@ private extension Double {
 	func nonZeroOrDefault(_ d: Double) -> Double { self > 0 ? self : d }
 }
 
+// MARK: - NSView ベースのリサイズハンドル
+// borderless + isMovableByWindowBackground な NSPanel では SwiftUI DragGesture が
+// ウィンドウ移動に食われるため、NSView の mouseDown/mouseDragged で直接処理する。
+
+private struct DockResizeHandle: NSViewRepresentable {
+	var onDrag: (CGSize) -> Void
+	var onEnd: () -> Void
+
+	func makeNSView(context: Context) -> DockResizeHandleNSView {
+		let view = DockResizeHandleNSView()
+		view.onDrag = onDrag
+		view.onEnd = onEnd
+		return view
+	}
+
+	func updateNSView(_ nsView: DockResizeHandleNSView, context: Context) {
+		nsView.onDrag = onDrag
+		nsView.onEnd = onEnd
+	}
+}
+
+private final class DockResizeHandleNSView: NSView {
+	var onDrag: ((CGSize) -> Void)?
+	var onEnd: (() -> Void)?
+	private var dragOrigin: NSPoint?
+
+	override var isFlipped: Bool { true }
+
+	override func draw(_ dirtyRect: NSRect) {
+		guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+		// 3×3 ドットグリッド
+		let dotSize: CGFloat = 1.5
+		let spacing: CGFloat = 3.5
+		let cols = 3, rows = 3
+		let totalW = CGFloat(cols) * dotSize + CGFloat(cols - 1) * spacing
+		let totalH = CGFloat(rows) * dotSize + CGFloat(rows - 1) * spacing
+		let originX = (bounds.width - totalW) / 2
+		let originY = (bounds.height - totalH) / 2
+		ctx.setFillColor(NSColor.white.withAlphaComponent(0.35).cgColor)
+		for row in 0..<rows {
+			for col in 0..<cols {
+				let x = originX + CGFloat(col) * (dotSize + spacing)
+				let y = originY + CGFloat(row) * (dotSize + spacing)
+				ctx.fillEllipse(in: CGRect(x: x, y: y, width: dotSize, height: dotSize))
+			}
+		}
+	}
+
+	override func resetCursorRects() {
+		addCursorRect(bounds, cursor: .crosshair)
+	}
+
+	override var mouseDownCanMoveWindow: Bool { false }
+
+	override func mouseDown(with event: NSEvent) {
+		dragOrigin = NSEvent.mouseLocation
+	}
+
+	override func mouseDragged(with event: NSEvent) {
+		guard let origin = dragOrigin else { return }
+		let current = NSEvent.mouseLocation
+		let dx = current.x - origin.x
+		// 画面座標は Y が上向きなので反転
+		let dy = -(current.y - origin.y)
+		onDrag?(CGSize(width: dx, height: dy))
+	}
+
+	override func mouseUp(with event: NSEvent) {
+		dragOrigin = nil
+		onEnd?()
+	}
+}
+
 /// 吹き出し Shape。tailOnBottom=true で下に三角が出る (= dock bar の上に表示する用)。
+/// tailFraction (0–1) で tail の水平位置を指定可能 (0.5 = 中央)。
 private struct SpeechBubbleShape: Shape {
 	let tailOnLeft: Bool
 	var tailOnBottom: Bool = false
+	var tailFraction: CGFloat = 0.5
 	private let cornerRadius: CGFloat = 10
 	private let tailWidth: CGFloat = 8
 	private let tailHeight: CGFloat = 6
@@ -288,9 +407,11 @@ private struct SpeechBubbleShape: Shape {
 		let r = cornerRadius
 		path.addRoundedRect(in: rect, cornerSize: CGSize(width: r, height: r))
 		if tailOnBottom {
-			let tailX = rect.midX - tailWidth / 2
+			let clampedFraction = max(0.05, min(0.95, tailFraction))
+			let tailCenterX = rect.minX + rect.width * clampedFraction
+			let tailX = tailCenterX - tailWidth / 2
 			path.move(to: CGPoint(x: tailX, y: rect.maxY))
-			path.addLine(to: CGPoint(x: tailX + tailWidth / 2, y: rect.maxY + tailHeight))
+			path.addLine(to: CGPoint(x: tailCenterX, y: rect.maxY + tailHeight))
 			path.addLine(to: CGPoint(x: tailX + tailWidth, y: rect.maxY))
 			path.closeSubpath()
 		} else if tailOnLeft {
