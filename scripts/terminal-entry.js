@@ -484,39 +484,18 @@ function ensurePathLinkProvider() {
 // Fit terminal to container, returning actual cols/rows.
 // Called from Swift after layout settles — uses fitAddon which accounts for
 // scrollbar width, padding, and actual DOM dimensions.
-// Resize: ResizeObserver で自律的に refit。Swift→JS の IPC round trip を排除。
-var _lastFitCols = 0, _lastFitRows = 0;
-function doFit() {
-	if (!window.term || !window.fitAddon) return;
+window.terminalFit = function() {
+	if (!window.term || !window.fitAddon) return null;
 	var dims = fitAddon.proposeDimensions();
-	if (!dims || dims.cols < 2 || dims.rows < 1) return;
-	if (dims.cols === _lastFitCols && dims.rows === _lastFitRows) return;
+	if (!dims || dims.cols < 2 || dims.rows < 1) return null;
 	var buf = term.buffer.active;
 	var wasAtBottom = buf.viewportY >= buf.baseY;
-	var viewport = term.element && term.element.querySelector('.xterm-viewport');
-	var screen = term.element && term.element.querySelector('.xterm-screen');
-	if (viewport) viewport.style.visibility = 'hidden';
-	if (screen) screen.style.visibility = 'hidden';
+	var oldCols = term.cols;
+	var t0 = performance.now();
 	term.resize(dims.cols, dims.rows);
+	var reflowMs = performance.now() - t0;
 	if (wasAtBottom) term.scrollToBottom();
-	requestAnimationFrame(function() {
-		if (viewport) viewport.style.visibility = '';
-		if (screen) screen.style.visibility = '';
-	});
-	_lastFitCols = dims.cols;
-	_lastFitRows = dims.rows;
-	// cols/rows 変更を Swift に通知 (PTY resize 用)
-	window.webkit.messageHandlers.terminalHandler.postMessage({
-		type: 'resize', cols: dims.cols, rows: dims.rows
-	});
-}
-
-new ResizeObserver(function() { doFit(); }).observe(terminalContainer);
-
-// Swift からの明示的な fit 呼び出し (初回起動、project 切替時の refit 等)
-window.terminalFit = function() {
-	doFit();
-	return _lastFitCols > 0 ? { cols: _lastFitCols, rows: _lastFitRows } : null;
+	return { cols: dims.cols, rows: dims.rows, reflowMs: reflowMs, oldCols: oldCols };
 };
 
 // Hide/reveal terminal screen during resize to prevent visible redraw scroll
@@ -528,18 +507,11 @@ window.terminalSetResizing = function(hide) {
 };
 
 // Bridge: Swift -> JS
-var _forceBottom = false;
-window.terminalSetForceBottom = function(v) { _forceBottom = v; };
-
 window.terminalWrite = function(base64) {
 	const bytes = atob(base64);
 	const arr = new Uint8Array(bytes.length);
 	for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-	if (_forceBottom) {
-		term.write(arr, function() { term.scrollToBottom(); });
-	} else {
-		term.write(arr);
-	}
+	term.write(arr);
 };
 
 window.terminalFocus = function(focused) {
