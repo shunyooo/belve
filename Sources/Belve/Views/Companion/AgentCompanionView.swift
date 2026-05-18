@@ -89,10 +89,6 @@ struct AgentDockView: View {
 			}
 		}
 		.scaleEffect(dockScale, anchor: .bottom)
-		// agent 数が変わったら width override をリセットして auto-fit に戻す
-		.onChange(of: store.companions.count) {
-			dockWidthOverride = nil
-		}
 		// 新発話検出 → auto-show (onChange は NSHostingController で発火しないため
 		// Combine publisher 経由で observe する)
 		.onReceive(store.$companions) { newVal in
