@@ -162,16 +162,16 @@ struct AgentDockView: View {
 				styleOverride: companion.avatarStyle,
 				sizeOverride: 42
 			)
-			.frame(width: 42, height: 42)
+			.frame(width: 60, height: 60)
 			.background(
 				Circle()
 					.fill(isPinned ? Theme.accent.opacity(0.15) : (showBubble ? Theme.accent.opacity(0.08) : Color.clear))
-					.frame(width: 50, height: 50)
+					.frame(width: 56, height: 56)
 			)
 			.overlay(
 				Circle()
 					.stroke(isSelected ? Theme.accent : Color.clear, lineWidth: 2)
-					.frame(width: 52, height: 52)
+					.frame(width: 58, height: 58)
 			)
 
 			Text(companion.projectName)
