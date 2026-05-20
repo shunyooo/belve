@@ -167,8 +167,11 @@ term.registerLinkProvider({
 				if (prevMatch) {
 					// Indented continuation も許容 (^\s* で先頭空白を skip)。URL を改行 +
 					// インデントで折り返す TUI 出力 (例: claude code) に対応。
+					// 行頭 `+ ` / `- ` (git push / diff の status marker) は continuation
+					// として拾わない (= `.git` と `+ 2c7cf91...` が連結される事故防止)。
 					var cont = text.match(/^(\s*)([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
-					if (cont && !text.match(/^\s*https?:\/\//)) {
+					var isGitMarker = /^\s*[+\-*]\s/.test(text);
+					if (cont && !isGitMarker && !text.match(/^\s*https?:\/\//)) {
 						var result = buildFullUrl(buf, y - 2, prevMatch[1]);
 						var peerSx = mapStringIndexToCell(prevLine, prevMatch.index) + 1;
 						var peerEx = mapStringIndexToCell(prevLine, prevMatch.index + prevMatch[1].length);
