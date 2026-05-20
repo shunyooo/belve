@@ -11,8 +11,13 @@ struct AgentDockView: View {
 	@State private var expandedBubbles: Set<String> = []
 	/// 前回観測した messages count (= 新発話検出用)
 	@State private var lastMessageCounts: [String: Int] = [:]
-	/// Dock bar の幅。グリップドラッグでユーザーが調整可能。
-	@State private var dockWidthOverride: CGFloat? = nil
+	private static let scaleKey = "Belve.companionDock.widthOverride"
+
+	/// Dock bar の幅。グリップドラッグでユーザーが調整可能。UserDefaults に永続化。
+	@State private var dockWidthOverride: CGFloat? = {
+		let v = UserDefaults.standard.double(forKey: AgentDockView.scaleKey)
+		return v > 0 ? v : nil
+	}()
 	@State private var widthAtDragStart: CGFloat? = nil
 	private let autoDisplayDuration: TimeInterval = 8
 	private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -137,6 +142,9 @@ struct AgentDockView: View {
 			dockWidthOverride = max(160, widthAtDragStart! + delta.width)
 		} onEnd: {
 			widthAtDragStart = nil
+			if let w = dockWidthOverride {
+				UserDefaults.standard.set(w, forKey: AgentDockView.scaleKey)
+			}
 		}
 		.frame(width: 16, height: 16)
 		.padding(4)

@@ -8,6 +8,7 @@ struct PortsPanel: View {
 	let onUpdateForwards: ([PortForward]) -> Void
 	let onDismiss: () -> Void
 
+	@State private var localForwards: [PortForward]?
 	@State private var newLocalText = ""
 	@State private var newRemoteText = ""
 	@FocusState private var focusedField: FocusField?
@@ -44,7 +45,7 @@ struct PortsPanel: View {
 		)
 	}
 
-	private var forwards: [PortForward] { project.portForwards }
+	private var forwards: [PortForward] { localForwards ?? project.portForwards }
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 0) {
@@ -224,8 +225,9 @@ struct PortsPanel: View {
 	private func addForward() {
 		guard let local = parsedLocal, let remote = parsedRemote else { return }
 		guard local > 0 && local < 65536 && remote > 0 && remote < 65536 else { return }
-		var updated = project.portForwards
+		var updated = forwards
 		updated.append(PortForward(localPort: local, remotePort: remote))
+		localForwards = updated
 		onUpdateForwards(updated)
 		newLocalText = ""
 		newRemoteText = ""
@@ -233,13 +235,16 @@ struct PortsPanel: View {
 	}
 
 	private func removeForward(_ id: UUID) {
-		onUpdateForwards(project.portForwards.filter { $0.id != id })
+		let updated = forwards.filter { $0.id != id }
+		localForwards = updated
+		onUpdateForwards(updated)
 	}
 
 	private func updateForward(_ id: UUID, _ mutate: (inout PortForward) -> Void) {
-		var updated = project.portForwards
+		var updated = forwards
 		guard let idx = updated.firstIndex(where: { $0.id == id }) else { return }
 		mutate(&updated[idx])
+		localForwards = updated
 		onUpdateForwards(updated)
 	}
 

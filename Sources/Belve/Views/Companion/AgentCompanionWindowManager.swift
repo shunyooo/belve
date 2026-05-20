@@ -11,6 +11,8 @@ final class AgentCompanionWindowManager {
 
 	private init() {}
 
+	private static let positionKey = "Belve.companionDock.position"
+
 	/// Companion が 1 つ以上あれば dock を表示、0 なら非表示。
 	/// AgentCompanionStore.reconcile から呼ばれる。
 	func updateDock(hasCompanions: Bool) {
@@ -18,10 +20,12 @@ final class AgentCompanionWindowManager {
 			if dockPanel == nil {
 				let panel = AgentDockPanel()
 				dockPanel = panel
-				positionDock(panel)
+				restoreOrPositionDock(panel)
 				panel.orderFrontRegardless()
+				observeDockMoves(panel)
 			}
 		} else {
+			saveDockPosition()
 			dismissDock()
 		}
 	}
@@ -43,18 +47,45 @@ final class AgentCompanionWindowManager {
 	// 旧 API 互換: propagateMove は dock では不要
 	func propagateMove(from sourcePaneId: String, delta: NSPoint) {}
 
+	private var moveObserver: Any?
+
 	private func dismissDock() {
+		saveDockPosition()
+		if let obs = moveObserver {
+			NotificationCenter.default.removeObserver(obs)
+			moveObserver = nil
+		}
 		dockPanel?.close()
 		dockPanel = nil
 	}
 
-	private func positionDock(_ panel: AgentDockPanel) {
-		guard let screen = NSScreen.main else { return }
-		let visible = screen.visibleFrame
-		let panelSize = panel.frame.size
-		let x = visible.midX - panelSize.width / 2
-		let y = visible.minY + 16
-		panel.setFrameOrigin(NSPoint(x: x, y: y))
+	private func restoreOrPositionDock(_ panel: AgentDockPanel) {
+		if let dict = UserDefaults.standard.dictionary(forKey: Self.positionKey),
+		   let x = dict["x"] as? Double,
+		   let y = dict["y"] as? Double {
+			panel.setFrameOrigin(NSPoint(x: x, y: y))
+		} else {
+			guard let screen = NSScreen.main else { return }
+			let visible = screen.visibleFrame
+			let panelSize = panel.frame.size
+			let x = visible.midX - panelSize.width / 2
+			let y = visible.minY + 16
+			panel.setFrameOrigin(NSPoint(x: x, y: y))
+		}
+	}
+
+	private func observeDockMoves(_ panel: AgentDockPanel) {
+		moveObserver = NotificationCenter.default.addObserver(
+			forName: NSWindow.didMoveNotification, object: panel, queue: .main
+		) { [weak self] _ in
+			self?.saveDockPosition()
+		}
+	}
+
+	private func saveDockPosition() {
+		guard let panel = dockPanel else { return }
+		let origin = panel.frame.origin
+		UserDefaults.standard.set(["x": origin.x, "y": origin.y], forKey: Self.positionKey)
 	}
 }
 

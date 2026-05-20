@@ -239,8 +239,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 			case "g" where shift:
 				NotificationCenter.default.post(name: .belveShowChanges, object: nil)
 				return nil
-			case ".", ">" where shift:
-				NSApp.hide(nil)
+			case ".", ">":
+				// Cmd+. と Cmd+Shift+. の両方をインターセプトして握り潰す。
+				// 表示/非表示トグルは Cmd+Shift+. のグローバルホットキー (Carbon) で処理。
+				// ローカルで hide すると global hotkey と競合してちらつく。
 				return nil
 			case "\\" where !shift:
 				if AppConfig.shared.viewMode.isDedicatedView { return nil }
@@ -581,12 +583,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
 		let handler: EventHandlerUPP = { _, event, _ -> OSStatus in
 			DispatchQueue.main.async {
-				if NSApp.isHidden {
-					NSApp.unhide(nil)
+				// メインウィンドウだけ hide/show。companion dock panel は残す。
+				guard let mainWindow = NSApp.windows.first(where: {
+					!($0 is NSPanel) && $0.isVisible
+				}) ?? NSApp.windows.first(where: { !($0 is NSPanel) }) else {
 					NSApp.activate(ignoringOtherApps: true)
-				} else if NSApp.isActive {
-					NSApp.hide(nil)
+					return
+				}
+				if mainWindow.isVisible && NSApp.isActive {
+					mainWindow.orderOut(nil)
 				} else {
+					mainWindow.makeKeyAndOrderFront(nil)
 					NSApp.activate(ignoringOtherApps: true)
 				}
 			}

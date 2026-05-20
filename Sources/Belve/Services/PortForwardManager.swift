@@ -173,9 +173,11 @@ final class PortForwardManager: ObservableObject {
 		let currentIds = Set(statuses[projectId]?.keys ?? [:].keys)
 
 		// Teardown disabled / removed forwards
+		let allForwards = project.portForwards
 		for id in currentIds.subtracting(wantedIds) {
 			if let local = effectiveLocalPorts[projectId]?[id] {
-				await cancel(host: host, remoteHost: remoteHost, localPort: local, remotePort: 0)
+				let remote = allForwards.first(where: { $0.id == id })?.remotePort ?? 0
+				await cancel(host: host, remoteHost: remoteHost, localPort: local, remotePort: remote)
 			}
 			establishedForwards.remove(ForwardKey(projectId: projectId, forwardId: id))
 			statuses[projectId]?[id] = nil
@@ -263,7 +265,7 @@ final class PortForwardManager: ObservableObject {
 	}
 
 	private func cancel(host: String, remoteHost: String, localPort: Int, remotePort: Int) async {
-		await Self.runCancel(host: host, local: localPort)
+		await Self.runCancel(host: host, local: localPort, remoteHost: remoteHost, remotePort: remotePort)
 	}
 
 	// MARK: - Health polling
@@ -505,12 +507,12 @@ final class PortForwardManager: ObservableObject {
 	}
 
 	@discardableResult
-	private static func runCancel(host: String, local: Int) async -> Bool {
-		// For -O cancel the remote target doesn't matter — SSH matches on
-		// listen-side spec. We pass 127.0.0.1:0 as the spec is required.
-		await runSSH(
+	private static func runCancel(host: String, local: Int, remoteHost: String, remotePort: Int) async -> Bool {
+		let rh = remoteHost.isEmpty ? "127.0.0.1" : remoteHost
+		let rp = remotePort > 0 ? remotePort : local
+		return await runSSH(
 			host: host,
-			args: ["-O", "cancel", "-L", "\(local):127.0.0.1:0"]
+			args: ["-O", "cancel", "-L", "\(local):\(rh):\(rp)"]
 		)
 	}
 

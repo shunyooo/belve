@@ -267,6 +267,25 @@ if [ -f "$ENV_FILE" ]; then
         echo "==> Container ready"
         exit 0
     fi
+    # Container exists but stopped (e.g. VM reboot, OOM) — try docker start
+    if [ -n "${CID:-}" ] && docker inspect -f '{{.State.Status}}' "$CID" 2>/dev/null | grep -qE 'exited|created'; then
+        echo "==> Container ${CID:0:12} is stopped, starting..."
+        if docker start "$CID" 2>&1; then
+            # Wait briefly for container to be fully up
+            sleep 2
+            NEW_CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" 2>/dev/null | head -1)
+            if [ -n "$NEW_CIP" ]; then
+                printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$NEW_CIP" > "$ENV_FILE"
+                CIP="$NEW_CIP"
+                echo "==> Container restarted (ip=${CIP})"
+                echo "==> Ensuring container broker is running"
+                ensure_container_broker "$CID" "$RWS" "$CIP"
+                echo "==> Container ready"
+                exit 0
+            fi
+        fi
+        echo "==> docker start failed, falling through to full bootstrap"
+    fi
     # Container gone; fall through to full bootstrap
     rm -f "$ENV_FILE"
 fi
