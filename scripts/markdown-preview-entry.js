@@ -1,13 +1,72 @@
 // Belve Markdown preview (read-only). marked.js で md → HTML レンダリング、
+// highlight.js でシンタックスハイライト、
 // `code.language-mermaid` の中身は mermaid.js で SVG に置換。
 // 編集機能は持たない (= 編集したい時は Cmd+E 等で CodeMirror に切り替える)。
 import { marked } from "marked";
 import mermaid from "mermaid";
+import hljs from "highlight.js/lib/core";
+import javascript from "highlight.js/lib/languages/javascript";
+import typescript from "highlight.js/lib/languages/typescript";
+import python from "highlight.js/lib/languages/python";
+import bash from "highlight.js/lib/languages/bash";
+import json from "highlight.js/lib/languages/json";
+import yaml from "highlight.js/lib/languages/yaml";
+import css from "highlight.js/lib/languages/css";
+import xml from "highlight.js/lib/languages/xml";
+import sql from "highlight.js/lib/languages/sql";
+import go from "highlight.js/lib/languages/go";
+import swift from "highlight.js/lib/languages/swift";
+import rust from "highlight.js/lib/languages/rust";
+import markdown from "highlight.js/lib/languages/markdown";
+import diff from "highlight.js/lib/languages/diff";
+import shell from "highlight.js/lib/languages/shell";
+import dockerfile from "highlight.js/lib/languages/dockerfile";
+
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("js", javascript);
+hljs.registerLanguage("typescript", typescript);
+hljs.registerLanguage("ts", typescript);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("sh", bash);
+hljs.registerLanguage("zsh", bash);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("yaml", yaml);
+hljs.registerLanguage("yml", yaml);
+hljs.registerLanguage("css", css);
+hljs.registerLanguage("html", xml);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("go", go);
+hljs.registerLanguage("swift", swift);
+hljs.registerLanguage("rust", rust);
+hljs.registerLanguage("markdown", markdown);
+hljs.registerLanguage("md", markdown);
+hljs.registerLanguage("diff", diff);
+hljs.registerLanguage("shell", shell);
+hljs.registerLanguage("dockerfile", dockerfile);
 
 marked.setOptions({
 	gfm: true,        // GitHub Flavored Markdown
 	breaks: true,     // 単一改行を <br> に
 });
+
+// marked の renderer をカスタマイズして highlight.js を適用
+const renderer = new marked.Renderer();
+renderer.code = function({ text, lang }) {
+	if (lang === "mermaid") {
+		return '<pre><code class="language-mermaid">' + text + '</code></pre>';
+	}
+	let highlighted;
+	if (lang && hljs.getLanguage(lang)) {
+		highlighted = hljs.highlight(text, { language: lang }).value;
+	} else {
+		highlighted = hljs.highlightAuto(text).value;
+	}
+	const cls = lang ? ' class="language-' + lang + ' hljs"' : ' class="hljs"';
+	return '<pre><code' + cls + '>' + highlighted + '</code></pre>';
+};
+marked.use({ renderer });
 
 // Mermaid: 起動時に 1 回だけ初期化。startOnLoad=false で自分で発火 (= preview
 // renderer の都度呼び出しに合わせる)。テーマは host HTML の dark/light に従う。
