@@ -299,12 +299,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				NotificationCenter.default.post(name: .belveToggleTile, object: nil)
 				return nil
 			case "-", "_":
+				if Self.isDiffWebViewFocused() { return event }
 				AppConfig.shared.terminalFontSize -= 1
 				return nil
 			case "=", "+":
+				if Self.isDiffWebViewFocused() { return event }
 				AppConfig.shared.terminalFontSize += 1
 				return nil
 			case "0" where !shift:
+				if Self.isDiffWebViewFocused() { return event }
 				AppConfig.shared.terminalFontSize = 13
 				return nil
 			case "r" where !shift:
@@ -357,6 +360,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 	/// どの project も使ってない) socket だけを kill して、ゾンビ蓄積を防ぐ。
 	///
 	/// Skipped if another Belve instance is running — those processes belong to it.
+	/// keyWindow の firstResponder が Changes view の WKWebView (identifier
+	/// `BelveDiffWebView`) かを判定。Cmd++/-/0 をターミナルではなく diff view 内の
+	/// JS handler に通すための分岐に使う。
+	static func isDiffWebViewFocused() -> Bool {
+		guard let responder = NSApp.keyWindow?.firstResponder as? NSView else { return false }
+		var current: NSView? = responder
+		while let v = current {
+			if v.identifier?.rawValue == "BelveDiffWebView" { return true }
+			current = v.superview
+		}
+		return false
+	}
+
 	static func cleanupStaleBelveProcesses() {
 		if otherBelveInstancesRunning() {
 			NSLog("[Belve] cleanupStaleBelveProcesses skipped — other Belve instance(s) active")

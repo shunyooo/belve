@@ -619,6 +619,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		let config = WKWebViewConfiguration()
 		config.userContentController.add(context.coordinator, name: "diffHandler")
 		let webView = WKWebView(frame: .zero, configuration: config)
+		webView.identifier = NSUserInterfaceItemIdentifier("BelveDiffWebView")
 		webView.setValue(false, forKey: "drawsBackground")
 		webView.loadHTMLString(buildHTML(), baseURL: nil)
 		DispatchQueue.main.async { onWebViewReady?(webView) }
@@ -663,6 +664,10 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let body = message.body as? [String: Any],
 				  let type = body["type"] as? String else { return }
+			if type == "log" {
+				NSLog("[Belve][diff] %@", (body["message"] as? String) ?? "")
+				return
+			}
 			if type == "openFile", let path = body["path"] as? String {
 				DispatchQueue.main.async { [weak self] in
 					self?.onOpenFile?(path)
@@ -677,11 +682,27 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		}
 	}
 
+	/// Shiki bundle (= 構文ハイライタ) を resource ディレクトリから読み込んで返す。
+	/// 失敗時は空文字 — diff view はプレーン色のまま動く。
+	private static func loadShikiBundle() -> String {
+		let execDir = Bundle.main.executableURL!.deletingLastPathComponent()
+		let bundled = execDir
+			.appendingPathComponent("Belve_Belve.bundle/Contents/Resources/Resources/diff-shiki-bundle.js")
+		let fallback = execDir
+			.deletingLastPathComponent()
+			.deletingLastPathComponent()
+			.deletingLastPathComponent()
+			.appendingPathComponent("Sources/Belve/Resources/diff-shiki-bundle.js")
+		let url = FileManager.default.fileExists(atPath: bundled.path) ? bundled : fallback
+		return (try? String(contentsOf: url)) ?? ""
+	}
+
 	private func buildHTML() -> String {
 		var sections = ""
 		for file in files {
 			sections += buildFileSection(file)
 		}
+		let shikiBundle = Self.loadShikiBundle()
 
 		return """
 		<!DOCTYPE html>
@@ -781,15 +802,16 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			font-size: 11px;
 			padding: 3px 0;
 		}
+		:root { --diff-font-size: 12px; }
 		.diff-table {
 			width: 100%;
 			border-collapse: collapse;
 			font-family: 'SF Mono', Menlo, Monaco, monospace;
-			font-size: 12px;
+			font-size: var(--diff-font-size);
 			line-height: 1.5;
 		}
-		.diff-table tr.add { background: rgba(166, 227, 161, 0.10); }
-		.diff-table tr.del { background: rgba(243, 139, 168, 0.10); }
+		.diff-table tr.add { background: #0c241a; }
+		.diff-table tr.del { background: #2b0f17; }
 		.diff-table tr.hunk {
 			background: rgba(137, 180, 250, 0.06);
 		}
@@ -809,8 +831,6 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			white-space: pre-wrap;
 			word-break: break-all;
 		}
-		.diff-table tr.add td.code { color: #a6e3a1; }
-		.diff-table tr.del td.code { color: #f38ba8; }
 		.diff-table tr.hunk td.code { color: #89b4fa; font-size: 11px; }
 		.diff-body { overflow: hidden; transition: max-height 0.2s ease; }
 		.diff-body.collapsed { max-height: 0 !important; }
@@ -850,6 +870,50 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 		document.querySelectorAll('.file-section').forEach(function(el) {
 			observer.observe(el);
 		});
+
+		// Cmd++/Cmd+- でフォントサイズ変更。localStorage に永続化。
+		(function() {
+			var key = 'belve.diff.fontSize';
+			var min = 8, max = 28;
+			var size = parseInt(localStorage.getItem(key) || '12', 10);
+			function apply(s) {
+				s = Math.max(min, Math.min(max, s));
+				size = s;
+				document.documentElement.style.setProperty('--diff-font-size', s + 'px');
+				localStorage.setItem(key, String(s));
+			}
+			apply(size);
+			document.addEventListener('keydown', function(e) {
+				if (!e.metaKey) return;
+				if (e.key === '=' || e.key === '+') { apply(size + 1); e.preventDefault(); }
+				else if (e.key === '-' || e.key === '_') { apply(size - 1); e.preventDefault(); }
+				else if (e.key === '0') { apply(12); e.preventDefault(); }
+			});
+		})();
+		</script>
+		<script>
+		\(shikiBundle)
+		</script>
+		<script>
+		// Shiki ハイライト適用 (= window.shikiHighlightDiff は diff-shiki-bundle が定義)
+		if (typeof window.shikiHighlightDiff === 'function') {
+			if (window.webkit?.messageHandlers?.diffHandler) {
+				window.webkit.messageHandlers.diffHandler.postMessage({type:'log', message:'shiki: starting'});
+			}
+			window.shikiHighlightDiff().then(function() {
+				if (window.webkit?.messageHandlers?.diffHandler) {
+					window.webkit.messageHandlers.diffHandler.postMessage({type:'log', message:'shiki: done'});
+				}
+			}).catch(function(err) {
+				if (window.webkit?.messageHandlers?.diffHandler) {
+					window.webkit.messageHandlers.diffHandler.postMessage({type:'log', message:'shiki: failed - ' + (err.message || err)});
+				}
+			});
+		} else {
+			if (window.webkit?.messageHandlers?.diffHandler) {
+				window.webkit.messageHandlers.diffHandler.postMessage({type:'log', message:'shiki: window.shikiHighlightDiff is undefined'});
+			}
+		}
 		</script>
 		</body>
 		</html>
@@ -868,8 +932,9 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 
 		let b64 = Data(file.path.utf8).base64EncodedString()
 		let escapedFullPath = escapeHTML(file.path)
+		let langAttr = detectShikiLang(for: file.path).map { " data-lang=\"\($0)\"" } ?? ""
 		return """
-		<div class="file-section" data-file="\(b64)">
+		<div class="file-section\(langAttr.isEmpty ? "" : "")" data-file="\(b64)"\(langAttr)>
 			<div class="file-header">
 				<span class="chevron">▼</span>
 				<span class="status-badge status-\(statusClass)">\(statusLabel)</span>
@@ -933,6 +998,40 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			}
 		}
 		return html
+	}
+
+	/// File 拡張子から shiki 用の言語名を推定。未対応は nil → ハイライト skip。
+	private func detectShikiLang(for path: String) -> String? {
+		let name = (path as NSString).lastPathComponent.lowercased()
+		if name == "dockerfile" || name == "makefile" { return "shellscript" }
+		if name == ".env" || name.hasPrefix(".env.") { return "shellscript" }
+		let ext = (name as NSString).pathExtension
+		switch ext {
+		case "js", "mjs", "cjs": return "javascript"
+		case "ts": return "typescript"
+		case "tsx": return "tsx"
+		case "jsx": return "jsx"
+		case "py", "pyi": return "python"
+		case "swift": return "swift"
+		case "go": return "go"
+		case "rs": return "rust"
+		case "java", "kt": return "java"
+		case "json": return "json"
+		case "yaml", "yml": return "yaml"
+		case "md", "markdown": return "markdown"
+		case "html", "htm": return "html"
+		case "css", "scss", "sass": return "css"
+		case "sh", "bash", "zsh": return "shellscript"
+		case "sql": return "sql"
+		case "c", "h": return "c"
+		case "cpp", "cc", "cxx", "hpp": return "cpp"
+		case "rb": return "ruby"
+		case "php": return "php"
+		case "toml": return "toml"
+		case "xml", "svg", "plist": return "xml"
+		case "diff", "patch": return "diff"
+		default: return nil
+		}
 	}
 
 	private func escapeHTML(_ s: String) -> String {
