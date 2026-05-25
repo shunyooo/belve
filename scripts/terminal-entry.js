@@ -75,8 +75,9 @@ function buildFullUrl(buf, startY, urlStart) {
 		url += contStr;
 		continuations.push({ y: nextY + 1, startX: leading + 1, endX: leading + contStr.length });
 		if (leading + contStr.length < nextText.length) break;
-		// 次行も同じ判定で延ばす場合のために更新
-		prevEndsAtEdge = nextText.length >= term.cols;
+		// 継続行も「URL-safe 文字で行末まで埋まってれば wrap」と判定。
+		// gcloud 等のインデント付き折り返し URL に対応。
+		prevEndsAtEdge = (leading + contStr.length >= nextText.trimEnd().length);
 		nextY++;
 	}
 	return { url: url, continuations: continuations };
@@ -112,6 +113,23 @@ function hidePeerUnderlines() {
 var _linkCache = {};
 var _linkCacheVersion = 0;
 var _wasAltBuffer = false;
+// Cmd キー押下時のみリンク反応 (誤タップ防止)
+var _metaPressed = false;
+var _hoveredRanges = null;
+function updateMetaState(pressed) {
+	var changed = _metaPressed !== pressed;
+	_metaPressed = pressed;
+	if (!changed) return;
+	if (pressed && _hoveredRanges) {
+		showPeerUnderlines(_hoveredRanges);
+	} else if (!pressed) {
+		hidePeerUnderlines();
+	}
+}
+document.addEventListener('keydown', function(e) { if (e.metaKey) updateMetaState(true); });
+document.addEventListener('keyup', function(e) { if (!e.metaKey) updateMetaState(false); });
+window.addEventListener('blur', function() { updateMetaState(false); });
+window.terminalSetMetaPressed = function(v) { updateMetaState(v); };
 
 term.onWriteParsed(function() {
 	_linkCache = {}; _linkCacheVersion++;
@@ -146,49 +164,59 @@ term.registerLinkProvider({
 				links.push({
 					range: { start: { x: sx, y: y }, end: { x: ex, y: y } },
 					text: u, decorations: { pointerCursor: true },
-					activate: function() { postMessage({ type: 'openUrl', url: u }); },
-					hover: function() { showPeerUnderlines(allRanges); },
-					leave: function() { hidePeerUnderlines(); }
+					activate: function() { if (_metaPressed) postMessage({ type: 'openUrl', url: u }); },
+					hover: function() { _hoveredRanges = allRanges; if (_metaPressed) showPeerUnderlines(allRanges); },
+					leave: function() { _hoveredRanges = null; hidePeerUnderlines(); }
 				});
 			})(result.url, selfRange, result.continuations);
 		}
 
-		// Continuation of URL from previous line. xterm.js's isWrapped flag
-		// catches kernel-style soft-wrap, but TUIs that hand-format to the
-		// terminal width (Ink/React 等) emit explicit \n so isWrapped=false.
-		// Fall back to checking that the previous line ends with a URL right
-		// at the column edge AND the current line starts with URL-safe chars.
+		// Continuation of URL from a previous line. Walk upward to find the
+		// origin line that starts the URL (may be 2+ lines above for long URLs
+		// like gcloud OAuth). Each intermediate line must end with URL-safe chars.
 		if (links.length === 0 && y > 1) {
-			var prevLine = buf.getLine(y - 2);
-			if (prevLine) {
-				var prevText = prevLine.translateToString(true);
-				var prevMatch = prevText.match(/(https?:\/\/[^\s<>"'`)\]]+)$/);
-				// URL が prev 行末で終わってればほぼ wrap (= cols 厳密 check 不要)
-				if (prevMatch) {
-					// Indented continuation も許容 (^\s* で先頭空白を skip)。URL を改行 +
-					// インデントで折り返す TUI 出力 (例: claude code) に対応。
-					// 行頭 `+ ` / `- ` (git push / diff の status marker) は continuation
-					// として拾わない (= `.git` と `+ 2c7cf91...` が連結される事故防止)。
-					var cont = text.match(/^(\s*)([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
-					var isGitMarker = /^\s*[+\-*]\s/.test(text);
-					if (cont && !isGitMarker && !text.match(/^\s*https?:\/\//)) {
-						var result = buildFullUrl(buf, y - 2, prevMatch[1]);
-						var peerSx = mapStringIndexToCell(prevLine, prevMatch.index) + 1;
-						var peerEx = mapStringIndexToCell(prevLine, prevMatch.index + prevMatch[1].length);
-						var peerRange = { y: y - 1, startX: peerSx, endX: peerEx };
+			var cont = text.match(/^(\s*)([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
+			var isGitMarker = /^\s*[+\-*]\s/.test(text);
+			if (cont && !isGitMarker && !text.match(/^\s*https?:\/\//)) {
+				// Walk up to find the URL origin line
+				var originY = null;
+				var scanY = y - 2;
+				while (scanY >= 0) {
+					var scanLine = buf.getLine(scanY);
+					if (!scanLine) break;
+					var scanText = scanLine.translateToString(true);
+					var urlMatch = scanText.match(/(https?:\/\/[^\s<>"'`)\]]+)$/);
+					if (urlMatch) {
+						originY = scanY;
+						break;
+					}
+					// Check if this line is also a continuation (URL-safe chars filling the line)
+					var scanCont = scanText.match(/^(\s*)([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
+					if (!scanCont || scanCont[1].length + scanCont[2].length < scanText.trimEnd().length) break;
+					scanY--;
+				}
+				if (originY !== null) {
+					var originLine = buf.getLine(originY);
+					var originText = originLine.translateToString(true);
+					var originMatch = originText.match(/(https?:\/\/[^\s<>"'`)\]]+)$/);
+					if (originMatch) {
+						var result = buildFullUrl(buf, originY, originMatch[1]);
+						// Build allRanges: origin line + all continuations (from buildFullUrl) + this line
+						var originSx = mapStringIndexToCell(originLine, originMatch.index) + 1;
+						var originEx = mapStringIndexToCell(originLine, originMatch.index + originMatch[1].length);
+						var allRanges = [{ y: originY + 1, startX: originSx, endX: originEx }].concat(result.continuations);
 						var leadingSpaces = cont[1].length;
 						var contStartX = leadingSpaces + 1;
 						var contEndX = leadingSpaces + cont[2].length;
-						var selfRange = { y: y, startX: contStartX, endX: contEndX };
 						(function(u, allR) {
 							links.push({
 								range: { start: { x: contStartX, y: y }, end: { x: contEndX, y: y } },
 								text: u, decorations: { pointerCursor: true },
-								activate: function() { postMessage({ type: 'openUrl', url: u }); },
-								hover: function() { showPeerUnderlines(allR); },
-								leave: function() { hidePeerUnderlines(); }
+								activate: function() { if (_metaPressed) postMessage({ type: 'openUrl', url: u }); },
+								hover: function() { _hoveredRanges = allR; if (_metaPressed) showPeerUnderlines(allR); },
+								leave: function() { _hoveredRanges = null; hidePeerUnderlines(); }
 							});
-						})(result.url, [peerRange, selfRange]);
+						})(result.url, allRanges);
 					}
 				}
 			}
