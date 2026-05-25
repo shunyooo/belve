@@ -888,7 +888,16 @@ private struct SessionRow: View {
 				// 詳細行: 状態ごとに 1 行だけ表示。content によらず高さ揃えるため
 				// 常に Group を出して line を予約する (=空文字でも line height ぶん確保)。
 				Group {
-					if let tool = session.currentTool {
+					if session.currentTool == "Background" {
+						HStack(spacing: 3) {
+							Image(systemName: "hourglass")
+								.font(.system(size: 8))
+							Text(session.lastAgentActivity ?? "tasks running")
+								.lineLimit(1)
+						}
+						.font(.system(size: 9))
+						.foregroundStyle(Theme.accent.opacity(0.6))
+					} else if let tool = session.currentTool {
 						HStack(spacing: 3) {
 							Image(systemName: "wrench.and.screwdriver")
 								.font(.system(size: 8))

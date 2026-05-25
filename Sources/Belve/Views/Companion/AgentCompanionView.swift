@@ -247,7 +247,16 @@ struct AgentDockView: View {
 					.lineLimit(isExpanded ? nil : 4)
 			}
 
-			if let tool = companion.currentTool {
+			if companion.currentTool == "Background" {
+				HStack(spacing: 4) {
+					Image(systemName: "hourglass")
+						.font(.system(size: 8))
+					Text(companion.currentTool ?? "")
+						.lineLimit(1)
+				}
+				.font(.system(size: 9))
+				.foregroundStyle(Theme.accent.opacity(0.6))
+			} else if let tool = companion.currentTool {
 				HStack(spacing: 4) {
 					Image(systemName: "wrench.and.screwdriver")
 						.font(.system(size: 8))
@@ -290,6 +299,7 @@ struct AgentDockView: View {
 	}
 
 	private func borderColor(for companion: AgentCompanion) -> Color {
+		if companion.currentTool == "Background" { return Theme.accent.opacity(0.6) }
 		switch companion.status {
 		case .running, .runningSubagent: return Theme.accent
 		case .waiting: return Theme.yellow

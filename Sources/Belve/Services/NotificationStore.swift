@@ -189,12 +189,15 @@ class NotificationStore: ObservableObject {
 				// .running and leave it stuck (no follow-up Stop hook arrives).
 				let isSubagentEvent = message.hasPrefix("subagent:") || message.hasPrefix("subagent-done:")
 				let isSpeechEvent = message.hasPrefix("speech:")
+				let isBackgroundEvent = message.hasPrefix("background:")
 				if !isSubagentEvent {
+					// background: = agent は prompt 待ちだが background task が走ってる。
+					// UI 上は .running を維持してアクティブに見せる。
 					session.status = .running
 					session.message = message
 				}
-				// Capture first prompt as label (speech / tool / lifecycle は user 入力ではない)
-				if session.label == nil && !message.hasPrefix("tool:") && !message.hasPrefix("result:") && !message.hasPrefix("subagent") && !isSpeechEvent && message != "Generating" {
+				// Capture first prompt as label (speech / tool / lifecycle / background は user 入力ではない)
+				if session.label == nil && !message.hasPrefix("tool:") && !message.hasPrefix("result:") && !message.hasPrefix("subagent") && !isSpeechEvent && !isBackgroundEvent && message != "Generating" {
 					session.label = message
 				}
 				// Parse structured messages
@@ -223,6 +226,10 @@ class NotificationStore: ObservableObject {
 					// speech: は agent 中間発話。lastUserPrompt は触らない (= header 維持)。
 					// session.message は flow の上で既に session.message=message 済 → bubble に流れる。
 					// currentTool / activity も維持 (= 次の tool 表示まで切らない)。
+				} else if isBackgroundEvent {
+					// background: = background task 実行中。tool/activity/prompt は触らない。
+					session.currentTool = "Background"
+					session.lastAgentActivity = String(message.dropFirst("background:".count))
 				} else if message != "Generating" {
 					session.lastUserPrompt = message
 					session.currentTool = nil

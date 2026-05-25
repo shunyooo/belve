@@ -22,9 +22,12 @@ fi
 # ための前置情報。
 SESSION_ID=""
 
+BELVE_HOOK_LOG="/tmp/belve-hook-debug.log"
+
 emit_event() {
     local status="$1"
     local message="$2"
+    echo "$(date +%Y-%m-%dT%H:%M:%S) emit_event: pane=$PANE_ID status=$status message=${message:0:200}" >> "$BELVE_HOOK_LOG" 2>/dev/null || true
     local osc
     # 新 OSC 形式 (BELVE2) は paneId, sessionId, status, message の 4 セグメント。
     # NotificationStore はこの sessionId を使って「pane あたりの primary session」
@@ -209,41 +212,55 @@ case "${1:-}" in
                 ;;
 
             stop)
-                # Send short completed event first (guaranteed to arrive)
-                emit_event "completed" "Done"
-                # Then try to extract and send the actual assistant response
-                msg=$(parse_json '
-                    const tp = j.transcript_path || "";
-                    if (!tp) return "";
-                    function extract() {
-                        const lines = require("fs").readFileSync(tp, "utf8").trim().split("\n");
-                        let lastUserIdx = -1;
-                        for (let i = lines.length - 1; i >= 0; i--) {
-                            const e = JSON.parse(lines[i]);
-                            if (e.type === "user") {
-                                const c = (e.message||{}).content||[];
-                                if (!Array.isArray(c) || !c.some(b => b.type === "tool_result")) { lastUserIdx = i; break; }
-                            }
-                        }
-                        let lastText = "";
-                        for (let i = Math.max(0, lastUserIdx); i < lines.length; i++) {
-                            const e = JSON.parse(lines[i]);
-                            if (e.type === "assistant") {
-                                for (const b of ((e.message||{}).content||[])) {
-                                    if (b.type === "text" && b.text && b.text.trim()) lastText = b.text;
+                # Log raw payload for debugging
+                echo "$(date +%Y-%m-%dT%H:%M:%S) stop: raw_json=${JSON_PAYLOAD:0:500}" >> "$BELVE_HOOK_LOG" 2>/dev/null || true
+                # Check if background tasks are still running
+                bg_count=$(parse_json '
+                    const bt = j.background_tasks || [];
+                    return String(bt.length)
+                ')
+                echo "$(date +%Y-%m-%dT%H:%M:%S) stop: bg_count=${bg_count:-empty}" >> "$BELVE_HOOK_LOG" 2>/dev/null || true
+                if [ "${bg_count:-0}" != "0" ] && [ "${bg_count:-0}" != "" ]; then
+                    # Background tasks running — emit "running" with background info
+                    emit_event "running" "background:${bg_count} tasks running"
+                else
+                    # No background tasks — normal completion
+                    # Send short completed event first (guaranteed to arrive)
+                    emit_event "completed" "Done"
+                    # Then try to extract and send the actual assistant response
+                    msg=$(parse_json '
+                        const tp = j.transcript_path || "";
+                        if (!tp) return "";
+                        function extract() {
+                            const lines = require("fs").readFileSync(tp, "utf8").trim().split("\n");
+                            let lastUserIdx = -1;
+                            for (let i = lines.length - 1; i >= 0; i--) {
+                                const e = JSON.parse(lines[i]);
+                                if (e.type === "user") {
+                                    const c = (e.message||{}).content||[];
+                                    if (!Array.isArray(c) || !c.some(b => b.type === "tool_result")) { lastUserIdx = i; break; }
                                 }
                             }
+                            let lastText = "";
+                            for (let i = Math.max(0, lastUserIdx); i < lines.length; i++) {
+                                const e = JSON.parse(lines[i]);
+                                if (e.type === "assistant") {
+                                    for (const b of ((e.message||{}).content||[])) {
+                                        if (b.type === "text" && b.text && b.text.trim()) lastText = b.text;
+                                    }
+                                }
+                            }
+                            return lastText;
                         }
-                        return lastText;
-                    }
-                    try {
-                        let t = extract();
-                        if (!t) { const{execSync:s}=require("child_process"); s("sleep 0.1"); t = extract(); }
-                        if (t) return t.replace(/\r/g,"").replace(/\n/g,"\\n").replace(/\t/g," ").replace(/[\x00-\x08\x0b-\x1f\x7f]/g,"").substring(0,2000).trim();
-                    } catch {}
-                    return ""
-                ')
-                [ -n "$msg" ] && emit_event "completed" "$msg"
+                        try {
+                            let t = extract();
+                            if (!t) { const{execSync:s}=require("child_process"); s("sleep 0.1"); t = extract(); }
+                            if (t) return t.replace(/\r/g,"").replace(/\n/g,"\\n").replace(/\t/g," ").replace(/[\x00-\x08\x0b-\x1f\x7f]/g,"").substring(0,2000).trim();
+                        } catch {}
+                        return ""
+                    ')
+                    [ -n "$msg" ] && emit_event "completed" "$msg"
+                fi
                 ;;
 
             subagent-start)
