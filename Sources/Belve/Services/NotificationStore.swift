@@ -348,12 +348,19 @@ class NotificationStore: ObservableObject {
 		}
 	}
 
+	private var pendingSaveTask: DispatchWorkItem?
+
 	private func saveSessions() {
-		// Keep only last 50 sessions
-		let toSave = Array(sessions.prefix(50))
-		if let data = try? JSONEncoder().encode(toSave) {
-			try? data.write(to: Self.saveURL)
+		pendingSaveTask?.cancel()
+		let task = DispatchWorkItem { [weak self] in
+			guard let self else { return }
+			let toSave = Array(self.sessions.prefix(50))
+			if let data = try? JSONEncoder().encode(toSave) {
+				try? data.write(to: Self.saveURL)
+			}
 		}
+		pendingSaveTask = task
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: task)
 	}
 
 	func archiveSessionsForPane(_ paneId: String) {

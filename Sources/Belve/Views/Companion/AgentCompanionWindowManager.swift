@@ -8,8 +8,21 @@ final class AgentCompanionWindowManager {
 	static let shared = AgentCompanionWindowManager()
 
 	private var dockPanel: AgentDockPanel?
+	private var userHidden = false
 
 	private init() {}
+
+	func toggleVisibility() {
+		if let p = dockPanel, p.isVisible {
+			userHidden = true
+			p.orderOut(nil)
+		} else if let p = dockPanel {
+			userHidden = false
+			p.orderFrontRegardless()
+		} else {
+			userHidden = false
+		}
+	}
 
 	private static let positionKey = "Belve.companionDock.position"
 
@@ -17,7 +30,7 @@ final class AgentCompanionWindowManager {
 	/// AgentCompanionStore.reconcile から呼ばれる。
 	func updateDock(hasCompanions: Bool) {
 		if hasCompanions {
-			if dockPanel == nil {
+			if dockPanel == nil && !userHidden {
 				let panel = AgentDockPanel()
 				dockPanel = panel
 				restoreOrPositionDock(panel)
@@ -27,6 +40,7 @@ final class AgentCompanionWindowManager {
 		} else {
 			saveDockPosition()
 			dismissDock()
+			userHidden = false
 		}
 	}
 

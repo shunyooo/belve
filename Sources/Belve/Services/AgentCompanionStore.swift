@@ -59,6 +59,17 @@ final class AgentCompanionStore: ObservableObject {
 		selectedPaneIds.remove(paneId)
 	}
 
+	/// 全 companion を非表示にする。
+	func dismissAll() {
+		for paneId in companions.keys {
+			manuallyEnabled.remove(paneId)
+			manuallyDismissed.insert(paneId)
+		}
+		companions.removeAll()
+		selectedPaneIds.removeAll()
+		AgentCompanionWindowManager.shared.updateDock(hasCompanions: false)
+	}
+
 	/// paneId の companion が有効化されてるか。Sidebar の context menu 表示用。
 	func isCompanionEnabled(for paneId: String) -> Bool {
 		!manuallyDismissed.contains(paneId)
@@ -133,7 +144,7 @@ final class AgentCompanionStore: ObservableObject {
 		self.notificationStore = notificationStore
 		self.projectStore = projectStore
 		notificationStore.$sessions
-			.receive(on: DispatchQueue.main)
+			.throttle(for: .milliseconds(200), scheduler: DispatchQueue.main, latest: true)
 			.sink { [weak self] sessions in
 				self?.reconcile(sessions: sessions)
 			}
@@ -221,8 +232,9 @@ final class AgentCompanionStore: ObservableObject {
 			)
 			companions[paneId] = snapshot
 		}
-		// Dock panel の表示 / 非表示を更新
+		// Dock panel + status bar の表示 / 非表示を更新
 		AgentCompanionWindowManager.shared.updateDock(hasCompanions: !companions.isEmpty)
+		AgentStatusBarWindowManager.shared.updateStatusBar(hasCompanions: !companions.isEmpty)
 	}
 
 	/// Sidebar の session row と同じ表示条件。archived / sessionEnd / idle は非表示。

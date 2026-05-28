@@ -1021,6 +1021,15 @@ struct MainWindow: View {
 				projectStore.deleteProject(id)
 			}
 		})
+		cmds.append(PaletteCommand(title: "Toggle Status Bar", icon: "rectangle.topthird.inset.filled") {
+			AgentStatusBarWindowManager.shared.toggleVisibility()
+		})
+		cmds.append(PaletteCommand(title: "Toggle Companion Dock", icon: "dock.rectangle") {
+			AgentCompanionWindowManager.shared.toggleVisibility()
+		})
+		cmds.append(PaletteCommand(title: "Hide All Companions", icon: "eye.slash") {
+			AgentCompanionStore.shared.dismissAll()
+		})
 
 		return cmds
 	}
