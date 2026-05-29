@@ -23,7 +23,7 @@ struct AgentStatusBarView: View {
 			return companions.max(by: { (priority[$0.status] ?? 0) < (priority[$1.status] ?? 0) })?.status ?? .idle
 		}
 		var hasBackground: Bool {
-			companions.contains { $0.currentTool == "Background" }
+			companions.contains { $0.currentTool?.hasPrefix("Background") == true }
 		}
 		var bestCompanion: AgentCompanion? {
 			let priority: [AgentStatus: Int] = [.waiting: 4, .running: 3, .runningSubagent: 3, .completed: 2, .sessionStart: 1, .idle: 0, .sessionEnd: 0]
@@ -235,7 +235,7 @@ struct AgentStatusBarView: View {
 						.lineLimit(1)
 				}
 
-				if companion.currentTool == "Background" {
+				if companion.currentTool?.hasPrefix("Background") == true {
 					HStack(spacing: 3) {
 						Image(systemName: "hourglass")
 							.font(.system(size: 8))
@@ -354,7 +354,7 @@ struct AgentStatusBarView: View {
 	}
 
 	private func dotColor(for companion: AgentCompanion) -> Color {
-		if companion.currentTool == "Background" {
+		if companion.currentTool?.hasPrefix("Background") == true {
 			return Theme.accent.opacity(0.5)
 		}
 		switch companion.status {
@@ -367,7 +367,7 @@ struct AgentStatusBarView: View {
 	}
 
 	private func statusTextColor(for companion: AgentCompanion) -> Color {
-		if companion.currentTool == "Background" {
+		if companion.currentTool?.hasPrefix("Background") == true {
 			return Theme.accent.opacity(0.6)
 		}
 		switch companion.status {
@@ -379,7 +379,7 @@ struct AgentStatusBarView: View {
 	}
 
 	private func statusLabel(for companion: AgentCompanion) -> String {
-		if companion.currentTool == "Background" { return "Background" }
+		if companion.currentTool?.hasPrefix("Background") == true { return "Background" }
 		switch companion.status {
 		case .idle, .sessionStart: return "Idle"
 		case .running: return "Running"
@@ -391,7 +391,7 @@ struct AgentStatusBarView: View {
 	}
 
 	private func transitionText(for companion: AgentCompanion) -> String {
-		if companion.currentTool == "Background" {
+		if companion.currentTool?.hasPrefix("Background") == true {
 			return "⏳ " + (companion.messages.last?.text ?? "Background")
 		}
 		switch companion.status {

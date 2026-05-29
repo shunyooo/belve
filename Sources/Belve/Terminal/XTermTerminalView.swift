@@ -362,6 +362,13 @@ struct XTermTerminalView: NSViewRepresentable {
 			case "resize":
 				let cols = body["cols"] as? Int ?? 80
 				let rows = body["rows"] as? Int ?? 24
+				// Sanity check: xterm.js が WebView 初期化 / 非表示 / 0 サイズ中に発火する
+				// 異常 resize (cols<10 等) を弾く。これを通すと claude 側が極端な
+				// 折り返しでテキスト出力し続けて scrollback が崩れる。
+				guard cols >= 10, rows >= 3 else {
+					NSLog("[Belve] ignored bogus resize cols=%d rows=%d pane=%@", cols, rows, paneId ?? "?")
+					break
+				}
 				guard cols != lastResizeCols || rows != lastResizeRows else { break }
 				lastResizeCols = cols
 				lastResizeRows = rows
