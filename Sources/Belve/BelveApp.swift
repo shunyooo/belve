@@ -119,6 +119,7 @@ extension Notification.Name {
 	static let belveTileOpenFocused = Notification.Name("belveTileOpenFocused")
 	static let belveSelectNextView = Notification.Name("belveSelectNextView")
 	static let belveSelectPreviousView = Notification.Name("belveSelectPreviousView")
+	static let belveShowSessionManager = Notification.Name("belveShowSessionManager")
 }
 
 class CommandPaletteState: ObservableObject {

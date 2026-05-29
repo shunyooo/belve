@@ -117,6 +117,7 @@ struct XTermTerminalView: NSViewRepresentable {
 	let project: Project
 	var paneId: String?
 	var paneIndex: Int = 0
+	var overrideSocket: String?
 	var viewWidth: CGFloat = 0
 	var viewHeight: CGFloat = 0
 	/// この project が現在 sidebar で選択中か。非選択時は auto-focus を抑制する
@@ -189,6 +190,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		context.coordinator.project = project
 		context.coordinator.paneId = paneId
 		context.coordinator.paneIndex = paneIndex
+		context.coordinator.overrideSocket = overrideSocket
 		context.coordinator.notificationStore = notificationStore
 		context.coordinator.commandAreaState = commandAreaState
 
@@ -293,6 +295,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		var project: Project?
 		var paneId: String?
 		var paneIndex: Int = 0
+		var overrideSocket: String?
 		var ptyService: PTYService?
 		weak var notificationStore: NotificationStore?
 		var refitObserver: Any?
@@ -503,9 +506,16 @@ struct XTermTerminalView: NSViewRepresentable {
 							postDisconnectedState(isDisconnected: true)
 							return
 						}
-						let paneIdShort = String((paneId ?? UUID().uuidString).prefix(8))
-						let sessionName = "belve-\(projShort)-\(paneIdShort)"
-						let sockPath = "/tmp/belve-shell/sessions/\(sessionName).sock"
+						let sockPath: String
+						let sessionName: String
+						if let override = self.overrideSocket {
+							sockPath = override
+							sessionName = (override as NSString).lastPathComponent.replacingOccurrences(of: ".sock", with: "")
+						} else {
+							let paneIdShort = String((paneId ?? UUID().uuidString).prefix(8))
+							sessionName = "belve-\(projShort)-\(paneIdShort)"
+							sockPath = "/tmp/belve-shell/sessions/\(sessionName).sock"
+						}
 						try? FileManager.default.createDirectory(
 							atPath: "/tmp/belve-shell/sessions",
 							withIntermediateDirectories: true

@@ -248,6 +248,29 @@ final class MasterClient: @unchecked Sendable {
 		_ = try await send(op: "resetHostHealth", params: ["host": host])
 	}
 
+	struct SessionInfo {
+		let name: String
+		let socket: String
+		let modTime: String
+		let alive: Bool
+	}
+
+	func listSessions() async throws -> [SessionInfo] {
+		let res = try await send(op: "listSessions", params: [:])
+		guard let sessions = res.result?["sessions"] as? [[String: Any]] else { return [] }
+		return sessions.compactMap { dict in
+			guard let name = dict["name"] as? String,
+			      let socket = dict["socket"] as? String,
+			      let modTime = dict["modTime"] as? String,
+			      let alive = dict["alive"] as? Bool else { return nil }
+			return SessionInfo(name: name, socket: socket, modTime: modTime, alive: alive)
+		}
+	}
+
+	func killSession(name: String) async throws {
+		_ = try await send(op: "killSession", params: ["name": name])
+	}
+
 	/// Mac 上の `localPath` (画像等) を SSH ControlMaster 経由で remote に
 	/// コピーし、remote 側のパス (`/tmp/belve-clipboard/<basename>`) を返す。
 	/// DevContainer の場合は VM 経由で `docker exec -i` でコンテナ内に書く。

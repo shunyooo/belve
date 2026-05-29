@@ -11,6 +11,7 @@ struct MainWindow: View {
 	/// Per-view open file cache. view 切替で独立した editor 状態を維持する。
 	@State private var openFilesByView: [UUID: OpenFile] = [:]
 	@State private var showSettings = false
+	@State private var showSessionManager = false
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
 	@State private var fileSearchResults: [MainWindowFileSearchResult] = []
@@ -55,6 +56,25 @@ struct MainWindow: View {
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .belveOpenSettings)) { _ in
 				showSettings.toggle()
+			}
+			.overlay {
+				if showSessionManager, let project = projectStore.selectedProject {
+					Color.black.opacity(0.3)
+						.ignoresSafeArea()
+						.onTapGesture { showSessionManager = false }
+					SessionManagerView(
+						project: project,
+						onAttach: { socketPath in
+							showSessionManager = false
+							attachToSession(socketPath: socketPath)
+						},
+						onDismiss: { showSessionManager = false }
+					)
+					.shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+				}
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .belveShowSessionManager)) { _ in
+				showSessionManager.toggle()
 			}
 	}
 
@@ -1030,6 +1050,9 @@ struct MainWindow: View {
 		cmds.append(PaletteCommand(title: "Hide All Companions", icon: "eye.slash") {
 			AgentCompanionStore.shared.dismissAll()
 		})
+		cmds.append(PaletteCommand(title: "Manage Sessions...", icon: "terminal") {
+			NotificationCenter.default.post(name: .belveShowSessionManager, object: nil)
+		})
 
 		return cmds
 	}
@@ -1106,6 +1129,22 @@ struct MainWindow: View {
 			projectStore.select(next.project)
 		}
 		viewStore.setActiveView(next.viewId, for: next.project.id)
+	}
+
+	private func attachToSession(socketPath: String) {
+		guard let project = projectStore.selectedProject else { return }
+		let state = commandAreaState(for: project.id)
+		guard let activePaneId = state.activePaneId else { return }
+		// PaneNode に overrideSocket をセットして reload。
+		// 次の PTY spawn で belve-persist client がこの socket に接続する。
+		if let paneNode = state.findLeafByPaneId(activePaneId, in: state.root) {
+			paneNode.overrideSocket = socketPath
+			stateManager.scheduleSave()
+		}
+		NSLog("[Belve] Attaching pane %@ to session: %@", activePaneId.uuidString, socketPath)
+		// PaneHostRegistry を unregister して再 mount → 新 PTY spawn
+		PaneHostRegistry.shared.unregister(paneId: activePaneId.uuidString)
+		projectStore.reloadProject(project.id)
 	}
 
 	private func openFolder() {

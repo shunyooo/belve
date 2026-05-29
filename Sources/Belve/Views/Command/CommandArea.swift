@@ -12,6 +12,8 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 	let id: UUID
 	var paneId: UUID?
 	var paneIndex: Int?
+	/// 別セッションに attach する時の socket path override。nil なら通常の自動生成。
+	var overrideSocket: String?
 	@Published var children: [PaneNode]?
 	@Published var splitDirection: SplitDirection?
 	@Published var splitRatio: CGFloat = 0.5
@@ -27,7 +29,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 	// MARK: - Codable
 
 	enum CodingKeys: String, CodingKey {
-		case id, paneId, paneIndex, children, splitDirection, splitRatio
+		case id, paneId, paneIndex, overrideSocket, children, splitDirection, splitRatio
 	}
 
 	required init(from decoder: Decoder) throws {
@@ -35,6 +37,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 		id = try c.decode(UUID.self, forKey: .id)
 		let decodedPaneId = try c.decodeIfPresent(UUID.self, forKey: .paneId)
 		paneIndex = try c.decodeIfPresent(Int.self, forKey: .paneIndex)
+		overrideSocket = try c.decodeIfPresent(String.self, forKey: .overrideSocket)
 		children = try c.decodeIfPresent([PaneNode].self, forKey: .children)
 		splitDirection = try c.decodeIfPresent(SplitDirection.self, forKey: .splitDirection)
 		splitRatio = try c.decode(CGFloat.self, forKey: .splitRatio)
@@ -55,6 +58,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 		try c.encode(id, forKey: .id)
 		try c.encodeIfPresent(paneId, forKey: .paneId)
 		try c.encodeIfPresent(paneIndex, forKey: .paneIndex)
+		try c.encodeIfPresent(overrideSocket, forKey: .overrideSocket)
 		try c.encodeIfPresent(children, forKey: .children)
 		try c.encodeIfPresent(splitDirection, forKey: .splitDirection)
 		try c.encode(splitRatio, forKey: .splitRatio)
@@ -714,6 +718,7 @@ struct CommandArea: View {
 								project: project,
 								paneId: pane.paneId.uuidString,
 								paneIndex: pane.paneIndex,
+								overrideSocket: state.findLeafByPaneId(pane.paneId, in: state.root)?.overrideSocket,
 								viewWidth: max(1, pane.rect.width),
 								viewHeight: max(1, pane.rect.height - paneHeaderHeight),
 								// 全 project が ZStack で同時 mount される構造上、

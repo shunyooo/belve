@@ -19,7 +19,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 )
 
 // Master が公開する API のバージョン。Belve.app は handshake でこの値を
@@ -190,6 +192,10 @@ func masterDispatch(mc *masterConn, req masterReq) masterRes {
 		return opTransferImage(req)
 	case "resetHostHealth":
 		return opResetHostHealth(req)
+	case "listSessions":
+		return opListSessions(req)
+	case "killSession":
+		return opKillSession(req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
@@ -453,4 +459,62 @@ func intParam(p map[string]interface{}, key string) int {
 		return int(v)
 	}
 	return 0
+}
+
+// listSessions: ローカルの belve-persist セッション一覧を返す。
+// /tmp/belve-shell/sessions/*.sock を列挙し、daemon プロセスの生存確認を行う。
+func opListSessions(req masterReq) masterRes {
+	sessDir := "/tmp/belve-shell/sessions"
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{"sessions": []interface{}{}}}
+	}
+	var sessions []map[string]interface{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sock") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".sock")
+		sockPath := filepath.Join(sessDir, e.Name())
+		info, _ := e.Info()
+		modTime := ""
+		if info != nil {
+			modTime = info.ModTime().Format(time.RFC3339)
+		}
+		// daemon が生きてるか確認 (socket に connect してすぐ close)
+		alive := false
+		if conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond); err == nil {
+			conn.Close()
+			alive = true
+		}
+		sessions = append(sessions, map[string]interface{}{
+			"name":      name,
+			"socket":    sockPath,
+			"modTime":   modTime,
+			"alive":     alive,
+		})
+	}
+	if sessions == nil {
+		sessions = []map[string]interface{}{}
+	}
+	return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{"sessions": sessions}}
+}
+
+// killSession: 指定セッションの daemon を終了し、socket ファイルを削除する。
+func opKillSession(req masterReq) masterRes {
+	name := strParam(req.Params, "name")
+	if name == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "name required"}
+	}
+	sockPath := filepath.Join("/tmp/belve-shell/sessions", name+".sock")
+	// daemon に接続して終了を促す (接続後すぐ close → daemon は client count 0 で exit)
+	// それでも駄目なら socket ファイルだけ削除
+	if conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond); err == nil {
+		conn.Close()
+	}
+	// socket ファイル削除
+	os.Remove(sockPath)
+	// lock ファイルも掃除
+	os.Remove(sockPath + ".lock")
+	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"name": name}}
 }

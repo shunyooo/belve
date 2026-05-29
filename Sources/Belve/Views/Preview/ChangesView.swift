@@ -184,6 +184,8 @@ struct ChangesView: View {
 	@State private var diffWebView: WKWebView?
 	@State private var lastStatusHash: String = ""
 	@State private var pollTimer: Timer?
+	@State private var compareRef: String = ""
+	@State private var availableBranches: [String] = []
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -192,6 +194,17 @@ struct ChangesView: View {
 				filterToggle("Staged", isOn: $layoutState.diffFilterStaged)
 				filterToggle("Unstaged", isOn: $layoutState.diffFilterUnstaged)
 				filterToggle("Committed", isOn: $layoutState.diffFilterCommitted)
+
+				if layoutState.diffFilterCommitted && !availableBranches.isEmpty {
+					Picker("", selection: $compareRef) {
+						ForEach(availableBranches, id: \.self) { branch in
+							Text(branch).tag(branch)
+						}
+					}
+					.pickerStyle(.menu)
+					.frame(maxWidth: 140)
+					.labelsHidden()
+				}
 
 				Theme.borderSubtle.frame(width: 1, height: 14)
 
@@ -297,6 +310,7 @@ struct ChangesView: View {
 			}
 		}
 		.onAppear {
+			loadBranches()
 			loadAll()
 			startPolling()
 		}
@@ -304,6 +318,7 @@ struct ChangesView: View {
 		.onChange(of: layoutState.diffFilterStaged) { loadAll() }
 		.onChange(of: layoutState.diffFilterUnstaged) { loadAll() }
 		.onChange(of: layoutState.diffFilterCommitted) { loadAll() }
+		.onChange(of: compareRef) { loadAll() }
 	}
 
 	private func filterToggle(_ label: String, isOn: Binding<Bool>) -> some View {
@@ -510,7 +525,7 @@ struct ChangesView: View {
 				parts.append("U:" + list.map { "\($0.0):\($0.1)" }.joined(separator: ","))
 			}
 			if currentFilter.committed {
-				let list = provider.gitChangedFiles(rootPath, args: ["main...HEAD"])
+				let list = provider.gitChangedFiles(rootPath, args: ["\(compareRef)...HEAD"])
 				parts.append("C:" + list.map { "\($0.0):\($0.1)" }.joined(separator: ","))
 			}
 			let hash = parts.joined(separator: "|")
@@ -518,6 +533,30 @@ struct ChangesView: View {
 				if hash != lastStatusHash {
 					lastStatusHash = hash
 					loadAll()
+				}
+			}
+		}
+	}
+
+	private func loadBranches() {
+		let provider = project.provider
+		let rootPath = project.effectivePath
+		DispatchQueue.global(qos: .utility).async {
+			// git branch -r でリモートブランチ一覧取得
+			let output = provider.gitDiffBulk(rootPath, args: ["branch", "-r", "--format=%(refname:short)"]) ?? ""
+			let branches = output.split(separator: "\n")
+				.map { $0.trimmingCharacters(in: .whitespaces) }
+				.filter { !$0.isEmpty && !$0.contains("HEAD") }
+				.sorted()
+			// デフォルト: origin/main or origin/master
+			let defaultRef = branches.first(where: { $0 == "origin/main" })
+				?? branches.first(where: { $0 == "origin/master" })
+				?? branches.first
+				?? "origin/main"
+			DispatchQueue.main.async {
+				availableBranches = branches
+				if compareRef.isEmpty {
+					compareRef = defaultRef
 				}
 			}
 		}
@@ -575,8 +614,8 @@ struct ChangesView: View {
 
 			// Committed (branch diff) — single git diff main...HEAD
 			if currentFilter.committed {
-				let branchList = provider.gitChangedFiles(rootPath, args: ["main...HEAD"])
-				let bulkDiff = provider.gitDiffBulk(rootPath, args: ["main...HEAD"]) ?? ""
+				let branchList = provider.gitChangedFiles(rootPath, args: ["\(compareRef)...HEAD"])
+				let bulkDiff = provider.gitDiffBulk(rootPath, args: ["\(compareRef)...HEAD"]) ?? ""
 				let splitDiffs = splitUnifiedDiff(bulkDiff)
 				for (status, path) in branchList {
 					if allFiles[path] != nil { continue }
