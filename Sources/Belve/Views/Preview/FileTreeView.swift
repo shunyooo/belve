@@ -1057,11 +1057,20 @@ struct FileTreeRow: View {
 	}
 
 	private var gitStatus: String? {
-		// gitFileStatus keys are relative paths (files + directories)
-		// item.path is absolute — match by suffix
-		for (gitPath, status) in gitFileStatus {
-			if item.path.hasSuffix("/" + gitPath) {
-				return status
+		// gitFileStatus keys are relative paths (e.g. "Sources/foo.swift")
+		// item.path is absolute (e.g. "/workspaces/life/Sources/foo.swift")
+		// or relative with prefix (e.g. "./Sources/foo.swift")
+		// Extract the relative portion and look up directly in the dict.
+		let path = item.path
+		if let status = gitFileStatus[path] { return status }
+		// Try stripping root prefix for O(1) lookup
+		if let slashIdx = path.range(of: "/", options: [], range: path.index(after: path.startIndex)..<path.endIndex) {
+			// Try progressively shorter suffixes: "a/b/c" → "b/c" → "c"
+			var sub = path[slashIdx.upperBound...]
+			while !sub.isEmpty {
+				if let status = gitFileStatus[String(sub)] { return status }
+				guard let next = sub.range(of: "/") else { break }
+				sub = sub[next.upperBound...]
 			}
 		}
 		return nil

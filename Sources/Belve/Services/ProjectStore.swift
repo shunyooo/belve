@@ -309,8 +309,6 @@ class ProjectStore: ObservableObject {
 	}
 
 	private func scheduleFsRefresh(projectId: UUID) {
-		// 既存の予約をキャンセル → 新しい 250ms タイマー。バースト fs 変更を
-		// 1 回の refresh に束ねる。
 		fsRefreshTimers[projectId]?.cancel()
 		let work = DispatchWorkItem { [weak self] in
 			guard let self else { return }
@@ -337,15 +335,11 @@ class ProjectStore: ObservableObject {
 			let branch = provider.gitBranch(path)
 			let rawStatus = provider.gitStatus(path)
 
-			// Build expanded map: include parent directories
-			// e.g. "Sources/Belve/foo.swift" → "M" also adds "Sources/Belve" → "M", "Sources" → "M"
 			var expanded: [String: String] = [:]
 			for (filePath, status) in rawStatus {
 				expanded[filePath] = status
-				// Add all parent directories
 				var dir = (filePath as NSString).deletingLastPathComponent
 				while !dir.isEmpty && dir != "." {
-					// Directory gets highest-priority status: M > A > D > ??
 					if let existing = expanded[dir] {
 						expanded[dir] = Self.mergeGitStatus(existing, status)
 					} else {

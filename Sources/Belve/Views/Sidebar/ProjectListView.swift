@@ -170,6 +170,9 @@ struct ProjectListView: View {
 					}
 					.padding(.horizontal, 8)
 				}
+				AgentNotificationStack(onFocus: { projectId, paneId in
+					onFocusPane?(projectId, paneId)
+				})
 			}
 			.overlay(alignment: .topTrailing) {
 				HStack(spacing: 4) {

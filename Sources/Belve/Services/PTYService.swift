@@ -184,17 +184,22 @@ class PTYService {
 		}
 	}
 
+	private static let oscPatterns: [NSRegularExpression?] = [
+		try? NSRegularExpression(pattern: "\u{1b}\\]9;([^\u{07}\u{1b}]*)[\u{07}]"),
+		try? NSRegularExpression(pattern: "\u{1b}\\]99;([^\u{07}\u{1b}]*)[\u{07}]"),
+		try? NSRegularExpression(pattern: "\u{1b}\\]777;notify;([^;]*);([^\u{07}\u{1b}]*)[\u{07}]"),
+		try? NSRegularExpression(pattern: "\u{1b}\\]52;[^;]*;([A-Za-z0-9+/=]+)(?:\u{07}|\u{1b}\\\\)"),
+	]
+
 	/// Scan for OSC 9/99/777 notification sequences: \e]9;text\a or \e]9;text\e\\
 	private func scanForOSC(_ data: Data) {
 		guard let str = String(data: data, encoding: .utf8), !str.isEmpty else { return }
+		// OSC 開始シーケンス (\e]) も BEL (\x07) もなければ skip
+		let hasOSC = str.contains("\u{1b}]") || str.contains("\u{07}")
+		if !hasOSC && oscBuffer.isEmpty { return }
 		oscBuffer += str
 
-		let patterns = [
-			try? NSRegularExpression(pattern: "\u{1b}\\]9;([^\u{07}\u{1b}]*)[\u{07}]"),
-			try? NSRegularExpression(pattern: "\u{1b}\\]99;([^\u{07}\u{1b}]*)[\u{07}]"),
-			try? NSRegularExpression(pattern: "\u{1b}\\]777;notify;([^;]*);([^\u{07}\u{1b}]*)[\u{07}]"),
-			try? NSRegularExpression(pattern: "\u{1b}\\]52;[^;]*;([A-Za-z0-9+/=]+)(?:\u{07}|\u{1b}\\\\)"),
-		]
+		let patterns = Self.oscPatterns
 		let nsStr = oscBuffer as NSString
 		let range = NSRange(location: 0, length: nsStr.length)
 		var maxConsumedLocation = 0

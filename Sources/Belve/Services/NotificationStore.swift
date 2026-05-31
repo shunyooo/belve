@@ -46,14 +46,49 @@ struct AgentSession: Identifiable, Codable {
 	}
 }
 
+struct AgentNotification: Identifiable {
+	let id: UUID
+	let projectId: UUID
+	let paneId: String
+	let projectName: String
+	let status: AgentStatus
+	let message: String
+	let timestamp: Date
+}
+
 class NotificationStore: ObservableObject {
 	@Published var sessions: [AgentSession] = []
 	@Published var agentStatus: [UUID: AgentState] = [:] // keyed by projectId
+	@Published var unreadNotifications: [AgentNotification] = []
 
 	// Mapping: paneId → projectId
 	var paneToProject: [String: UUID] = [:]
 	// Active session index per pane (for in-place updates)
 	private var activeSessionIndex: [String: Int] = [:]  // keyed by paneId
+
+	var projectNameResolver: ((UUID) -> String)?
+
+	func pushNotification(projectId: UUID, paneId: String, projectName: String, status: AgentStatus, message: String) {
+		// 同じ pane の古い通知を消して最新だけ残す
+		unreadNotifications.removeAll { $0.paneId == paneId }
+		let notif = AgentNotification(
+			id: UUID(), projectId: projectId, paneId: paneId,
+			projectName: projectName, status: status, message: message,
+			timestamp: Date()
+		)
+		unreadNotifications.insert(notif, at: 0)
+		if unreadNotifications.count > 20 {
+			unreadNotifications = Array(unreadNotifications.prefix(20))
+		}
+	}
+
+	func dismissNotification(_ id: UUID) {
+		unreadNotifications.removeAll { $0.id == id }
+	}
+
+	func dismissAllNotifications() {
+		unreadNotifications.removeAll()
+	}
 
 	func registerPane(paneId: String, projectId: UUID) {
 		paneToProject[paneId] = projectId
@@ -191,10 +226,12 @@ class NotificationStore: ObservableObject {
 				let isSpeechEvent = message.hasPrefix("speech:")
 				let isBackgroundEvent = message.hasPrefix("background:")
 				if !isSubagentEvent {
-					// background: = agent は prompt 待ちだが background task が走ってる。
-					// UI 上は .running を維持してアクティブに見せる。
 					session.status = .running
 					session.message = message
+				}
+				// session が動き出したら通知は不要（ユーザーが対応した or 自動進行）
+				if !isSubagentEvent && !isBackgroundEvent {
+					unreadNotifications.removeAll { $0.paneId == paneId }
 				}
 				// Capture first prompt as label (speech / tool / lifecycle / background は user 入力ではない)
 				if session.label == nil && !message.hasPrefix("tool:") && !message.hasPrefix("result:") && !message.hasPrefix("subagent") && !isSpeechEvent && !isBackgroundEvent && message != "Generating" {
@@ -245,6 +282,8 @@ class NotificationStore: ObservableObject {
 				session.isRead = false
 			}
 			if isPrimarySession(paneId: paneId, sessionId: sessionId) {
+				let projName = projectNameResolver?(projectId) ?? "?"
+				pushNotification(projectId: projectId, paneId: paneId, projectName: projName, status: .waiting, message: message)
 				sendDesktopNotification(title: "Claude Code", body: message, projectId: projectId, paneId: paneId)
 			} else {
 				NSLog("[Belve][notif] suppress (non-primary session) pane=%@ sid=%@", paneId, sessionId)
@@ -272,6 +311,8 @@ class NotificationStore: ObservableObject {
 			// の sidebar dot は (1) で既に更新されてる)。
 			if !message.isEmpty && message != "Done" {
 				if isPrimarySession(paneId: paneId, sessionId: sessionId) {
+					let projName = projectNameResolver?(projectId) ?? "?"
+					pushNotification(projectId: projectId, paneId: paneId, projectName: projName, status: .completed, message: message)
 					sendDesktopNotification(title: "Claude Code — Done", body: message, projectId: projectId, paneId: paneId)
 				} else {
 					NSLog("[Belve][notif] suppress (non-primary session) pane=%@ sid=%@", paneId, sessionId)
@@ -302,13 +343,34 @@ class NotificationStore: ObservableObject {
 		}
 	}
 
+	private var sessionPublishTask: DispatchWorkItem?
+
 	private func updateActiveSession(paneId: String, update: (inout AgentSession) -> Void) {
 		if let idx = activeSessionIndex[paneId], idx < sessions.count,
 		   sessions[idx].paneId == paneId {
+			// @Published の発火を抑制して直接書き換え
+			let old = sessions[idx]
 			update(&sessions[idx])
 			sessions[idx].updatedAt = Date()
+			// status 変化（idle→running 等）は即時通知。
+			// それ以外（tool 変更、message 更新等）は 500ms debounce。
+			let statusChanged = old.status != sessions[idx].status
+			if statusChanged {
+				objectWillChange.send()
+			} else {
+				scheduleSessionPublish()
+			}
 			saveSessions()
 		}
+	}
+
+	private func scheduleSessionPublish() {
+		sessionPublishTask?.cancel()
+		let task = DispatchWorkItem { [weak self] in
+			self?.objectWillChange.send()
+		}
+		sessionPublishTask = task
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: task)
 	}
 
 	// MARK: - Persistence
