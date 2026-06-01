@@ -679,24 +679,49 @@ struct PreviewArea: View {
 	}
 
 	private func handleDefinitionRequest(_ request: EditorDefinitionRequest) {
-		let provider = project.provider
-		DispatchQueue.global(qos: .userInitiated).async {
-			guard let match = provider.resolveDefinition(
-				rootPath: rootPath,
-				filePath: request.filename,
-				symbol: request.symbol,
-				language: request.language,
-				line: request.line,
-				column: request.column
-			) else { return }
-
-			DispatchQueue.main.async {
-				loadFile(at: match.path, line: match.lineNumber, column: match.column)
+		let proj = project
+		Task { @MainActor in
+			// LSP first
+			if let loc = await LSPManager.shared.definition(
+				file: request.filename, line: request.line, column: request.column, project: proj
+			) {
+				let path = loc.uri.hasPrefix("file://") ? String(loc.uri.dropFirst(7)) : loc.uri
+				loadFile(at: path, line: loc.range.start.line + 1, column: loc.range.start.character + 1)
+				return
+			}
+			// Grep fallback
+			let provider = proj.provider
+			let root = rootPath
+			DispatchQueue.global(qos: .userInitiated).async {
+				guard let match = provider.resolveDefinition(
+					rootPath: root, filePath: request.filename,
+					symbol: request.symbol, language: request.language,
+					line: request.line, column: request.column
+				) else { return }
+				DispatchQueue.main.async { [self] in
+					loadFile(at: match.path, line: match.lineNumber, column: match.column)
+				}
 			}
 		}
 	}
 
 	private func handleHoverInfoRequest(_ request: EditorDefinitionRequest, _ requestId: Int, _ completion: @escaping (String?) -> Void) {
+		let proj = project
+		Task { @MainActor in
+			// LSP first
+			if let markdown = await LSPManager.shared.hover(
+				file: request.filename, line: request.line, column: request.column, project: proj
+			) {
+				let html = markdownToHoverHTML(markdown)
+				completion(html)
+				return
+			}
+			// Grep fallback
+			grepBasedHover(request, completion)
+		}
+	}
+
+	private func grepBasedHover(_ request: EditorDefinitionRequest, _ completion: @escaping (String?) -> Void) {
 		let provider = project.provider
 		let root = rootPath
 		DispatchQueue.global(qos: .userInitiated).async {
@@ -714,7 +739,6 @@ struct PreviewArea: View {
 
 			let signature = lines[defIdx].trimmingCharacters(in: .whitespaces)
 			var docLines: [String] = []
-			// 上のコメントを取得
 			var i = defIdx - 1
 			while i >= 0 {
 				let t = lines[i].trimmingCharacters(in: .whitespaces)
@@ -725,7 +749,6 @@ struct PreviewArea: View {
 					i -= 1
 				} else { break }
 			}
-			// 下の docstring (Python triple-quote)
 			if defIdx + 1 < lines.count {
 				let next = lines[defIdx + 1].trimmingCharacters(in: .whitespaces)
 				if next.hasPrefix("\"\"\"") || next.hasPrefix("'''") {
@@ -750,6 +773,35 @@ struct PreviewArea: View {
 			}
 			completion(html)
 		}
+	}
+
+	private func markdownToHoverHTML(_ md: String) -> String {
+		func esc(_ s: String) -> String {
+			s.replacingOccurrences(of: "&", with: "&amp;")
+			 .replacingOccurrences(of: "<", with: "&lt;")
+			 .replacingOccurrences(of: ">", with: "&gt;")
+		}
+		var html = ""
+		var inCode = false
+		for line in md.components(separatedBy: "\n") {
+			if line.hasPrefix("```") {
+				if inCode {
+					html += "</pre>"
+					inCode = false
+				} else {
+					html += "<pre>"
+					inCode = true
+				}
+			} else if inCode {
+				html += esc(line) + "\n"
+			} else if line.hasPrefix("`") && line.hasSuffix("`") {
+				html += "<div class='hover-signature'>\(esc(String(line.dropFirst().dropLast())))</div>"
+			} else if !line.isEmpty {
+				html += "<div class='hover-doc'>\(esc(line))</div>"
+			}
+		}
+		if inCode { html += "</pre>" }
+		return html
 	}
 
 	// MARK: - File Watch (auto-reload on external changes)

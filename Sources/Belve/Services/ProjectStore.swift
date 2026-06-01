@@ -247,6 +247,9 @@ class ProjectStore: ObservableObject {
 			checkForDevContainer()
 		}
 		refreshGitStatus()
+		if let project {
+			Task { @MainActor in LSPManager.shared.activate(project: project) }
+		}
 		NSLog("[Belve][select] project=%@ sshHost=%@",
 		      project?.name ?? "nil",
 		      project?.sshHost ?? "nil")

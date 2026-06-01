@@ -11,6 +11,7 @@ struct MainWindow: View {
 	/// Per-view open file cache. view 切替で独立した editor 状態を維持する。
 	@State private var openFilesByView: [UUID: OpenFile] = [:]
 	@State private var showSettings = false
+	@ObservedObject private var lspManager = LSPManager.shared
 	@State private var showSessionManager = false
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
@@ -75,6 +76,52 @@ struct MainWindow: View {
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .belveShowSessionManager)) { _ in
 				showSessionManager.toggle()
+			}
+			.overlay {
+				if let pending = lspManager.pendingInstall {
+					Color.black.opacity(0.3)
+						.ignoresSafeArea()
+						.onTapGesture { lspManager.declineInstall(language: pending.language) }
+					VStack(spacing: 16) {
+						Text("Language Server")
+							.font(.system(size: 14, weight: .semibold))
+							.foregroundStyle(Theme.textPrimary)
+						Text("\(pending.serverName) が見つかりません。インストールしますか？")
+							.font(.system(size: 12))
+							.foregroundStyle(Theme.textSecondary)
+							.multilineTextAlignment(.center)
+						Text("hover と定義ジャンプの精度が向上します")
+							.font(.system(size: 11))
+							.foregroundStyle(Theme.textTertiary)
+						HStack(spacing: 12) {
+							Button("後で") {
+								lspManager.declineInstall(language: pending.language)
+							}
+							.buttonStyle(.plain)
+							.foregroundStyle(Theme.textSecondary)
+							.padding(.horizontal, 16)
+							.padding(.vertical, 6)
+							.background(RoundedRectangle(cornerRadius: 6).fill(Theme.surface))
+							.overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.border))
+
+							Button("インストール") {
+								let lang = pending.language
+								let proj = pending.project
+								Task { await lspManager.installAndStart(language: lang, project: proj) }
+							}
+							.buttonStyle(.plain)
+							.foregroundStyle(.white)
+							.padding(.horizontal, 16)
+							.padding(.vertical, 6)
+							.background(RoundedRectangle(cornerRadius: 6).fill(Theme.accent))
+						}
+					}
+					.padding(24)
+					.background(Theme.surface)
+					.cornerRadius(12)
+					.overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.border))
+					.shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+				}
 			}
 	}
 
