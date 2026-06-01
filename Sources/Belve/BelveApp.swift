@@ -120,6 +120,8 @@ extension Notification.Name {
 	static let belveSelectNextView = Notification.Name("belveSelectNextView")
 	static let belveSelectPreviousView = Notification.Name("belveSelectPreviousView")
 	static let belveShowSessionManager = Notification.Name("belveShowSessionManager")
+	static let belveNavigateBack = Notification.Name("belveNavigateBack")
+	static let belveNavigateForward = Notification.Name("belveNavigateForward")
 }
 
 class CommandPaletteState: ObservableObject {
@@ -199,6 +201,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Request notification permission
 		notificationStore.requestNotificationPermission()
 
+		// プロジェクト名解決 (通知表示用)
+		notificationStore.projectNameResolver = { [weak projectStore] projectId in
+			projectStore?.projects.first(where: { $0.id == projectId })?.name ?? "?"
+		}
+
 		// Agent companions: floating panel ごとに claude session の活動を表示。
 		// NotificationStore.sessions を観測して active 化で自動 spawn / 終了で dismiss。
 		AgentCompanionStore.shared.attach(
@@ -213,12 +220,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Cmd+1-9 handled via .onKeyPress in MainWindow (SwiftUI native)
 		localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
 			let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-			// Accept Cmd or Cmd+Shift (reject Cmd+Option/Ctrl which aren't our shortcuts).
 			guard flags.contains(.command),
-				  flags.subtracting([.command, .shift]).isEmpty,
 				  let key = event.charactersIgnoringModifiers?.lowercased() else {
 				return event
 			}
+			// Cmd+Option: font size shortcuts
+			if flags.contains(.option) && flags.subtracting([.command, .option]).isEmpty {
+				switch key {
+				case "-", "_":
+					if Self.isDiffWebViewFocused() { return event }
+					AppConfig.shared.terminalFontSize -= 1
+					return nil
+				case "=", "+":
+					if Self.isDiffWebViewFocused() { return event }
+					AppConfig.shared.terminalFontSize += 1
+					return nil
+				default:
+					return event
+				}
+			}
+			// Cmd or Cmd+Shift only (reject Cmd+Option/Ctrl)
+			guard flags.subtracting([.command, .shift]).isEmpty else { return event }
 			let shift = flags.contains(.shift)
 			// Cmd+Enter (keyCode 36): tile mode で focus 中 pane の project view へ遷移。
 			if event.keyCode == 36, !shift, AppConfig.shared.viewMode == .tile {
@@ -301,11 +323,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				return nil
 			case "-", "_":
 				if Self.isDiffWebViewFocused() { return event }
-				AppConfig.shared.terminalFontSize -= 1
+				NotificationCenter.default.post(name: .belveNavigateBack, object: nil)
 				return nil
 			case "=", "+":
 				if Self.isDiffWebViewFocused() { return event }
-				AppConfig.shared.terminalFontSize += 1
+				NotificationCenter.default.post(name: .belveNavigateForward, object: nil)
 				return nil
 			case "0" where !shift:
 				if Self.isDiffWebViewFocused() { return event }

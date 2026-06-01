@@ -273,6 +273,12 @@ struct MainWindow: View {
 						}
 					}
 				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveNavigateBack)) { _ in
+					navigateHistory(direction: -1)
+				}
+				.onReceive(NotificationCenter.default.publisher(for: .belveNavigateForward)) { _ in
+					navigateHistory(direction: 1)
+				}
 		)
 	}
 
@@ -1129,6 +1135,31 @@ struct MainWindow: View {
 			projectStore.select(next.project)
 		}
 		viewStore.setActiveView(next.viewId, for: next.project.id)
+	}
+
+	private func navigateHistory(direction: Int) {
+		guard let project = projectStore.selectedProject else { return }
+		let viewId = activeViewId(of: project.id)
+		let manager = NavigationHistoryManager.shared
+		let entry: NavigationEntry?
+		if direction < 0 {
+			entry = manager.goBack(viewId: viewId)
+		} else {
+			entry = manager.goForward(viewId: viewId)
+		}
+		guard let entry else { return }
+		manager.isNavigating = true
+		openFilesByView[viewId] = OpenFile(path: entry.path, content: "", line: entry.line, column: entry.column)
+		// loadFile will be triggered by PreviewArea's onChange(of: openFile)
+		// but we need the actual content, so post the open notification
+		NotificationCenter.default.post(
+			name: .belveOpenFileFromTerminal,
+			object: nil,
+			userInfo: ["projectId": project.id, "path": entry.path, "line": entry.line]
+		)
+		DispatchQueue.main.async {
+			manager.isNavigating = false
+		}
 	}
 
 	private func attachToSession(socketPath: String) {

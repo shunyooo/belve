@@ -117,7 +117,7 @@ const customTheme = EditorView.theme({
 	"&": {
 		height: "100%",
 		fontSize: "13px",
-		backgroundColor: "#1a1b26"
+		backgroundColor: "#111118"
 	},
 	".cm-scroller": {
 		fontFamily: "'SF Mono', Menlo, Monaco, 'Courier New', monospace"
@@ -126,10 +126,10 @@ const customTheme = EditorView.theme({
 		caretColor: "#c0caf5"
 	},
 	".cm-activeLine": {
-		backgroundColor: "#232433"
+		backgroundColor: "#1a1b26"
 	},
 	".cm-activeLineGutter": {
-		backgroundColor: "#232433"
+		backgroundColor: "#1a1b26"
 	},
 	".cm-selectionBackground, ::selection": {
 		backgroundColor: "#33467c !important"
@@ -478,6 +478,15 @@ window.editorOpenFile = function(content, filename, lineNumber = null, columnNum
 			revealLocation(lineNumber, columnNumber);
 		});
 	}
+};
+
+// Update content in-place without destroying the editor (preserves scroll position)
+window.editorUpdateContent = function(content) {
+	if (!editorView) return;
+	var doc = editorView.state.doc;
+	editorView.dispatch({
+		changes: { from: 0, to: doc.length, insert: content }
+	});
 };
 
 // Set diff markers: [{from: lineNum, to: lineNum, type: "add"|"modify"|"delete"}, ...]

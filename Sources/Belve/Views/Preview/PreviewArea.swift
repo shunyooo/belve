@@ -568,6 +568,17 @@ struct PreviewArea: View {
 
 	private func loadFile(at path: String, line: Int? = nil, column: Int? = nil, retriesRemaining: Int = 5) {
 		NSLog("[Belve] loadFile: \(path) (retries left=\(retriesRemaining))")
+		// Push current position to navigation history before switching files
+		let navManager = NavigationHistoryManager.shared
+		if !navManager.isNavigating, let current = openFile, current.path != path {
+			let viewId = ProjectViewStore.shared.activeView(for: project.id).id
+			navManager.push(viewId: viewId, entry: NavigationEntry(
+				path: current.path, line: current.line ?? 1, column: current.column ?? 1
+			))
+			navManager.push(viewId: viewId, entry: NavigationEntry(
+				path: path, line: line ?? 1, column: column ?? 1
+			))
+		}
 		let fileType = FileType.detect(path: path)
 
 		if fileType == .image || fileType == .pdf {

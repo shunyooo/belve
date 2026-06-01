@@ -199,19 +199,25 @@ struct CodeEditorView: NSViewRepresentable {
 			if let lastOpenedFile, lastOpenedFile == fileState {
 				return
 			}
+			let isSameFile = lastOpenedFile?.0 == filename
 			lastOpenedFile = fileState
 			let escaped = content
 				.replacingOccurrences(of: "\\", with: "\\\\")
 				.replacingOccurrences(of: "`", with: "\\`")
 				.replacingOccurrences(of: "$", with: "\\$")
-			let escapedFilename = filename
-				.replacingOccurrences(of: "\\", with: "\\\\")
-				.replacingOccurrences(of: "`", with: "\\`")
-				.replacingOccurrences(of: "$", with: "\\$")
-			let lineArgument = line.map(String.init) ?? "null"
-			let columnArgument = column.map(String.init) ?? "null"
-			let script = "editorOpenFile(`\(escaped)`, `\(escapedFilename)`, \(lineArgument), \(columnArgument))"
-			webView?.evaluateJavaScript(script, completionHandler: nil)
+			if isSameFile {
+				let script = "editorUpdateContent(`\(escaped)`)"
+				webView?.evaluateJavaScript(script, completionHandler: nil)
+			} else {
+				let escapedFilename = filename
+					.replacingOccurrences(of: "\\", with: "\\\\")
+					.replacingOccurrences(of: "`", with: "\\`")
+					.replacingOccurrences(of: "$", with: "\\$")
+				let lineArgument = line.map(String.init) ?? "null"
+				let columnArgument = column.map(String.init) ?? "null"
+				let script = "editorOpenFile(`\(escaped)`, `\(escapedFilename)`, \(lineArgument), \(columnArgument))"
+				webView?.evaluateJavaScript(script, completionHandler: nil)
+			}
 
 			// Load diff markers in background
 			if let project {

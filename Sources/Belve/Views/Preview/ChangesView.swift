@@ -513,24 +513,28 @@ struct ChangesView: View {
 		let provider = project.provider
 		let rootPath = project.effectivePath
 		let currentFilter = filter
+		let ref = compareRef
+		NSLog("[Belve][diff] checkForChanges filter=S:%d U:%d C:%d ref=%@",
+			  currentFilter.staged ? 1 : 0, currentFilter.unstaged ? 1 : 0, currentFilter.committed ? 1 : 0, ref)
 		DispatchQueue.global(qos: .utility).async {
-			// Build a lightweight fingerprint from git status only
 			var parts: [String] = []
 			if currentFilter.staged {
-				let list = provider.gitChangedFiles(rootPath, args: ["--staged"])
-				parts.append("S:" + list.map { "\($0.0):\($0.1)" }.joined(separator: ","))
+				let diff = provider.gitDiffBulk(rootPath, args: ["--staged", "--stat"]) ?? ""
+				parts.append("S:" + diff)
 			}
 			if currentFilter.unstaged {
-				let list = provider.gitChangedFiles(rootPath, args: [])
-				parts.append("U:" + list.map { "\($0.0):\($0.1)" }.joined(separator: ","))
+				let diff = provider.gitDiffBulk(rootPath, args: ["--stat"]) ?? ""
+				parts.append("U:" + diff)
 			}
 			if currentFilter.committed {
-				let list = provider.gitChangedFiles(rootPath, args: ["\(compareRef)...HEAD"])
-				parts.append("C:" + list.map { "\($0.0):\($0.1)" }.joined(separator: ","))
+				let diff = provider.gitDiffBulk(rootPath, args: ["\(ref)...HEAD", "--stat"]) ?? ""
+				parts.append("C:" + diff)
 			}
 			let hash = parts.joined(separator: "|")
 			DispatchQueue.main.async {
-				if hash != lastStatusHash {
+				let changed = hash != lastStatusHash
+				NSLog("[Belve][diff] hash changed=%d len=%d", changed ? 1 : 0, hash.count)
+				if changed {
 					lastStatusHash = hash
 					loadAll()
 				}
@@ -625,15 +629,8 @@ struct ChangesView: View {
 				}
 			}
 
-			// Sort to match file tree order: root files first, then by directory, then filename
-			let files = allFiles.values.sorted {
-				let dir0 = $0.directory
-				let dir1 = $1.directory
-				if dir0 == dir1 { return $0.filename < $1.filename }
-				if dir0.isEmpty { return true }
-				if dir1.isEmpty { return false }
-				return dir0 < dir1
-			}
+			// Sort by full path to match file tree order (depth-first alphabetical)
+			let files = allFiles.values.sorted { $0.path < $1.path }
 
 			DispatchQueue.main.async {
 				changedFiles = files
@@ -668,7 +665,7 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 	func makeCoordinator() -> DiffCoordinator { DiffCoordinator(onOpenFile: onOpenFile, onVisibleFileChanged: onVisibleFileChanged) }
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
-		let newHash = files.map(\.path).joined(separator: ",")
+		let newHash = files.map { "\($0.path):\($0.diff.count)" }.joined(separator: ",")
 		if context.coordinator.lastHash != newHash {
 			context.coordinator.lastHash = newHash
 			// Reload で scroll position が初期化されるのを防ぐため、reload 前に Y を
@@ -760,7 +757,6 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			margin-bottom: 16px;
 			border: 1px solid #313244;
 			border-radius: 8px;
-			overflow: hidden;
 			background: #1e1e2e;
 		}
 		.file-section:last-child {
@@ -849,8 +845,10 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			font-size: var(--diff-font-size);
 			line-height: 1.5;
 		}
-		.diff-table tr.add { background: #0c241a; }
+		.diff-table tr.add { background: #0f2822; }
+		.diff-table tr.add td.ln { color: #e0e0e0; background: rgba(166, 227, 161, 0.18); }
 		.diff-table tr.del { background: #2b0f17; }
+		.diff-table tr.del td.ln { color: #e0e0e0; background: rgba(243, 139, 168, 0.18); }
 		.diff-table tr.hunk {
 			background: rgba(137, 180, 250, 0.06);
 		}
@@ -870,6 +868,18 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 			white-space: pre-wrap;
 			word-break: break-all;
 		}
+		.diff-table td.sign {
+			width: 20px;
+			min-width: 20px;
+			text-align: center;
+			padding: 0;
+			-webkit-user-select: none;
+			user-select: none;
+			font-weight: bold;
+			color: #6c7086;
+		}
+		tr.add td.sign { color: #73daca; }
+		tr.del td.sign { color: #f38ba8; }
 		.diff-table tr.hunk td.code { color: #89b4fa; font-size: 11px; }
 		.diff-body { overflow: hidden; transition: max-height 0.2s ease; }
 		.diff-body.collapsed { max-height: 0 !important; }
@@ -1017,19 +1027,22 @@ private struct UnifiedDiffWebView: NSViewRepresentable {
 					oldLine = newOldStart
 					newLine = newNewStart
 				}
-				html += "<tr class=\"hunk\"><td class=\"ln\"></td><td class=\"ln\"></td><td class=\"code\">\(escaped)</td></tr>"
+				html += "<tr class=\"hunk\"><td class=\"ln\"></td><td class=\"ln\"></td><td class=\"sign\"></td><td class=\"code\">\(escaped)</td></tr>"
 			} else if line.hasPrefix("---") || line.hasPrefix("+++") || line.hasPrefix("diff ") || line.hasPrefix("index ") {
 				continue
 			} else if line.hasPrefix("+") {
-				html += "<tr class=\"add\"><td class=\"ln\"></td><td class=\"ln\">\(newLine)</td><td class=\"code\">\(escaped)</td></tr>"
+				let codeContent = escapeHTML(String(line.dropFirst(1)))
+				html += "<tr class=\"add\"><td class=\"ln\"></td><td class=\"ln\">\(newLine)</td><td class=\"sign\">+</td><td class=\"code\">\(codeContent)</td></tr>"
 				newLine += 1
 				prevNewEnd = newLine - 1
 			} else if line.hasPrefix("-") {
-				html += "<tr class=\"del\"><td class=\"ln\">\(oldLine)</td><td class=\"ln\"></td><td class=\"code\">\(escaped)</td></tr>"
+				let codeContent = escapeHTML(String(line.dropFirst(1)))
+				html += "<tr class=\"del\"><td class=\"ln\">\(oldLine)</td><td class=\"ln\"></td><td class=\"sign\">-</td><td class=\"code\">\(codeContent)</td></tr>"
 				oldLine += 1
 				prevOldEnd = oldLine - 1
 			} else if !line.isEmpty {
-				html += "<tr><td class=\"ln\">\(oldLine)</td><td class=\"ln\">\(newLine)</td><td class=\"code\">\(escaped)</td></tr>"
+				let codeContent = escapeHTML(String(line.dropFirst(line.hasPrefix(" ") ? 1 : 0)))
+				html += "<tr><td class=\"ln\">\(oldLine)</td><td class=\"ln\">\(newLine)</td><td class=\"sign\"> </td><td class=\"code\">\(codeContent)</td></tr>"
 				oldLine += 1
 				newLine += 1
 				prevOldEnd = oldLine - 1
