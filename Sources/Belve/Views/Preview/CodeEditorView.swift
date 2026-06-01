@@ -55,6 +55,7 @@ struct CodeEditorView: NSViewRepresentable {
 	let column: Int?
 	let onDefinitionRequest: (EditorDefinitionRequest) -> Void
 	let onDefinitionHoverRequest: (EditorDefinitionRequest, @escaping (Bool) -> Void) -> Void
+	var onHoverInfoRequest: ((EditorDefinitionRequest, Int, @escaping (String?) -> Void) -> Void)?
 	let onContentChanged: (String) -> Void
 
 	func makeNSView(context: Context) -> WKWebView {
@@ -76,6 +77,7 @@ struct CodeEditorView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		context.coordinator.project = project
+		context.coordinator.onHoverInfoRequest = onHoverInfoRequest
 		context.coordinator.openFile(filename: filename, content: content, line: line, column: column)
 	}
 
@@ -117,6 +119,7 @@ struct CodeEditorView: NSViewRepresentable {
 		let onContentChanged: (String) -> Void
 		let onDefinitionRequest: (EditorDefinitionRequest) -> Void
 		let onDefinitionHoverRequest: (EditorDefinitionRequest, @escaping (Bool) -> Void) -> Void
+		var onHoverInfoRequest: ((EditorDefinitionRequest, Int, @escaping (String?) -> Void) -> Void)?
 
 		init(
 			onContentChanged: @escaping (String) -> Void,
@@ -183,6 +186,32 @@ struct CodeEditorView: NSViewRepresentable {
 							"window.editorSetJumpHoverResult(\(requestId), \(canJump ? "true" : "false"))",
 							completionHandler: nil
 						)
+					}
+				}
+			case "hoverInfoRequest":
+				guard let requestId = body["requestId"] as? Int,
+					  let symbol = body["symbol"] as? String,
+					  let filename = body["filename"] as? String,
+					  let language = body["language"] as? String,
+					  let line = body["line"] as? Int,
+					  let column = body["column"] as? Int else { return }
+				onHoverInfoRequest?(
+					EditorDefinitionRequest(
+						symbol: symbol, filename: filename, language: language,
+						line: line, column: column
+					),
+					requestId
+				) { [weak self] html in
+					DispatchQueue.main.async {
+						if let html {
+							let escaped = html
+								.replacingOccurrences(of: "\\", with: "\\\\")
+								.replacingOccurrences(of: "`", with: "\\`")
+								.replacingOccurrences(of: "$", with: "\\$")
+							self?.webView?.evaluateJavaScript("window.editorShowHoverTooltip(\(requestId), `\(escaped)`)")
+						} else {
+							self?.webView?.evaluateJavaScript("window.editorShowHoverTooltip(\(requestId), null)")
+						}
 					}
 				}
 			default:

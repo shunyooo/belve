@@ -320,7 +320,8 @@ struct PreviewArea: View {
 									line: file.line,
 									column: file.column,
 									onDefinitionRequest: handleDefinitionRequest,
-									onDefinitionHoverRequest: handleDefinitionHoverRequest
+									onDefinitionHoverRequest: handleDefinitionHoverRequest,
+										onHoverInfoRequest: handleHoverInfoRequest
 								) { newContent in
 									editedContent = newContent
 									isDirty = newContent != savedContentReference
@@ -340,7 +341,8 @@ struct PreviewArea: View {
 							line: file.line,
 							column: file.column,
 							onDefinitionRequest: handleDefinitionRequest,
-							onDefinitionHoverRequest: handleDefinitionHoverRequest
+							onDefinitionHoverRequest: handleDefinitionHoverRequest,
+							onHoverInfoRequest: handleHoverInfoRequest
 						) { newContent in
 							editedContent = newContent
 							isDirty = newContent != savedContentReference
@@ -691,6 +693,62 @@ struct PreviewArea: View {
 			DispatchQueue.main.async {
 				loadFile(at: match.path, line: match.lineNumber, column: match.column)
 			}
+		}
+	}
+
+	private func handleHoverInfoRequest(_ request: EditorDefinitionRequest, _ requestId: Int, _ completion: @escaping (String?) -> Void) {
+		let provider = project.provider
+		let root = rootPath
+		DispatchQueue.global(qos: .userInitiated).async {
+			guard let match = provider.resolveDefinition(
+				rootPath: root, filePath: request.filename,
+				symbol: request.symbol, language: request.language,
+				line: request.line, column: request.column
+			), let content = provider.readFile(match.path) else {
+				completion(nil)
+				return
+			}
+			let lines = content.components(separatedBy: "\n")
+			let defIdx = (match.lineNumber ?? 1) - 1
+			guard defIdx >= 0 && defIdx < lines.count else { completion(nil); return }
+
+			let signature = lines[defIdx].trimmingCharacters(in: .whitespaces)
+			var docLines: [String] = []
+			// 上のコメントを取得
+			var i = defIdx - 1
+			while i >= 0 {
+				let t = lines[i].trimmingCharacters(in: .whitespaces)
+				if t.hasPrefix("#") || t.hasPrefix("//") || t.hasPrefix("///") ||
+				   t.hasPrefix("*") || t.hasPrefix("/*") ||
+				   t.hasPrefix("\"\"\"") || t.hasPrefix("'''") {
+					docLines.insert(t, at: 0)
+					i -= 1
+				} else { break }
+			}
+			// 下の docstring (Python triple-quote)
+			if defIdx + 1 < lines.count {
+				let next = lines[defIdx + 1].trimmingCharacters(in: .whitespaces)
+				if next.hasPrefix("\"\"\"") || next.hasPrefix("'''") {
+					var j = defIdx + 1
+					while j < lines.count {
+						let t = lines[j].trimmingCharacters(in: .whitespaces)
+						docLines.append(t)
+						if j > defIdx + 1 && (t.hasSuffix("\"\"\"") || t.hasSuffix("'''")) { break }
+						j += 1
+					}
+				}
+			}
+
+			func esc(_ s: String) -> String {
+				s.replacingOccurrences(of: "&", with: "&amp;")
+				 .replacingOccurrences(of: "<", with: "&lt;")
+				 .replacingOccurrences(of: ">", with: "&gt;")
+			}
+			var html = "<div class='hover-signature'>\(esc(signature))</div>"
+			if !docLines.isEmpty {
+				html += "<div class='hover-doc'>\(docLines.map { esc($0) }.joined(separator: "<br>"))</div>"
+			}
+			completion(html)
 		}
 	}
 

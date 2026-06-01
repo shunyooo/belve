@@ -1,6 +1,6 @@
 import { basicSetup } from "codemirror";
 import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/state";
-import { Decoration, EditorView, keymap } from "@codemirror/view";
+import { Decoration, EditorView, keymap, hoverTooltip } from "@codemirror/view";
 import { StreamLanguage, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { toggleComment } from "@codemirror/commands";
 import { oneDarkTheme } from "@codemirror/theme-one-dark";
@@ -65,6 +65,59 @@ let hoverRequestId = 0;
 const setJumpHoverEffect = StateEffect.define();
 const clearJumpHoverEffect = StateEffect.define();
 const setDiffMarkersEffect = StateEffect.define();
+
+// Hover tooltip: シンボル上でホバーすると定義 + docstring を表示
+var _pendingHoverResolve = null;
+var _hoverRequestIdCounter = 0;
+
+const symbolHoverTooltip = hoverTooltip(function(view, pos, side) {
+	var word = view.state.wordAt(pos);
+	if (!word) return null;
+	var text = view.state.sliceDoc(word.from, word.to);
+	if (!text || text.length < 2 || /^\d/.test(text)) return null;
+
+	var location = locationForPos(view.state, pos);
+	var requestId = ++_hoverRequestIdCounter;
+
+	return new Promise(function(resolve) {
+		_pendingHoverResolve = { requestId: requestId, resolve: resolve };
+		postMessage({
+			type: "hoverInfoRequest",
+			requestId: requestId,
+			symbol: text,
+			filename: currentFilename,
+			language: currentLanguage,
+			line: location.line,
+			column: location.column
+		});
+		// Timeout: 2s で resolve しなければ null
+		setTimeout(function() {
+			if (_pendingHoverResolve && _pendingHoverResolve.requestId === requestId) {
+				_pendingHoverResolve = null;
+				resolve(null);
+			}
+		}, 2000);
+	});
+});
+
+window.editorShowHoverTooltip = function(requestId, content) {
+	if (!_pendingHoverResolve || _pendingHoverResolve.requestId !== requestId) return;
+	var resolve = _pendingHoverResolve.resolve;
+	_pendingHoverResolve = null;
+	if (!content) { resolve(null); return; }
+	var word = editorView ? editorView.state.wordAt(editorView.state.selection.main.head) : null;
+	resolve({
+		pos: word ? word.from : 0,
+		end: word ? word.to : 0,
+		above: true,
+		create: function() {
+			var dom = document.createElement("div");
+			dom.className = "cm-hover-tooltip";
+			dom.innerHTML = content;
+			return { dom: dom };
+		}
+	});
+};
 
 const jumpHoverField = StateField.define({
 	create() {
@@ -133,6 +186,41 @@ const customTheme = EditorView.theme({
 	},
 	".cm-selectionBackground, ::selection": {
 		backgroundColor: "#33467c !important"
+	},
+	".cm-tooltip": {
+		backgroundColor: "#1e1e2e",
+		border: "1px solid #313244",
+		borderRadius: "6px",
+		color: "#cdd6f4",
+		fontSize: "12px",
+		maxWidth: "600px",
+		maxHeight: "300px",
+		overflow: "auto",
+		boxShadow: "0 4px 12px rgba(0,0,0,0.4)"
+	},
+	".cm-hover-tooltip": {
+		padding: "8px 12px",
+		lineHeight: "1.5"
+	},
+	".cm-hover-tooltip pre": {
+		margin: "4px 0",
+		padding: "6px 8px",
+		backgroundColor: "#111118",
+		borderRadius: "4px",
+		fontSize: "12px",
+		fontFamily: "'SF Mono', Menlo, monospace",
+		overflow: "auto",
+		whiteSpace: "pre-wrap"
+	},
+	".cm-hover-tooltip .hover-signature": {
+		color: "#89b4fa",
+		fontFamily: "'SF Mono', Menlo, monospace",
+		fontSize: "12px",
+		marginBottom: "4px"
+	},
+	".cm-hover-tooltip .hover-doc": {
+		color: "#9aa5ce",
+		fontSize: "11px"
 	},
 	".cm-jumpTarget": {
 		textDecoration: "underline",
@@ -416,6 +504,7 @@ function createEditorState(content, filename) {
 			syntaxHighlighting(vscodeHighlightStyle),
 			customTheme,
 			jumpHoverField,
+			symbolHoverTooltip,
 			diffMarkerField,
 			languageCompartment.of(languageExtensionFor(currentLanguage)),
 			EditorView.updateListener.of((update) => {
