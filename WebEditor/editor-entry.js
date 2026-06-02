@@ -78,9 +78,11 @@ const symbolHoverTooltip = hoverTooltip(function(view, pos, side) {
 
 	var location = locationForPos(view.state, pos);
 	var requestId = ++_hoverRequestIdCounter;
+	var wordFrom = word.from;
+	var wordTo = word.to;
 
 	return new Promise(function(resolve) {
-		_pendingHoverResolve = { requestId: requestId, resolve: resolve };
+		_pendingHoverResolve = { requestId: requestId, resolve: resolve, from: wordFrom, to: wordTo };
 		postMessage({
 			type: "hoverInfoRequest",
 			requestId: requestId,
@@ -90,25 +92,23 @@ const symbolHoverTooltip = hoverTooltip(function(view, pos, side) {
 			line: location.line,
 			column: location.column
 		});
-		// Timeout: 2s で resolve しなければ null
 		setTimeout(function() {
 			if (_pendingHoverResolve && _pendingHoverResolve.requestId === requestId) {
 				_pendingHoverResolve = null;
 				resolve(null);
 			}
-		}, 2000);
+		}, 5000);
 	});
 });
 
 window.editorShowHoverTooltip = function(requestId, content) {
 	if (!_pendingHoverResolve || _pendingHoverResolve.requestId !== requestId) return;
-	var resolve = _pendingHoverResolve.resolve;
+	var pending = _pendingHoverResolve;
 	_pendingHoverResolve = null;
-	if (!content) { resolve(null); return; }
-	var word = editorView ? editorView.state.wordAt(editorView.state.selection.main.head) : null;
-	resolve({
-		pos: word ? word.from : 0,
-		end: word ? word.to : 0,
+	if (!content) { pending.resolve(null); return; }
+	pending.resolve({
+		pos: pending.from,
+		end: pending.to,
 		above: true,
 		create: function() {
 			var dom = document.createElement("div");
