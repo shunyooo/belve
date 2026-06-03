@@ -87,7 +87,7 @@ struct TileView: View {
 							status: entry.status,
 							cellHeight: cellH,
 							headerHeight: headerHeight,
-							commandAreaState: stateManager.state(for: entry.project.id)
+							commandAreaState: stateManager.state(for: ProjectViewStore.shared.activeView(for: entry.project.id).id)
 						)
 						.frame(height: cellH)
 					}
@@ -125,7 +125,7 @@ struct TileView: View {
 							status: entry.status,
 							cellHeight: cellH,
 							headerHeight: headerHeight,
-							commandAreaState: stateManager.state(for: entry.project.id)
+							commandAreaState: stateManager.state(for: ProjectViewStore.shared.activeView(for: entry.project.id).id)
 						)
 						.frame(width: cellWidth, height: cellH)
 					}
@@ -138,7 +138,7 @@ struct TileView: View {
 	private var visiblePanes: [PaneCellInfo] {
 		var result: [PaneCellInfo] = []
 		for (projectIdx, project) in projectStore.projects.enumerated() {
-			let state = stateManager.state(for: project.id)
+			let state = stateManager.state(for: ProjectViewStore.shared.activeView(for: project.id).id)
 			let status = notificationStore.agentStatus[project.id]?.status ?? .idle
 			for (paneIdString, paneIndex) in collectLeafPanes(from: state.root) {
 				guard filterState.shouldShow(paneId: paneIdString, projectId: project.id, status: status) else {

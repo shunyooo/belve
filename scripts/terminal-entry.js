@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { SerializeAddon } from '@xterm/addon-serialize';
 // WebLinksAddon replaced by custom link provider (supports multi-line URLs)
 
 const fitAddon = new FitAddon();
@@ -39,6 +40,8 @@ const term = new Terminal({
 });
 
 term.loadAddon(fitAddon);
+const serializeAddon = new SerializeAddon();
+term.loadAddon(serializeAddon);
 // Build full URL by joining continuation lines. Returns {url, continuations: [{y, startX, endX}]}
 function buildFullUrl(buf, startY, urlStart) {
 	var url = urlStart;
@@ -522,6 +525,20 @@ function ensurePathLinkProvider() {
 window.terminalFit = function() {
 	doFit();
 	return _lastFitCols > 0 ? { cols: _lastFitCols, rows: _lastFitRows } : null;
+};
+
+// SerializeAddon: ターミナル状態の serialize/restore
+window.terminalSerialize = function() {
+	if (!serializeAddon) return null;
+	return serializeAddon.serialize({ scrollback: 1000 });
+};
+
+window.terminalRestore = function(data) {
+	if (!term || !data) return;
+	term.reset();
+	term.write(data, function() {
+		term.scrollToBottom();
+	});
 };
 
 // Hide/reveal terminal screen during resize to prevent visible redraw scroll

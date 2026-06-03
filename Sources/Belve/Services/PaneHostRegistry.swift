@@ -27,6 +27,9 @@ final class PaneHostRegistry: ObservableObject {
 	}
 
 	@Published private(set) var entries: [String: Entry] = [:]  // keyed by paneId
+	/// paneId → serialized terminal state (SerializeAddon output)。
+	/// リロード前に保存、リロード後に復元。
+	private(set) var serializedStates: [String: String] = [:]
 
 	private init() {
 		// pane が close (Cmd+W / "Close Pane" コマンド) された時に registry からも削除。
@@ -81,10 +84,25 @@ final class PaneHostRegistry: ObservableObject {
 	/// reload では PTY を再 spawn したいので、registry を空にして CommandArea が
 	/// 再 mount された時に新規 WebView/Coordinator が作られるようにする。
 	func unregisterAll(in projectId: UUID) {
-		let toRemove = entries.values.filter { $0.projectId == projectId }.map(\.paneId)
-		for id in toRemove {
-			entries.removeValue(forKey: id)
+		let toRemove = entries.values.filter { $0.projectId == projectId }
+		for entry in toRemove {
+			// リロード前に serialize して保存
+			let sem = DispatchSemaphore(value: 0)
+			entry.webView.evaluateJavaScript("window.terminalSerialize()") { [weak self] result, _ in
+				if let data = result as? String, !data.isEmpty {
+					self?.serializedStates[entry.paneId] = data
+					NSLog("[Belve] Serialized pane %@ (%d chars)", String(entry.paneId.prefix(8)), data.count)
+				}
+				sem.signal()
+			}
+			// 最大 500ms 待つ (JS 実行の完了待ち)
+			_ = sem.wait(timeout: .now() + 0.5)
+			entries.removeValue(forKey: entry.paneId)
 		}
+	}
+
+	func consumeSerializedState(for paneId: String) -> String? {
+		serializedStates.removeValue(forKey: paneId)
 	}
 
 	/// 指定 project の pane 一覧 (paneIndex 昇順)。

@@ -797,7 +797,7 @@ struct MainWindow: View {
 		let next = visible[nextIdx]
 		filter.focusedPaneId = next.paneIdString
 		// 該当 project の activePaneId も同期 (= project view 戻り時の focus 整合性)
-		stateManager.state(for: next.projectId).activePaneId = next.paneUUID
+		commandAreaState(for: next.projectId).activePaneId = next.paneUUID
 		// WebView を first responder に → typing 入力可能に
 		DispatchQueue.main.async {
 			projectStore.refocusTerminal(paneId: next.paneIdString)

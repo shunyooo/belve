@@ -326,6 +326,15 @@ struct XTermTerminalView: NSViewRepresentable {
 				// が奪われる問題を解消。
 				isTerminalReady = true
 				pendingAutoFocus = true
+				// Serialized state があれば restore (リロード復元)
+				if let pid = paneId, let savedState = PaneHostRegistry.shared.consumeSerializedState(for: pid) {
+					let escaped = savedState
+						.replacingOccurrences(of: "\\", with: "\\\\")
+						.replacingOccurrences(of: "`", with: "\\`")
+						.replacingOccurrences(of: "$", with: "\\$")
+					webView?.evaluateJavaScript("window.terminalRestore(`\(escaped)`)")
+					NSLog("[Belve] Restored serialized state for pane %@ (%d chars)", String(pid.prefix(8)), savedState.count)
+				}
 				// 初期 font size を AppConfig から反映 + 以降の変更を購読。
 				let initialSize = AppConfig.shared.terminalFontSize
 				webView?.evaluateJavaScript("window.terminalSetFontSize(\(initialSize))", completionHandler: nil)
