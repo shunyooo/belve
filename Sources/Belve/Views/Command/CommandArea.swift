@@ -108,6 +108,10 @@ class CommandAreaStateManager: ObservableObject {
 		if let existing = states[projectId] {
 			return existing
 		}
+		NSLog("[Belve][pane] NEW CommandAreaState for key=%@ (paneId=%@) callers=%@",
+			  projectId.uuidString,
+			  UUID().uuidString.prefix(8).description,
+			  Thread.callStackSymbols.prefix(8).joined(separator: "\n"))
 		let state = CommandAreaState()
 		state.onLayoutChanged = { [weak self] in self?.scheduleSave() }
 		states[projectId] = state

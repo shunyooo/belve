@@ -14,12 +14,13 @@ import (
 // via Write(); on client reconnect, Snapshot() returns ANSI sequences that
 // reconstruct the current screen + scrollback in one shot (no replay).
 type vtScreen struct {
-	mu       sync.Mutex
-	term     vt.Terminal
-	cols     int
-	rows     int
-	writeCh  chan []byte
-	resizeCh chan [2]int
+	mu      sync.Mutex
+	term    vt.Terminal
+	cols    int
+	rows    int
+	writeCh chan []byte
+	doneCh  chan struct{} // Snapshot 待ち用: writeCh が空になったら close
+	doneMu  sync.Mutex
 }
 
 func newVTScreen(cols, rows, scrollback int) *vtScreen {
@@ -32,51 +33,35 @@ func newVTScreen(cols, rows, scrollback int) *vtScreen {
 	t := vt.NewEmulator(cols, rows)
 	t.SetScrollbackSize(scrollback)
 	v := &vtScreen{
-		term:     t,
-		cols:     cols,
-		rows:     rows,
-		writeCh:  make(chan []byte, 1024),
-		resizeCh: make(chan [2]int, 16),
+		term:    t,
+		cols:    cols,
+		rows:    rows,
+		writeCh: make(chan []byte, 4096),
 	}
 	go v.processLoop()
 	return v
 }
 
-// processLoop は専用 goroutine で VT パーサーへの書き込みを処理。
-// panic しても recover して継続。broadcast の mutex をブロックしない。
 func (v *vtScreen) processLoop() {
-	logVT("processLoop started cols=%d rows=%d", v.cols, v.rows)
-	count := 0
-	for {
-		select {
-		case data := <-v.writeCh:
-			count++
-			if count <= 3 || count%100 == 0 {
-				logVT("processLoop Write #%d len=%d", count, len(data))
+	for data := range v.writeCh {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logVT("Write panic recovered: %v (len=%d)", r, len(data))
+				}
+			}()
+			v.mu.Lock()
+			v.term.Write(data)
+			v.mu.Unlock()
+		}()
+		// チャネルが空になったら doneCh を通知
+		if len(v.writeCh) == 0 {
+			v.doneMu.Lock()
+			if v.doneCh != nil {
+				close(v.doneCh)
+				v.doneCh = nil
 			}
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logVT("Write panic recovered: %v (len=%d)", r, len(data))
-					}
-				}()
-				v.mu.Lock()
-				v.term.Write(data)
-				v.mu.Unlock()
-			}()
-		case size := <-v.resizeCh:
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logVT("Resize panic recovered: %v", r)
-					}
-				}()
-				v.mu.Lock()
-				v.term.Resize(size[0], size[1])
-				v.cols = size[0]
-				v.rows = size[1]
-				v.mu.Unlock()
-			}()
+			v.doneMu.Unlock()
 		}
 	}
 }
@@ -87,7 +72,28 @@ func (v *vtScreen) Write(p []byte) {
 	select {
 	case v.writeCh <- cp:
 	default:
-		logVT("Write channel full, dropping %d bytes", len(p))
+		// バッファ満杯: 古いデータを捨てて新しいデータを入れる
+		select {
+		case <-v.writeCh:
+		default:
+		}
+		v.writeCh <- cp
+	}
+}
+
+// waitDrain は writeCh が空になるまで最大 timeout 待つ。Snapshot 前に呼ぶ。
+func (v *vtScreen) waitDrain(timeout time.Duration) {
+	if len(v.writeCh) == 0 {
+		return
+	}
+	ch := make(chan struct{})
+	v.doneMu.Lock()
+	v.doneCh = ch
+	v.doneMu.Unlock()
+	select {
+	case <-ch:
+	case <-time.After(timeout):
+		logVT("waitDrain timeout (%v), %d items remaining", timeout, len(v.writeCh))
 	}
 }
 
@@ -107,10 +113,12 @@ func (v *vtScreen) Resize(cols, rows int) {
 	if rows < 1 {
 		rows = 1
 	}
-	select {
-	case v.resizeCh <- [2]int{cols, rows}:
-	default:
-	}
+	// mu は processLoop と排他。processLoop が Write 中なら待つ。
+	v.mu.Lock()
+	v.term.Resize(cols, rows)
+	v.cols = cols
+	v.rows = rows
+	v.mu.Unlock()
 }
 
 func (v *vtScreen) Reset() {
@@ -123,10 +131,8 @@ func (v *vtScreen) Reset() {
 	v.mu.Unlock()
 }
 
-// Snapshot serializes the current screen state (scrollback + visible screen)
-// as ANSI escape sequences. The output can be written to xterm.js to restore
-// the terminal to the exact current state without replay.
 func (v *vtScreen) Snapshot() []byte {
+	v.waitDrain(3 * time.Second)
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
