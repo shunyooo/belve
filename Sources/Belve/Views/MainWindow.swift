@@ -1097,12 +1097,6 @@ struct MainWindow: View {
 		cmds.append(PaletteCommand(title: "Toggle Status Bar", icon: "rectangle.topthird.inset.filled") {
 			AgentStatusBarWindowManager.shared.toggleVisibility()
 		})
-		cmds.append(PaletteCommand(title: "Toggle Companion Dock", icon: "dock.rectangle") {
-			AgentCompanionWindowManager.shared.toggleVisibility()
-		})
-		cmds.append(PaletteCommand(title: "Hide All Companions", icon: "eye.slash") {
-			AgentCompanionStore.shared.dismissAll()
-		})
 		cmds.append(PaletteCommand(title: "Manage Sessions...", icon: "terminal") {
 			NotificationCenter.default.post(name: .belveShowSessionManager, object: nil)
 		})

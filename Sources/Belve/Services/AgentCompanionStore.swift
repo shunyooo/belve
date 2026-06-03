@@ -55,7 +55,6 @@ final class AgentCompanionStore: ObservableObject {
 		manuallyEnabled.remove(paneId)
 		manuallyDismissed.insert(paneId)
 		companions.removeValue(forKey: paneId)
-		AgentCompanionWindowManager.shared.dismiss(paneId: paneId)
 		selectedPaneIds.remove(paneId)
 	}
 
@@ -67,7 +66,6 @@ final class AgentCompanionStore: ObservableObject {
 		}
 		companions.removeAll()
 		selectedPaneIds.removeAll()
-		AgentCompanionWindowManager.shared.updateDock(hasCompanions: false)
 	}
 
 	/// paneId の companion が有効化されてるか。Sidebar の context menu 表示用。
@@ -160,7 +158,6 @@ final class AgentCompanionStore: ObservableObject {
 		// 既存 companion のうち、対応 session が active でなくなったら削除
 		for paneId in companions.keys where !activePaneIds.contains(paneId) {
 			companions.removeValue(forKey: paneId)
-			AgentCompanionWindowManager.shared.dismiss(paneId: paneId)
 			selectedPaneIds.remove(paneId)
 			manuallyDismissed.remove(paneId)
 			messageHistory.removeValue(forKey: paneId)
@@ -233,7 +230,6 @@ final class AgentCompanionStore: ObservableObject {
 			companions[paneId] = snapshot
 		}
 		// Dock panel + status bar の表示 / 非表示を更新
-		AgentCompanionWindowManager.shared.updateDock(hasCompanions: !companions.isEmpty)
 		AgentStatusBarWindowManager.shared.updateStatusBar(hasCompanions: !companions.isEmpty)
 	}
 

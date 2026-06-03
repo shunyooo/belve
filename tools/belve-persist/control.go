@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -43,6 +44,10 @@ type ctrlReq struct {
 	File     string   `json:"file,omitempty"`     // for gitDiff (relative file path within repo)
 	Paths    []string `json:"paths,omitempty"`    // for gitCheckIgnore
 	Args     []string `json:"args,omitempty"`     // for gitDiffBulk / gitChangedFiles
+	LspID    string   `json:"lspId,omitempty"`    // for lspRequest / lspStop
+	Language string   `json:"language,omitempty"` // for lspStart
+	Method   string   `json:"method,omitempty"`   // for lspRequest (JSON-RPC method)
+	Params   string   `json:"params,omitempty"`   // for lspRequest (JSON-RPC params as JSON string)
 }
 
 type ctrlRes struct {
@@ -72,6 +77,8 @@ type connState struct {
 	encMu     sync.Mutex
 	watches   map[string]*fsnotify.Watcher
 	watchesMu sync.Mutex
+	lspProcs  map[string]*lspProcess
+	lspMu     sync.Mutex
 	closed    atomic.Bool
 }
 
@@ -92,6 +99,12 @@ func (cs *connState) shutdown() {
 	}
 	cs.watches = nil
 	cs.watchesMu.Unlock()
+	cs.lspMu.Lock()
+	for _, lsp := range cs.lspProcs {
+		lsp.stop()
+	}
+	cs.lspProcs = nil
+	cs.lspMu.Unlock()
 }
 
 var nextWatchID atomic.Int64
@@ -113,7 +126,8 @@ func runControlServer(listenAddr string) {
 			cs := &connState{
 				conn:    c,
 				enc:     json.NewEncoder(c),
-				watches: map[string]*fsnotify.Watcher{},
+				watches:  map[string]*fsnotify.Watcher{},
+				lspProcs: map[string]*lspProcess{},
 			}
 			defer func() {
 				if r := recover(); r != nil {
@@ -204,6 +218,12 @@ func dispatchOp(cs *connState, req ctrlReq) ctrlRes {
 		return opWatch(cs, req)
 	case "unwatch":
 		return opUnwatch(cs, req)
+	case "lspStart":
+		return opLspStart(cs, req)
+	case "lspRequest":
+		return opLspRequest(cs, req)
+	case "lspStop":
+		return opLspStop(cs, req)
 	default:
 		return ctrlRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
@@ -627,4 +647,267 @@ func expandHome(p string) string {
 		}
 	}
 	return p
+}
+
+// --- LSP Process Management ---
+
+var nextLspID atomic.Int64
+
+type lspProcess struct {
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	mu       sync.Mutex
+	nextID   int
+	pending  map[int]chan json.RawMessage
+	language string
+}
+
+func (lp *lspProcess) stop() {
+	lp.mu.Lock()
+	defer lp.mu.Unlock()
+	if lp.cmd != nil && lp.cmd.Process != nil {
+		// Send shutdown + exit
+		lp.writeRequest("shutdown", nil)
+		lp.writeNotification("exit", nil)
+		time.AfterFunc(3*time.Second, func() {
+			if lp.cmd.Process != nil {
+				lp.cmd.Process.Kill()
+			}
+		})
+	}
+}
+
+func (lp *lspProcess) writeRequest(method string, params interface{}) (json.RawMessage, error) {
+	lp.mu.Lock()
+	id := lp.nextID
+	lp.nextID++
+	ch := make(chan json.RawMessage, 1)
+	lp.pending[id] = ch
+	lp.mu.Unlock()
+
+	msg := map[string]interface{}{"jsonrpc": "2.0", "id": id, "method": method}
+	if params != nil {
+		msg["params"] = params
+	}
+	if err := lp.writeMessage(msg); err != nil {
+		lp.mu.Lock()
+		delete(lp.pending, id)
+		lp.mu.Unlock()
+		return nil, err
+	}
+
+	select {
+	case result := <-ch:
+		return result, nil
+	case <-time.After(10 * time.Second):
+		lp.mu.Lock()
+		delete(lp.pending, id)
+		lp.mu.Unlock()
+		return nil, fmt.Errorf("LSP request timeout: %s", method)
+	}
+}
+
+func (lp *lspProcess) writeNotification(method string, params interface{}) {
+	msg := map[string]interface{}{"jsonrpc": "2.0", "method": method}
+	if params != nil {
+		msg["params"] = params
+	}
+	lp.writeMessage(msg)
+}
+
+func (lp *lspProcess) writeMessage(msg map[string]interface{}) error {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
+	_, err = lp.stdin.Write([]byte(header))
+	if err != nil {
+		return err
+	}
+	_, err = lp.stdin.Write(data)
+	return err
+}
+
+func (lp *lspProcess) readLoop() {
+	for {
+		// Read Content-Length header
+		line, err := lp.stdout.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Content-Length:") {
+			continue
+		}
+		lengthStr := strings.TrimSpace(strings.TrimPrefix(line, "Content-Length:"))
+		length, err := strconv.Atoi(lengthStr)
+		if err != nil {
+			continue
+		}
+		// Read blank line
+		lp.stdout.ReadString('\n')
+		// Read body
+		body := make([]byte, length)
+		_, err = io.ReadFull(lp.stdout, body)
+		if err != nil {
+			return
+		}
+		var msg map[string]json.RawMessage
+		if err := json.Unmarshal(body, &msg); err != nil {
+			continue
+		}
+		// Dispatch response
+		if idRaw, ok := msg["id"]; ok {
+			var id int
+			if json.Unmarshal(idRaw, &id) == nil {
+				lp.mu.Lock()
+				if ch, exists := lp.pending[id]; exists {
+					delete(lp.pending, id)
+					if result, ok := msg["result"]; ok {
+						ch <- result
+					} else {
+						ch <- nil
+					}
+				}
+				lp.mu.Unlock()
+			}
+		}
+	}
+}
+
+func findLspServer(language string) (string, []string, error) {
+	var names []string
+	var args []string
+	switch language {
+	case "python":
+		names = []string{"pyright-langserver", "pylsp"}
+		args = []string{"--stdio"}
+	case "typescript", "javascript":
+		names = []string{"typescript-language-server"}
+		args = []string{"--stdio"}
+	default:
+		return "", nil, fmt.Errorf("unsupported language: %s", language)
+	}
+	searchDirs := []string{"/usr/local/bin", "/usr/bin", "/root/.local/bin", "/root/.npm-global/bin"}
+	if home, err := os.UserHomeDir(); err == nil {
+		searchDirs = append(searchDirs, filepath.Join(home, ".local/bin"))
+		searchDirs = append(searchDirs, filepath.Join(home, ".npm-global/bin"))
+	}
+	for _, name := range names {
+		for _, dir := range searchDirs {
+			p := filepath.Join(dir, name)
+			if _, err := os.Stat(p); err == nil {
+				return p, args, nil
+			}
+		}
+		// which
+		out, err := exec.Command("which", name).Output()
+		if err == nil {
+			p := strings.TrimSpace(string(out))
+			if p != "" {
+				return p, args, nil
+			}
+		}
+	}
+	return "", nil, fmt.Errorf("LSP server not found for %s (tried: %v)", language, names)
+}
+
+func opLspStart(cs *connState, req ctrlReq) ctrlRes {
+	language := req.Language
+	rootPath := expandHome(req.Path)
+	if language == "" {
+		return errRes(req.ID, "language required")
+	}
+	if rootPath == "" {
+		return errRes(req.ID, "path required")
+	}
+
+	execPath, args, err := findLspServer(language)
+	if err != nil {
+		return ctrlRes{ID: req.ID, OK: false, Error: err.Error()}
+	}
+
+	cmd := exec.Command(execPath, args...)
+	cmd.Dir = rootPath
+	stdinPipe, _ := cmd.StdinPipe()
+	stdoutPipe, _ := cmd.StdoutPipe()
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return ctrlRes{ID: req.ID, OK: false, Error: fmt.Sprintf("start failed: %v", err)}
+	}
+
+	lp := &lspProcess{
+		cmd:      cmd,
+		stdin:    stdinPipe,
+		stdout:   bufio.NewReaderSize(stdoutPipe, 256*1024),
+		pending:  make(map[int]chan json.RawMessage),
+		language: language,
+	}
+	go lp.readLoop()
+
+	// Send initialize
+	rootURI := "file://" + rootPath
+	initParams := map[string]interface{}{
+		"processId": os.Getpid(),
+		"rootUri":   rootURI,
+		"capabilities": map[string]interface{}{
+			"textDocument": map[string]interface{}{
+				"hover":      map[string]interface{}{"contentFormat": []string{"markdown", "plaintext"}},
+				"definition": map[string]interface{}{},
+			},
+		},
+	}
+	_, err = lp.writeRequest("initialize", initParams)
+	if err != nil {
+		cmd.Process.Kill()
+		return ctrlRes{ID: req.ID, OK: false, Error: fmt.Sprintf("initialize failed: %v", err)}
+	}
+	lp.writeNotification("initialized", map[string]interface{}{})
+
+	id := fmt.Sprintf("lsp%d", nextLspID.Add(1))
+	cs.lspMu.Lock()
+	if cs.lspProcs == nil {
+		cs.lspProcs = map[string]*lspProcess{}
+	}
+	cs.lspProcs[id] = lp
+	cs.lspMu.Unlock()
+
+	fmt.Fprintf(os.Stderr, "[belve-persist][lsp] started %s server (id=%s) at %s\n", language, id, rootPath)
+	return ctrlRes{ID: req.ID, OK: true, Result: map[string]string{"lspId": id}}
+}
+
+func opLspRequest(cs *connState, req ctrlReq) ctrlRes {
+	cs.lspMu.Lock()
+	lp := cs.lspProcs[req.LspID]
+	cs.lspMu.Unlock()
+	if lp == nil {
+		return errRes(req.ID, "LSP server not found: "+req.LspID)
+	}
+
+	var params interface{}
+	if req.Params != "" {
+		json.Unmarshal([]byte(req.Params), &params)
+	}
+
+	result, err := lp.writeRequest(req.Method, params)
+	if err != nil {
+		return ctrlRes{ID: req.ID, OK: false, Error: err.Error()}
+	}
+	// Return raw JSON result
+	return ctrlRes{ID: req.ID, OK: true, Result: map[string]interface{}{"result": string(result)}}
+}
+
+func opLspStop(cs *connState, req ctrlReq) ctrlRes {
+	cs.lspMu.Lock()
+	lp := cs.lspProcs[req.LspID]
+	delete(cs.lspProcs, req.LspID)
+	cs.lspMu.Unlock()
+	if lp != nil {
+		lp.stop()
+		fmt.Fprintf(os.Stderr, "[belve-persist][lsp] stopped %s server (id=%s)\n", lp.language, req.LspID)
+	}
+	return ctrlRes{ID: req.ID, OK: true}
 }

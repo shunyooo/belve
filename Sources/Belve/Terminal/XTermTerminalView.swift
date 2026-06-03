@@ -372,7 +372,11 @@ struct XTermTerminalView: NSViewRepresentable {
 				guard cols != lastResizeCols || rows != lastResizeRows else { break }
 				lastResizeCols = cols
 				lastResizeRows = rows
-				ptyService?.setSize(cols: cols, rows: rows)
+				if ptyService == nil {
+					startPTY(cols: cols, rows: rows)
+				} else {
+					ptyService?.setSize(cols: cols, rows: rows)
+				}
 
 			case "bell":
 				NSSound.beep()
@@ -855,53 +859,11 @@ struct XTermTerminalView: NSViewRepresentable {
 		/// Also starts the PTY on the first successful fit (after "ready" + correct frame).
 		private var ptyResizeWorkItem: DispatchWorkItem?
 
+		/// Visual resize は JS 側の ResizeObserver が自律的に処理。
+		/// PTY resize は JS → Swift の "resize" message 経由で受け取る。
 		func resizeTerminal(width: CGFloat, height: CGFloat) {
-			resizeDebounceWorkItem?.cancel()
-			// Fit xterm.js after brief debounce (visual only, no PTY resize yet)
-			let fitWorkItem = DispatchWorkItem { [weak self] in
-				guard let self, let webView = self.webView else { return }
-				guard self.isTerminalReady else { return }
-				webView.evaluateJavaScript("window.terminalFit()") { [weak self] result, _ in
-					guard let self else { return }
-					if let dict = result as? [String: Any],
-					   let cols = dict["cols"] as? Int,
-					   let rows = dict["rows"] as? Int {
-						if let reflowMs = dict["reflowMs"] as? Double, let oldCols = dict["oldCols"] as? Int {
-							NSLog("[Belve] reflow-measure: oldCols=%d newCols=%d reflow=%.1fms", oldCols, cols, reflowMs)
-						}
-						if self.ptyService == nil {
-							self.lastResizeCols = cols
-							self.lastResizeRows = rows
-							NSLog("[Belve] initial fit pane=%@ cols=%d rows=%d",
-								  self.paneId ?? "?", cols, rows)
-							self.startPTY(cols: cols, rows: rows)
-							return
-						}
-						guard cols != self.lastResizeCols || rows != self.lastResizeRows else { return }
-						self.lastResizeCols = cols
-						self.lastResizeRows = rows
-						// Defer PTY resize (triggers SIGWINCH → app redraw) until drag settles
-						self.ptyResizeWorkItem?.cancel()
-						let ptyWork = DispatchWorkItem { [weak self] in
-							guard let self, let webView = self.webView else { return }
-							NSLog("[Belve] pty resize pane=%@ cols=%d rows=%d",
-								  self.paneId ?? "?", cols, rows)
-							// Hide terminal right before SIGWINCH to prevent visible redraw
-							webView.evaluateJavaScript("window.terminalSetResizing(true)", completionHandler: nil)
-							self.startResizeHold()
-							self.ptyService?.setSize(cols: cols, rows: rows)
-							// Failsafe: always reveal after max time, even if no data arrives
-							DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-								self?.webView?.evaluateJavaScript("window.terminalSetResizing(false)", completionHandler: nil)
-							}
-						}
-						self.ptyResizeWorkItem = ptyWork
-						DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: ptyWork)
-					}
-				}
-			}
-			resizeDebounceWorkItem = fitWorkItem
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: fitWorkItem)
+			// WebView frame 更新 → ResizeObserver 発火 → doFit() → term.resize()
+			// → "resize" message が来る。ここでは何もしない。
 		}
 
 		func copySelectionToPasteboard() {

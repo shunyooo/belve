@@ -69,8 +69,21 @@ final class LSPManager: ObservableObject {
 			return existing
 		}
 
-		// Remote: TODO (Phase 2)
-		guard !project.isRemote else { return nil }
+		// Remote: LSP via RPC broker in DevContainer
+		if project.isRemote {
+			let service = RemoteLSPService(projectId: project.id, language: lang)
+			do {
+				try await service.start(rootPath: project.effectivePath, language: lang)
+				services[lang] = service
+				return service
+			} catch {
+				NSLog("[Belve][LSP] Remote %@ server failed: %@", lang, error.localizedDescription)
+				if !promptedLanguages.contains(lang) {
+					promptedLanguages.insert(lang)
+				}
+				return nil
+			}
+		}
 
 		// サーバーが見つかるか確認
 		let serverAvailable = LocalLSPProcess.findExecutable(serverName(for: lang)) != nil

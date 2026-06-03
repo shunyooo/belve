@@ -708,16 +708,14 @@ struct PreviewArea: View {
 	private func handleHoverInfoRequest(_ request: EditorDefinitionRequest, _ requestId: Int, _ completion: @escaping (String?) -> Void) {
 		let proj = project
 		Task { @MainActor in
-			// LSP first
 			if let markdown = await LSPManager.shared.hover(
 				file: request.filename, line: request.line, column: request.column, project: proj
 			) {
 				let html = markdownToHoverHTML(markdown)
 				completion(html)
-				return
+			} else {
+				completion(nil)
 			}
-			// Grep fallback
-			grepBasedHover(request, completion)
 		}
 	}
 

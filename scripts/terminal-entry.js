@@ -67,9 +67,8 @@ function buildFullUrl(buf, startY, urlStart) {
 		var nextText = nextLine.translateToString(true);
 		// Indented continuation も許容: 先頭空白を skip して URL-safe chars を取る。
 		var cont = nextText.match(/^(\s*)([a-zA-Z0-9_\-\.\/~%@:?&=#\+]+)/);
-		// 次行が `https://...` で始まる = 別 URL なので止める。先頭が URL-safe
-		// じゃない (空白やボーダー文字) なら継続じゃない。
-		if (!cont || nextText.match(/^\s*https?:\/\//)) break;
+		// 次行が別 URL、リストマーカー (- text)、空行なら止める
+		if (!cont || nextText.match(/^\s*https?:\/\//) || nextText.match(/^\s*-\s/)) break;
 		var leading = cont[1].length;
 		var contStr = cont[2];
 		url += contStr;
@@ -153,9 +152,14 @@ term.registerLinkProvider({
 
 		// URLs starting on this line
 		var urlRegex = /https?:\/\/[^\s<>"'`)\]]+/g;
+		// URL末尾の句読点・記号を除去 (リスト内 URL で - や , が付着する)
+		function trimUrlTrailing(url) {
+			return url.replace(/[\-,;:!.\)]+$/, '');
+		}
 		var m;
 		while ((m = urlRegex.exec(text)) !== null) {
 			var result = buildFullUrl(buf, y - 1, m[0]);
+			result.url = trimUrlTrailing(result.url);
 			var sx = mapStringIndexToCell(line, m.index) + 1;
 			var ex = mapStringIndexToCell(line, m.index + m[0].length);
 			var selfRange = { y: y, startX: sx, endX: ex };
@@ -516,17 +520,8 @@ function ensurePathLinkProvider() {
 // Called from Swift after layout settles — uses fitAddon which accounts for
 // scrollbar width, padding, and actual DOM dimensions.
 window.terminalFit = function() {
-	if (!window.term || !window.fitAddon) return null;
-	var dims = fitAddon.proposeDimensions();
-	if (!dims || dims.cols < 2 || dims.rows < 1) return null;
-	var buf = term.buffer.active;
-	var wasAtBottom = buf.viewportY >= buf.baseY;
-	var oldCols = term.cols;
-	var t0 = performance.now();
-	term.resize(dims.cols, dims.rows);
-	var reflowMs = performance.now() - t0;
-	if (wasAtBottom) term.scrollToBottom();
-	return { cols: dims.cols, rows: dims.rows, reflowMs: reflowMs, oldCols: oldCols };
+	doFit();
+	return _lastFitCols > 0 ? { cols: _lastFitCols, rows: _lastFitRows } : null;
 };
 
 // Hide/reveal terminal screen during resize to prevent visible redraw scroll
@@ -600,13 +595,38 @@ term.onBinary(function(data) {
 	postMessage({ type: 'input', data: btoa(data) });
 });
 
-// ResizeObserver — notify Swift after viewport settles (300ms debounce)
-let resizeTimeout = null;
+// ResizeObserver — JS 内で即座に reflow (Swift IPC round trip を排除)
+var _lastFitCols = 0, _lastFitRows = 0;
+var _ptyResizeTimeout = null;
+var _fitDebounceTimeout = null;
+function doFit() {
+	if (!window.term || !window.fitAddon) return;
+	var dims = fitAddon.proposeDimensions();
+	if (!dims || dims.cols < 2 || dims.rows < 1) return;
+	if (dims.cols === _lastFitCols && dims.rows === _lastFitRows) return;
+	var buf = term.buffer.active;
+	var wasAtBottom = buf.viewportY >= buf.baseY;
+	var viewport = term.element && term.element.querySelector('.xterm-viewport');
+	var screen = term.element && term.element.querySelector('.xterm-screen');
+	if (viewport) viewport.style.visibility = 'hidden';
+	if (screen) screen.style.visibility = 'hidden';
+	term.resize(dims.cols, dims.rows);
+	if (wasAtBottom) term.scrollToBottom();
+	requestAnimationFrame(function() {
+		if (viewport) viewport.style.visibility = '';
+		if (screen) screen.style.visibility = '';
+	});
+	_lastFitCols = dims.cols;
+	_lastFitRows = dims.rows;
+	if (_ptyResizeTimeout) clearTimeout(_ptyResizeTimeout);
+	_ptyResizeTimeout = setTimeout(function() {
+		postMessage({ type: 'resize', cols: dims.cols, rows: dims.rows });
+	}, 150);
+}
+// ResizeObserver は高頻度で発火するので 16ms (1 frame) debounce
 const resizeObserver = new ResizeObserver(function() {
-	if (resizeTimeout) clearTimeout(resizeTimeout);
-	resizeTimeout = setTimeout(function() {
-		postMessage({ type: 'viewportChanged' });
-	}, 300);
+	if (_fitDebounceTimeout) clearTimeout(_fitDebounceTimeout);
+	_fitDebounceTimeout = setTimeout(doFit, 16);
 });
 resizeObserver.observe(terminalContainer);
 
