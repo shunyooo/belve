@@ -12,7 +12,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -21,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -273,15 +273,15 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 
 	var mu sync.Mutex
 	var clients []net.Conn
-	const replayMax = 4 * 1024 * 1024
-	var replayBuf []byte
+	screen := newVTScreen(int(cols), int(rows), 1000)
 	var currentPtyFile *os.File
 	var currentPtyFd uintptr
 
 	addClient := func(c net.Conn) {
 		mu.Lock()
-		if len(replayBuf) > 0 {
-			writeReplayChunks(c, replayBuf)
+		snapshot := screen.Snapshot()
+		if len(snapshot) > 0 {
+			writeReplayChunks(c, snapshot)
 		}
 		clients = append(clients, c)
 		mu.Unlock()
@@ -298,14 +298,11 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	}
 	broadcast := func(data []byte) {
 		mu.Lock()
-		replayBuf = append(replayBuf, data...)
-		if len(replayBuf) > replayMax {
-			replayBuf = replayBuf[len(replayBuf)-replayMax:]
-		}
 		for _, c := range clients {
 			writeMsg(c, msgData, data)
 		}
 		mu.Unlock()
+		screen.Write(data)
 		os.Stdout.Write(data)
 	}
 
@@ -346,6 +343,7 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 							// Update last known size for respawn
 							cols = c
 							rows = r
+							screen.Resize(int(c), int(r))
 							mu.Unlock()
 							f, _ := os.OpenFile("/tmp/belve-persist-resize.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 							if f != nil {
@@ -448,7 +446,7 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 				respawnCount, maxRespawns)
 			notice := belveNoticeData(statusMessage, msg)
 			mu.Lock()
-			replayBuf = nil
+			screen.Reset()
 			for _, c := range clients {
 				writeMsg(c, msgData, notice)
 			}
@@ -501,33 +499,19 @@ type tcpSession struct {
 	ptyFd     uintptr
 	childPid  int
 	clients   []net.Conn
-	replayBuf []byte
+	screen    *vtScreen
 	cols, rows uint16
 	command   string
 	args      []string
 	extraEnv  []string // per-session env (BELVE_PANE_ID, BELVE_PROJECT_ID, ...)
 	alive     bool // false after child exits without respawn
-	// Instrumentation: total bytes emitted to the session and total bytes
-	// discarded by the ring-buffer truncation. Helps answer "does the replay
-	// buffer actually fill up in practice?" without interfering with session
-	// behaviour.
-	bytesEmitted  uint64
-	bytesDiscarded uint64
-	lastStatLog   time.Time
-	truncations   uint64
 }
-
-// 4 MiB per session. Measured: at 64 KiB, claude code's rich output kept only
-// ~12% of emitted bytes across a multi-minute session; at 4 MiB the same
-// traffic pattern stays 100% retained. Memory cost is bounded by the number
-// of live sessions on the host (~10 → 40 MiB).
-const tcpReplayMax = 4 * 1024 * 1024
-
 
 func (s *tcpSession) addClient(c net.Conn) {
 	s.mu.Lock()
-	if len(s.replayBuf) > 0 {
-		writeReplayChunks(c, s.replayBuf)
+	snapshot := s.screen.Snapshot()
+	if len(snapshot) > 0 {
+		writeReplayChunks(c, snapshot)
 	}
 	s.clients = append(s.clients, c)
 	s.mu.Unlock()
@@ -546,32 +530,11 @@ func (s *tcpSession) removeClient(c net.Conn) {
 
 func (s *tcpSession) broadcast(data []byte) {
 	s.mu.Lock()
-	s.bytesEmitted += uint64(len(data))
-	// Naive `\r` collapse was attempted here but broke claude-code — its TUI
-	// relies on `\033[<n>A` cursor-up sequences that got silently dropped
-	// alongside the `\r` rollback, leaving the terminal in a cursor state
-	// the replay couldn't reconstruct. Keep raw bytes; proper collapse needs
-	// a virtual-terminal implementation (vterm) that tracks cursor state.
-	s.replayBuf = append(s.replayBuf, data...)
-	if len(s.replayBuf) > tcpReplayMax {
-		excess := uint64(len(s.replayBuf) - tcpReplayMax)
-		s.bytesDiscarded += excess
-		s.truncations++
-		s.replayBuf = s.replayBuf[len(s.replayBuf)-tcpReplayMax:]
-	}
-	// Only log when we actually had to discard — steady-state buffer use
-	// (nothing dropped) isn't interesting. Throttle to 60 s so a busy
-	// session doesn't spam the broker log.
-	if s.bytesDiscarded > 0 && time.Since(s.lastStatLog) > 60*time.Second {
-		log.Printf("[replay] session=%q emitted=%d discarded=%d trunc=%d bufLen=%d pct_kept=%.1f%%",
-			s.name, s.bytesEmitted, s.bytesDiscarded, s.truncations, len(s.replayBuf),
-			100.0*float64(s.bytesEmitted-s.bytesDiscarded)/float64(s.bytesEmitted))
-		s.lastStatLog = time.Now()
-	}
 	for _, c := range s.clients {
 		writeMsg(c, msgData, data)
 	}
 	s.mu.Unlock()
+	s.screen.Write(data)
 }
 
 // needsEnvUpdate は、既存 session の extraEnv に BELVE_PANE_ID が無く
@@ -687,6 +650,7 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 			args:     extraArgs,
 			cols:     c,
 			rows:     r,
+			screen:   newVTScreen(int(c), int(r), 1000),
 			extraEnv: extraEnv,
 			alive:    true,
 		}
@@ -769,6 +733,7 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 						}
 						sess.cols = newCols
 						sess.rows = newRows
+						sess.screen.Resize(int(newCols), int(newRows))
 						cPid := sess.childPid
 						sess.mu.Unlock()
 						// Send SIGWINCH to child process group
@@ -960,7 +925,7 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 				respawnCount, maxRespawns)
 			notice := belveNoticeData(statusMessage, msg)
 			s.mu.Lock()
-			s.replayBuf = nil
+			s.screen.Reset()
 			for _, c := range s.clients {
 				writeMsg(c, msgData, notice)
 			}
@@ -997,16 +962,30 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 
 	var mu sync.Mutex
 	var clients []net.Conn
-	var replayBuf []byte
-	const replayMax = 4 * 1024 * 1024
+	screen3 := newVTScreen(int(cols), int(rows), 1000)
+	var tcpConn net.Conn
+	var tcpMu sync.Mutex
+
+	// ブローカーから最初の replay を受信済みかどうか
+	var hadTCPData atomic.Bool
 
 	addClient := func(c net.Conn) {
-		mu.Lock()
-		if len(replayBuf) > 0 {
-			writeReplayChunks(c, replayBuf)
+		if hadTCPData.Load() {
+			// 2回目以降: snapshot で復元（ブローカーの replay は既に screen3 に蓄積済み）
+			mu.Lock()
+			snapshot := screen3.Snapshot()
+			if len(snapshot) > 0 {
+				writeReplayChunks(c, snapshot)
+			}
+			clients = append(clients, c)
+			mu.Unlock()
+		} else {
+			// 初回: snapshot は空なので client を先に登録。
+			// ブローカーからの replay が TCP 経由で来たら client に直接流れる。
+			mu.Lock()
+			clients = append(clients, c)
+			mu.Unlock()
 		}
-		clients = append(clients, c)
-		mu.Unlock()
 	}
 	removeClient := func(c net.Conn) {
 		mu.Lock()
@@ -1018,10 +997,6 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 		}
 		mu.Unlock()
 	}
-
-	// Forward from Unix socket client → TCP (will be set when TCP connects)
-	var tcpConn net.Conn
-	var tcpMu sync.Mutex
 
 	sendToTCP := func(msgType byte, data []byte) {
 		tcpMu.Lock()
@@ -1069,6 +1044,7 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 							mu.Lock()
 							cols = newCols
 							rows = newRows
+							screen3.Resize(int(newCols), int(newRows))
 							mu.Unlock()
 						}
 						sendToTCP(msgResize, payload)
@@ -1163,15 +1139,13 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 					return
 				}
 				if t == msgData {
+					hadTCPData.Store(true)
 					mu.Lock()
-					replayBuf = append(replayBuf, data...)
-					if len(replayBuf) > replayMax {
-						replayBuf = replayBuf[len(replayBuf)-replayMax:]
-					}
 					for _, c := range clients {
 						writeMsg(c, msgData, data)
 					}
 					mu.Unlock()
+					screen3.Write(data)
 				}
 			}
 		}()
