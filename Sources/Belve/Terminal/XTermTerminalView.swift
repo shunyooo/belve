@@ -234,11 +234,8 @@ struct XTermTerminalView: NSViewRepresentable {
 		if viewWidth > 0, viewHeight > 0 {
 			let newFrame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
 			if nsView.frame.size != newFrame.size {
-				NSLog("[Belve] updateNSView pane=%@ viewW=%.0f viewH=%.0f oldW=%.0f oldH=%.0f",
-					  paneId ?? "?", viewWidth, viewHeight, nsView.frame.width, nsView.frame.height)
 				nsView.frame = newFrame
 			}
-			activeCoord.resizeTerminal(width: viewWidth, height: viewHeight)
 		}
 		// Tile view (= isProjectSelected が false で mount される) の時は、focus してない
 		// pane の scroll を親 ScrollView に流す。Project view では従来通り pane 内 scroll。
@@ -309,6 +306,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		private var isWaitingForInitialOutput = false
 		var isTerminalReady = false
 		private var isShowingTransientStatus = false
+		private var hasRestoredSerializedState = false
 		/// xterm 起動 (ready) 時点で auto-focus を保留しておくフラグ。
 		/// 「first PTY output 到着 = 接続確立」のタイミングまで focus を遅延し、
 		/// 接続前のペインに focus が奪われて入力が消える事象を防ぐ。
@@ -333,6 +331,7 @@ struct XTermTerminalView: NSViewRepresentable {
 						.replacingOccurrences(of: "`", with: "\\`")
 						.replacingOccurrences(of: "$", with: "\\$")
 					webView?.evaluateJavaScript("window.terminalRestore(`\(escaped)`)")
+					hasRestoredSerializedState = true
 					NSLog("[Belve] Restored serialized state for pane %@ (%d chars)", String(pid.prefix(8)), savedState.count)
 				}
 				// 初期 font size を AppConfig から反映 + 以降の変更を購読。
@@ -389,6 +388,22 @@ struct XTermTerminalView: NSViewRepresentable {
 
 			case "bell":
 				NSSound.beep()
+
+			case "debug":
+				if let msg = body["message"] as? String {
+					NSLog("[Belve][js] %@", msg)
+					let line = "\(Date()) \(msg)\n"
+					if let data = line.data(using: .utf8) {
+						let url = URL(fileURLWithPath: "/tmp/belve-terminalfit.log")
+						if let fh = try? FileHandle(forWritingTo: url) {
+							fh.seekToEndOfFile()
+							fh.write(data)
+							fh.closeFile()
+						} else {
+							try? data.write(to: url)
+						}
+					}
+				}
 
 			case "copy":
 				if let text = body["text"] as? String {
@@ -449,6 +464,9 @@ struct XTermTerminalView: NSViewRepresentable {
 			env["BELVE_SESSION"] = "1"
 			env["BELVE_COLS"] = "\(cols)"
 			env["BELVE_ROWS"] = "\(rows)"
+			if hasRestoredSerializedState {
+				env["BELVE_SKIP_REPLAY"] = "1"
+			}
 			// belve-persist が parent (= Belve.app) の死活監視に使う。Belve 終了で
 			// orphan 化した belve-persist client / daemon が自動 exit する。
 			// container broker や mac-master は self-spawn なので env を継承しない。
@@ -838,15 +856,26 @@ struct XTermTerminalView: NSViewRepresentable {
 		}
 
 		func performRefit() {
-			webView?.evaluateJavaScript("window.terminalFit()") { [weak self] result, _ in
+			guard let webView else { return }
+			let line = "\(Date()) performRefit pane=\(paneId ?? "nil")\n"
+			if let d = line.data(using: .utf8) {
+				let u = URL(fileURLWithPath: "/tmp/belve-terminalfit.log")
+				if let fh = try? FileHandle(forWritingTo: u) { fh.seekToEndOfFile(); fh.write(d); fh.closeFile() }
+				else { try? d.write(to: u) }
+			}
+			webView.evaluateJavaScript("window.terminalFit()") { [weak self] result, error in
 				guard let self else { return }
+				let line2 = "\(Date()) JS result=\(String(describing: result)) error=\(String(describing: error)) pane=\(self.paneId ?? "nil")\n"
+				if let d = line2.data(using: .utf8) {
+					let u = URL(fileURLWithPath: "/tmp/belve-terminalfit.log")
+					if let fh = try? FileHandle(forWritingTo: u) { fh.seekToEndOfFile(); fh.write(d); fh.closeFile() }
+				}
 				if let dict = result as? [String: Any],
 				   let cols = dict["cols"] as? Int,
 				   let rows = dict["rows"] as? Int,
 				   (cols != self.lastResizeCols || rows != self.lastResizeRows) {
 					self.lastResizeCols = cols
 					self.lastResizeRows = rows
-					NSLog("[Belve] refit pane=%@ cols=%d rows=%d", self.paneId ?? "?", cols, rows)
 					self.ptyService?.setSize(cols: cols, rows: rows)
 				}
 			}

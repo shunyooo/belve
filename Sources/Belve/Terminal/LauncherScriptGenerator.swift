@@ -55,7 +55,7 @@ enum LauncherScriptGenerator {
 		# Belve: auto-source .env on cd or when .env is edited (unsets prev keys on reload)
 		_belve_load_env() {
 		    local _m=""
-		    [ -f ./.env ] && _m=\$(stat -f %m ./.env 2>/dev/null || stat -c %Y ./.env 2>/dev/null)
+		    [ -f ./.env ] && _m=\$(stat -c %Y ./.env 2>/dev/null || stat -f %m ./.env 2>/dev/null)
 		    local _k="\$PWD:\$_m"
 		    [ "\$_k" = "\${_BELVE_LAST_ENV_KEY:-}" ] && return
 		    _BELVE_LAST_ENV_KEY="\$_k"
@@ -91,7 +91,7 @@ enum LauncherScriptGenerator {
 		# Belve: auto-source .env on cd or when .env is edited (unsets prev keys on reload)
 		_belve_load_env() {
 		    local _m=""
-		    [ -f ./.env ] && _m=\$(stat -f %m ./.env 2>/dev/null || stat -c %Y ./.env 2>/dev/null)
+		    [ -f ./.env ] && _m=\$(stat -c %Y ./.env 2>/dev/null || stat -f %m ./.env 2>/dev/null)
 		    local _k="\$PWD:\$_m"
 		    [ "\$_k" = "\${_BELVE_LAST_ENV_KEY:-}" ] && return
 		    _BELVE_LAST_ENV_KEY="\$_k"

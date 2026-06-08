@@ -103,76 +103,86 @@ struct ProjectListView: View {
 	/// Section key (groupName / pinnedKey / "") currently being hovered during
 	/// a drag. Used to highlight the target header.
 	@State private var dragOverSectionKey: String?
+	@State private var notificationAreaHeight: CGFloat = {
+		let saved = UserDefaults.standard.double(forKey: "Belve.notificationAreaHeight")
+		return saved > 0 ? saved : 140
+	}()
+	@State private var heightAtDragStart: CGFloat?
 	@Namespace private var selectionNamespace
 
 	var body: some View {
 		ZStack(alignment: .topLeading) {
 			VStack(alignment: .leading, spacing: 0) {
 				Spacer().frame(height: Theme.titlebarHeight)
-				ScrollView {
-					VStack(spacing: 2) {
-						// Pinned section — implicit group, always appears first when non-empty.
-						let pinned = projects.filter { $0.isPinned }
-						if !pinned.isEmpty {
-							groupSection(
-								label: "Pinned",
-								icon: "pin.fill",
-								key: Self.pinnedKey,
-								members: pinned
-							)
-						}
+				GeometryReader { geo in
+					let totalHeight = geo.size.height
+					let notifHeight = min(max(40, notificationAreaHeight), totalHeight - 60)
+					let projectHeight = totalHeight - notifHeight
+					VStack(spacing: 0) {
+						ScrollView {
+							VStack(spacing: 2) {
+								let pinned = projects.filter { $0.isPinned }
+								if !pinned.isEmpty {
+									groupSection(
+										label: "Pinned",
+										icon: "pin.fill",
+										key: Self.pinnedKey,
+										members: pinned
+									)
+								}
 
-						// Named groups in first-appearance order. Pinned projects are already
-						// rendered above and are skipped here.
-						ForEach(groupNames, id: \.self) { groupName in
-							let members = projects.filter { $0.groupName == groupName && !$0.isPinned }
-							if !members.isEmpty {
-								groupSection(
-									label: groupName,
-									icon: "folder",
-									key: groupName,
-									members: members
-								)
+								ForEach(groupNames, id: \.self) { groupName in
+									let members = projects.filter { $0.groupName == groupName && !$0.isPinned }
+									if !members.isEmpty {
+										groupSection(
+											label: groupName,
+											icon: "folder",
+											key: groupName,
+											members: members
+										)
+									}
+								}
+
+								if dropTargetIndex == projects.count {
+									dropIndicator()
+								}
+
+								Color.clear
+									.frame(minHeight: 80)
+									.contentShape(Rectangle())
+									.overlay(SidebarRightClickDetector(
+										onNewProject: { onAddProject?() },
+										onNewGroup: { promptForNewGroupOnly() }
+									))
+									.onDrop(of: [.text], delegate: SectionDropDelegate(
+										sectionKey: "",
+										dragOverKey: $dragOverSectionKey,
+										draggingProjectId: $draggingProjectId,
+										selectedProjectIds: selectedProjectIds,
+										onMove: { id, key in onMoveProjectToSection?(id, key) }
+									))
+									.onDrop(of: [.text], delegate: ProjectDropDelegate(
+										targetIndex: projects.count,
+										projects: projects,
+										draggingProjectId: $draggingProjectId,
+										dropTargetIndex: $dropTargetIndex,
+										selectedProjectIds: selectedProjectIds,
+										onMoveProject: onMoveProject,
+										onMoveProjectToSection: onMoveProjectToSection
+									))
 							}
+							.padding(.horizontal, 8)
 						}
+						.frame(height: projectHeight)
 
-						if dropTargetIndex == projects.count {
-							dropIndicator()
-						}
+						notificationDivider(totalHeight: totalHeight)
 
-						// Bottom catcher: right-click opens the sidebar menu。
-						// すべての project は必ず group に属するので、ここに drop
-						// しても「グループから外す」ではなく「default group に
-						// 戻す」挙動 (ProjectStore.moveProjectToSection で吸収)。
-						Color.clear
-							.frame(minHeight: 200)
-							.contentShape(Rectangle())
-							.overlay(SidebarRightClickDetector(
-								onNewProject: { onAddProject?() },
-								onNewGroup: { promptForNewGroupOnly() }
-							))
-							.onDrop(of: [.text], delegate: SectionDropDelegate(
-								sectionKey: "",
-								dragOverKey: $dragOverSectionKey,
-								draggingProjectId: $draggingProjectId,
-								selectedProjectIds: selectedProjectIds,
-								onMove: { id, key in onMoveProjectToSection?(id, key) }
-							))
-							.onDrop(of: [.text], delegate: ProjectDropDelegate(
-								targetIndex: projects.count,
-								projects: projects,
-								draggingProjectId: $draggingProjectId,
-								dropTargetIndex: $dropTargetIndex,
-								selectedProjectIds: selectedProjectIds,
-								onMoveProject: onMoveProject,
-								onMoveProjectToSection: onMoveProjectToSection
-							))
+						AgentNotificationStack(onFocus: { projectId, paneId in
+							onFocusPane?(projectId, paneId)
+						})
+						.frame(height: notifHeight)
 					}
-					.padding(.horizontal, 8)
 				}
-				AgentNotificationStack(onFocus: { projectId, paneId in
-					onFocusPane?(projectId, paneId)
-				})
 			}
 			.overlay(alignment: .topTrailing) {
 				HStack(spacing: 4) {
@@ -202,6 +212,33 @@ struct ProjectListView: View {
 				notificationStore.archiveSessionsForPane(paneId)
 			}
 		}
+	}
+
+	// MARK: - Notification Divider
+
+	private func notificationDivider(totalHeight: CGFloat) -> some View {
+		Rectangle()
+			.fill(Theme.border)
+			.frame(height: 1)
+			.overlay(
+				Rectangle()
+					.fill(Color.clear)
+					.frame(height: 8)
+					.contentShape(Rectangle())
+					.onHover { h in if h { NSCursor.resizeUpDown.push() } else { NSCursor.pop() } }
+					.gesture(
+						DragGesture(minimumDistance: 1, coordinateSpace: .global)
+							.onChanged { value in
+								if heightAtDragStart == nil { heightAtDragStart = notificationAreaHeight }
+								let newHeight = heightAtDragStart! - value.translation.height
+								notificationAreaHeight = min(max(40, newHeight), totalHeight - 60)
+							}
+							.onEnded { _ in
+								heightAtDragStart = nil
+								UserDefaults.standard.set(notificationAreaHeight, forKey: "Belve.notificationAreaHeight")
+							}
+					)
+			)
 	}
 
 	// MARK: - Group Header

@@ -495,25 +495,32 @@ class FileTreeState: ObservableObject {
 	}
 
 	private func expandAncestors(_ directories: [String], project: Project, completion: @escaping () -> Void) {
-		guard let current = directories.first else {
+		let uncached = directories.filter { childrenCache[$0] == nil }
+		for dir in directories { expandedPaths.insert(dir) }
+		guard !uncached.isEmpty else {
 			completion()
 			return
 		}
-
-		expandedPaths.insert(current)
-		if childrenCache[current] != nil {
-			expandAncestors(Array(directories.dropFirst()), project: project, completion: completion)
-			return
-		}
-
-		loadingDirectories.insert(current)
-		DispatchQueue.global().async {
-			let children = project.provider.listDirectory(current)
-			DispatchQueue.main.async {
-				self.loadingDirectories.remove(current)
-				self.childrenCache[current] = children
-				self.expandAncestors(Array(directories.dropFirst()), project: project, completion: completion)
+		for dir in uncached { loadingDirectories.insert(dir) }
+		let group = DispatchGroup()
+		var results: [(String, [FileItem])] = []
+		let lock = NSLock()
+		for dir in uncached {
+			group.enter()
+			DispatchQueue.global().async {
+				let children = project.provider.listDirectory(dir)
+				lock.lock()
+				results.append((dir, children))
+				lock.unlock()
+				group.leave()
 			}
+		}
+		group.notify(queue: .main) {
+			for (dir, children) in results {
+				self.loadingDirectories.remove(dir)
+				self.childrenCache[dir] = children
+			}
+			completion()
 		}
 	}
 

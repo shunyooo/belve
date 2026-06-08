@@ -84,6 +84,7 @@ func (mc *masterConn) write(v interface{}) error {
 }
 
 func runMacMaster(socketPath string) {
+	initTunnelManager()
 	if socketPath == "" {
 		fmt.Fprintln(os.Stderr, "[belve-master] -socket required")
 		os.Exit(1)

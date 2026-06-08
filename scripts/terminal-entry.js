@@ -14,7 +14,7 @@ const term = new Terminal({
 	fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 	allowProposedApi: true,
 	macOptionIsMeta: true,
-	scrollback: 1000,
+	scrollback: 10000,
 	theme: {
 		background: '#1e1e2e',
 		foreground: '#cdd6f4',
@@ -523,14 +523,29 @@ function ensurePathLinkProvider() {
 // Called from Swift after layout settles — uses fitAddon which accounts for
 // scrollbar width, padding, and actual DOM dimensions.
 window.terminalFit = function() {
-	doFit();
-	return _lastFitCols > 0 ? { cols: _lastFitCols, rows: _lastFitRows } : null;
+	if (!window.term || !window.fitAddon) return null;
+	var before = { cols: term.cols, rows: term.rows, baseY: term.buffer.active.baseY, viewportY: term.buffer.active.viewportY, cursorY: term.buffer.active.cursorY };
+	fitAddon.fit();
+	var dims = fitAddon.proposeDimensions();
+	if (!dims || dims.cols < 2 || dims.rows < 1) return null;
+	var after = { cols: term.cols, rows: term.rows, baseY: term.buffer.active.baseY, viewportY: term.buffer.active.viewportY, cursorY: term.buffer.active.cursorY };
+	_lastFitCols = dims.cols;
+	_lastFitRows = dims.rows;
+	if (term._core && term._core.viewport) {
+		term._core.viewport.syncScrollArea();
+	}
+	if (term.clearTextureAtlas) term.clearTextureAtlas();
+	term.refresh(0, term.rows - 1);
+	term.scrollToBottom();
+	var final_ = { baseY: term.buffer.active.baseY, viewportY: term.buffer.active.viewportY };
+	postMessage({ type: 'debug', message: '[terminalFit] before=' + JSON.stringify(before) + ' proposed=' + JSON.stringify(dims) + ' after=' + JSON.stringify(after) + ' final=' + JSON.stringify(final_) });
+	return { cols: dims.cols, rows: dims.rows };
 };
 
 // SerializeAddon: ターミナル状態の serialize/restore
 window.terminalSerialize = function() {
 	if (!serializeAddon) return null;
-	return serializeAddon.serialize({ scrollback: 1000 });
+	return serializeAddon.serialize({ scrollback: 10000 });
 };
 
 window.terminalRestore = function(data) {
@@ -616,6 +631,7 @@ term.onBinary(function(data) {
 var _lastFitCols = 0, _lastFitRows = 0;
 var _ptyResizeTimeout = null;
 var _fitDebounceTimeout = null;
+var _suppressPtyResize = false;
 function doFit() {
 	if (!window.term || !window.fitAddon) return;
 	var dims = fitAddon.proposeDimensions();
@@ -635,10 +651,12 @@ function doFit() {
 	});
 	_lastFitCols = dims.cols;
 	_lastFitRows = dims.rows;
-	if (_ptyResizeTimeout) clearTimeout(_ptyResizeTimeout);
-	_ptyResizeTimeout = setTimeout(function() {
-		postMessage({ type: 'resize', cols: dims.cols, rows: dims.rows });
-	}, 150);
+	if (!_suppressPtyResize) {
+		if (_ptyResizeTimeout) clearTimeout(_ptyResizeTimeout);
+		_ptyResizeTimeout = setTimeout(function() {
+			postMessage({ type: 'resize', cols: dims.cols, rows: dims.rows });
+		}, 150);
+	}
 }
 // ResizeObserver は高頻度で発火するので 16ms (1 frame) debounce
 const resizeObserver = new ResizeObserver(function() {

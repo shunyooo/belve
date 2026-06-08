@@ -784,19 +784,13 @@ struct CommandArea: View {
 		.clipped()
 		.background(Theme.bg)
 		.onReceive(NotificationCenter.default.publisher(for: .belveTerminalFocused)) { _ in
-			withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-				commandFocused = true
-			}
+			commandFocused = true
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveEditorWebViewDidFocus)) { _ in
-			withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-				commandFocused = false
-			}
+			commandFocused = false
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileTreeFocused)) { _ in
-			withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-				commandFocused = false
-			}
+			commandFocused = false
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveTerminalConnectionState)) { notif in
 			guard let projectId = notif.userInfo?["projectId"] as? UUID,

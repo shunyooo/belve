@@ -52,7 +52,7 @@ var globalTunnelManager = &tunnelManager{
 	forwardsSpawning: map[string]chan struct{}{},
 }
 
-func init() {
+func initTunnelManager() {
 	globalTunnelManager.loadState()
 	go globalTunnelManager.healthCheckLoop()
 }

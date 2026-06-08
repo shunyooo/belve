@@ -3,12 +3,6 @@ import SwiftUI
 struct AgentNotificationStack: View {
 	@EnvironmentObject var notificationStore: NotificationStore
 	let onFocus: (UUID, String) -> Void
-	@State private var areaHeight: CGFloat = {
-		let saved = UserDefaults.standard.double(forKey: "Belve.notificationStack.height")
-		return saved > 0 ? saved : 140
-	}()
-	@State private var heightAtDragStart: CGFloat? = nil
-
 	@State private var isCollapsed: Bool = false
 
 	var body: some View {
@@ -61,7 +55,6 @@ struct AgentNotificationStack: View {
 						.frame(maxWidth: .infinity)
 						.padding(.vertical, 12)
 				} else {
-					if !isCollapsed { resizeHandle }
 					ScrollView {
 						VStack(spacing: 2) {
 							ForEach(notifications) { notif in
@@ -71,30 +64,10 @@ struct AgentNotificationStack: View {
 						.padding(.horizontal, 8)
 						.padding(.bottom, 4)
 					}
-					.frame(maxHeight: areaHeight)
 				}
 			}
 		}
 		.background(Theme.bg.opacity(0.5))
-	}
-
-	private var resizeHandle: some View {
-		Rectangle()
-			.fill(Color.clear)
-			.frame(height: 6)
-			.contentShape(Rectangle())
-			.onHover { h in if h { NSCursor.resizeUpDown.push() } else { NSCursor.pop() } }
-			.gesture(
-				DragGesture(minimumDistance: 1, coordinateSpace: .global)
-					.onChanged { value in
-						if heightAtDragStart == nil { heightAtDragStart = areaHeight }
-						areaHeight = max(60, min(400, heightAtDragStart! - value.translation.height))
-					}
-					.onEnded { _ in
-						heightAtDragStart = nil
-						UserDefaults.standard.set(areaHeight, forKey: "Belve.notificationStack.height")
-					}
-			)
 	}
 
 	private func deduplicatedNotifications() -> [AgentNotification] {

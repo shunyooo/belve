@@ -28,8 +28,26 @@ final class PaneHostRegistry: ObservableObject {
 
 	@Published private(set) var entries: [String: Entry] = [:]  // keyed by paneId
 	/// paneId → serialized terminal state (SerializeAddon output)。
-	/// リロード前に保存、リロード後に復元。
+	/// リロード前に保存、リロード後に復元。ディスクにも永続化。
 	private(set) var serializedStates: [String: String] = [:]
+
+	private static var serializeDir: URL {
+		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+		let dir = appSupport.appendingPathComponent("Belve/terminal-states")
+		try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+		return dir
+	}
+
+	private func persistSerializedState(_ paneId: String, _ data: String) {
+		let url = Self.serializeDir.appendingPathComponent("\(paneId).txt")
+		try? data.write(to: url, atomically: true, encoding: .utf8)
+	}
+
+	func loadPersistedState(for paneId: String) -> String? {
+		if let mem = serializedStates[paneId] { return mem }
+		let url = Self.serializeDir.appendingPathComponent("\(paneId).txt")
+		return try? String(contentsOf: url, encoding: .utf8)
+	}
 
 	private init() {
 		// pane が close (Cmd+W / "Close Pane" コマンド) された時に registry からも削除。
@@ -91,6 +109,7 @@ final class PaneHostRegistry: ObservableObject {
 			entry.webView.evaluateJavaScript("window.terminalSerialize()") { [weak self] result, _ in
 				if let data = result as? String, !data.isEmpty {
 					self?.serializedStates[entry.paneId] = data
+					self?.persistSerializedState(entry.paneId, data)
 					NSLog("[Belve] Serialized pane %@ (%d chars)", String(entry.paneId.prefix(8)), data.count)
 				}
 				sem.signal()
@@ -102,7 +121,11 @@ final class PaneHostRegistry: ObservableObject {
 	}
 
 	func consumeSerializedState(for paneId: String) -> String? {
-		serializedStates.removeValue(forKey: paneId)
+		if let mem = serializedStates.removeValue(forKey: paneId) { return mem }
+		let url = Self.serializeDir.appendingPathComponent("\(paneId).txt")
+		guard let data = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+		try? FileManager.default.removeItem(at: url)
+		return data
 	}
 
 	/// 指定 project の pane 一覧 (paneIndex 昇順)。

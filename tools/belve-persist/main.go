@@ -80,9 +80,10 @@ func watchParent() {
 }
 
 const (
-	msgData    byte = 0
-	msgResize  byte = 1
-	msgSession byte = 2 // payload: session name (UTF-8)
+	msgData      byte = 0
+	msgResize    byte = 1
+	msgSession   byte = 2 // payload: session name (UTF-8)
+	msgNoReplay  byte = 3 // client → daemon: skip replay (serialize restore available)
 )
 
 func main() {
@@ -278,9 +279,9 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	var currentPtyFile *os.File
 	var currentPtyFd uintptr
 
-	addClient := func(c net.Conn) {
+	addClient := func(c net.Conn, skipReplay bool) {
 		mu.Lock()
-		if len(replayBuf) > 0 {
+		if !skipReplay && len(replayBuf) > 0 {
 			writeReplayChunks(c, replayBuf)
 		}
 		clients = append(clients, c)
@@ -316,7 +317,8 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 			if err != nil {
 				break
 			}
-			addClient(conn)
+			skipReplay := checkNoReplay(conn)
+			addClient(conn, skipReplay)
 			go func(c net.Conn) {
 				defer func() {
 					removeClient(c)
@@ -524,9 +526,9 @@ type tcpSession struct {
 const tcpReplayMax = 4 * 1024 * 1024
 
 
-func (s *tcpSession) addClient(c net.Conn) {
+func (s *tcpSession) addClient(c net.Conn, skipReplay bool) {
 	s.mu.Lock()
-	if len(s.replayBuf) > 0 {
+	if !skipReplay && len(s.replayBuf) > 0 {
 		writeReplayChunks(c, s.replayBuf)
 	}
 	s.clients = append(s.clients, c)
@@ -737,7 +739,7 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 				name, initCols, initRows, len(extraEnv), c.RemoteAddr())
 
 			sess := getOrCreateSession(name, initCols, initRows, extraEnv)
-			sess.addClient(c)
+			sess.addClient(c, false)
 			defer func() {
 				sess.removeClient(c)
 				c.Close()
@@ -1000,9 +1002,9 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 	var replayBuf []byte
 	const replayMax = 4 * 1024 * 1024
 
-	addClient := func(c net.Conn) {
+	addClient := func(c net.Conn, skipReplay bool) {
 		mu.Lock()
-		if len(replayBuf) > 0 {
+		if !skipReplay && len(replayBuf) > 0 {
 			writeReplayChunks(c, replayBuf)
 		}
 		clients = append(clients, c)
@@ -1047,7 +1049,8 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 			if err != nil {
 				break
 			}
-			addClient(conn)
+			skipReplay := checkNoReplay(conn)
+			addClient(conn, skipReplay)
 			go func(c net.Conn) {
 				defer func() {
 					removeClient(c)
@@ -1251,6 +1254,10 @@ func tryAttach(socketPath string) bool {
 	}
 	defer conn.Close()
 
+	if os.Getenv("BELVE_SKIP_REPLAY") == "1" {
+		writeMsg(conn, msgNoReplay, nil)
+	}
+
 	fd := int(os.Stdin.Fd())
 	oldState, rawErr := setRawTerminal(fd)
 	if rawErr == nil {
@@ -1399,6 +1406,23 @@ func readMsg(r io.Reader) (byte, []byte, error) {
 		}
 	}
 	return header[0], payload, nil
+}
+
+// checkNoReplay reads the first message from a new client with a short timeout.
+// If the client sends msgNoReplay, returns true (replay should be skipped).
+// Otherwise returns false (replay as normal). Non-msgNoReplay messages are
+// pushed back by writing them to the client's read buffer — but since net.Conn
+// doesn't support unread, we instead just return false and let the normal
+// read loop handle it. The 50ms timeout ensures old clients that don't send
+// this message aren't blocked.
+func checkNoReplay(c net.Conn) bool {
+	c.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	t, _, err := readMsg(c)
+	c.SetReadDeadline(time.Time{})
+	if err != nil {
+		return false
+	}
+	return t == msgNoReplay
 }
 
 // killOldDaemons finds and kills old belve-persist daemon processes (and their

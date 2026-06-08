@@ -565,13 +565,21 @@ struct MainWindow: View {
 				DispatchQueue.main.async {
 					projectStore.refocusTerminal(paneId: targetPaneId?.uuidString)
 				}
-				// Trigger terminal refit in the same tick; xterm.js can resize
-				// safely even before first output.
+				// Terminal refit: 2段で発火。即時 + レイアウト確定後。
+				// 即時は WebView の frame が既に正しい場合に効く。
+				// 遅延版は SwiftUI レイアウトが確定してからの保険。
 				NotificationCenter.default.post(
 					name: .belveTerminalRefit,
 					object: nil,
 					userInfo: ["projectId": project.id]
 				)
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+					NotificationCenter.default.post(
+						name: .belveTerminalRefit,
+						object: nil,
+						userInfo: ["projectId": project.id]
+					)
+				}
 				// Hide other projects' browser panels and restore this
 				// project's if it was open last time.
 				BrowserWindowManager.shared.hideAllExcept(keepProjectId: project.id)
@@ -693,10 +701,14 @@ struct MainWindow: View {
 
 		var stops: [Stop] = state.orderedPaneIds().map { .pane($0) }
 		if projectLayout.showEditor {
-			if projectLayout.showFileTree { stops.append(.fileTree) }
-			// Editor is only a cycle stop when a file is actually open; otherwise
-			// there's nothing to focus and the placeholder is just a blank area.
-			if openFilesByView[activeViewId(of: project.id)] != nil { stops.append(.editor) }
+			let treeOnLeft = AppConfig.shared.fileTreePosition == .left
+			if treeOnLeft {
+				if projectLayout.showFileTree { stops.append(.fileTree) }
+				if openFilesByView[activeViewId(of: project.id)] != nil { stops.append(.editor) }
+			} else {
+				if openFilesByView[activeViewId(of: project.id)] != nil { stops.append(.editor) }
+				if projectLayout.showFileTree { stops.append(.fileTree) }
+			}
 		}
 		guard !stops.isEmpty else { return }
 
@@ -716,16 +728,14 @@ struct MainWindow: View {
 		let nextIndex = (currentIndex + step + stops.count) % stops.count
 		let nextStop = stops[nextIndex]
 
-		withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-			switch nextStop {
-			case .pane(let paneId):
-				focusZone = .pane
-				state.activePaneId = paneId
-			case .editor:
-				focusZone = .editor
-			case .fileTree:
-				focusZone = .fileTree
-			}
+		switch nextStop {
+		case .pane(let paneId):
+			focusZone = .pane
+			state.activePaneId = paneId
+		case .editor:
+			focusZone = .editor
+		case .fileTree:
+			focusZone = .fileTree
 		}
 
 		// Side effects (making AppKit first responder) happen outside animation.
@@ -1176,6 +1186,14 @@ struct MainWindow: View {
 			projectStore.select(next.project)
 		}
 		viewStore.setActiveView(next.viewId, for: next.project.id)
+		let projectId = next.project.id
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+			NotificationCenter.default.post(
+				name: .belveTerminalRefit,
+				object: nil,
+				userInfo: ["projectId": projectId]
+			)
+		}
 	}
 
 	private func navigateHistory(direction: Int) {
@@ -1256,15 +1274,13 @@ extension EnvironmentValues {
 
 struct FocusBorderOverlay: View {
 	let isActive: Bool
-	@Environment(\.focusBorderNamespace) private var namespace
 	@Environment(\.projectActive) private var projectActive
 
 	var body: some View {
 		ZStack {
-			if isActive && projectActive, let ns = namespace {
+			if isActive && projectActive {
 				RoundedRectangle(cornerRadius: 4)
 					.strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1.2)
-					.matchedGeometryEffect(id: "belveFocusBorder", in: ns, properties: .frame, isSource: true)
 					.allowsHitTesting(false)
 			}
 		}
