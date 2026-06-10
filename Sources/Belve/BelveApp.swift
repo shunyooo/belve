@@ -190,6 +190,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Generate launcher script for terminal sessions
 		LauncherScriptGenerator.generate()
 
+		// Invalidate cached setup state in mac-master so updated scripts
+		// (session-bootstrap.sh etc.) get re-deployed on next connection.
+		Task.detached {
+			try? await MasterClient.shared.invalidateAllSetups()
+		}
+
 		// Install crash signal handlers to capture backtrace
 		installCrashHandlers()
 		NSApp.activate(ignoringOtherApps: true)

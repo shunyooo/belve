@@ -216,6 +216,10 @@ final class MasterClient: @unchecked Sendable {
 		])
 	}
 
+	func invalidateAllSetups() async throws {
+		_ = try await send(op: "invalidateAllSetups", params: [:])
+	}
+
 	/// host への SSH ControlMaster を保証する (spawn if missing)。
 	/// PortForwardManager が独自の port forward を立てる前に呼ぶ。
 	func ensureControlMaster(host: String) async throws {

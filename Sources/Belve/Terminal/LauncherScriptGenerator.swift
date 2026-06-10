@@ -31,7 +31,7 @@ enum LauncherScriptGenerator {
 		# Local shell setup
 		export BELVE_SESSION=1
 		export PATH="\#(belveBin):$PATH"
-		[ -n "$BELVE_WORKDIR" ] && cd "$BELVE_WORKDIR" 2>/dev/null || true
+		[ -n "$BELVE_WORKDIR" ] && cd "${BELVE_WORKDIR/#\~/$HOME}" 2>/dev/null || true
 		PROJ_SHORT=$(echo "${BELVE_PROJECT_ID:-local}" | cut -c1-8)
 		if [ "${BELVE_PANE_INDEX:-0}" = "0" ]; then
 		    LOCAL_SESSION="belve-${PROJ_SHORT}"

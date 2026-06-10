@@ -179,6 +179,8 @@ func masterDispatch(mc *masterConn, req masterReq) masterRes {
 		return opEnsureSetup(req)
 	case "invalidateSetup":
 		return opInvalidateSetup(req)
+	case "invalidateAllSetups":
+		return opInvalidateAllSetups(req)
 	case "ensureControlMaster":
 		return opEnsureControlMaster(req)
 	case "ensureRouterForward":
@@ -393,6 +395,14 @@ func opInvalidateSetup(req masterReq) masterRes {
 	}
 	globalSetupManager.invalidate(pid)
 	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"projectId": pid}}
+}
+
+func opInvalidateAllSetups(req masterReq) masterRes {
+	globalSetupManager.mu.Lock()
+	n := len(globalSetupManager.projects)
+	globalSetupManager.projects = map[string]*projectSetup{}
+	globalSetupManager.mu.Unlock()
+	return masterRes{ID: req.ID, OK: true, Result: map[string]int{"invalidated": n}}
 }
 
 // ensureControlMaster params: {host}

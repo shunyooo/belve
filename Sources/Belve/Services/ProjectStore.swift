@@ -110,6 +110,7 @@ class ProjectStore: ObservableObject {
 	private let localFileWatcher = LocalFileWatcher()
 	/// fsevent push 購読済みの project ID。多重購読を防ぐ。
 	private var rpcSubscribed: Set<UUID> = []
+	private var rpcSubscribedClient: [UUID: RemoteRPCClient] = [:]
 	/// fsevent → refresh の debounce タイマー (project ごと)。
 	private var fsRefreshTimers: [UUID: DispatchWorkItem] = [:]
 
@@ -291,9 +292,10 @@ class ProjectStore: ObservableObject {
 	/// `.git` 内の "本物の" 変更だけ抽出する path filter を入れれば watch を
 	/// 復活できるが、現状は安全側で disabled。
 	private func subscribeRPCFsEvents(projectId: UUID, rootPath: String) {
-		guard !rpcSubscribed.contains(projectId) else { return }
 		guard let client = RemoteRPCRegistry.shared.client(for: projectId) else { return }
+		guard !rpcSubscribed.contains(projectId) || rpcSubscribedClient[projectId] !== client else { return }
 		rpcSubscribed.insert(projectId)
+		rpcSubscribedClient[projectId] = client
 		client.subscribePush { [weak self] type, msg in
 			guard type == "fsevent" else { return }
 			// .git 配下の event は無視 (path が ".git/..." or ".../.git/..." 等

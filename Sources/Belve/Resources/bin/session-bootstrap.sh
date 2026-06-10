@@ -6,6 +6,10 @@
 export BELVE_SESSION="${BELVE_SESSION:-1}"
 export PATH="$HOME/.belve/bin:$PATH"
 export BELVE_TTY=$(tty 2>/dev/null || echo "")
+if [ -n "$BELVE_WORKDIR" ]; then
+    case "$BELVE_WORKDIR" in "~"*) BELVE_WORKDIR="$HOME${BELVE_WORKDIR#"~"}" ;; esac
+    cd "$BELVE_WORKDIR" 2>/dev/null || true
+fi
 
 # Workaround for Claude Code v2.1.x SessionStart bug. Also handle the case where
 # ~/.claude is a symlink to a workspace path whose target doesn't exist yet.

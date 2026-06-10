@@ -1151,10 +1151,24 @@ struct XTermTerminalView: NSViewRepresentable {
 			if ptyRetryCount < Self.ptyMaxRetries {
 				ptyRetryCount += 1
 				ptyService = nil
-				let delay = min(30.0, pow(2.0, Double(ptyRetryCount)))
+				let delay = ptyRetryCount <= 3 ? 2.0 : min(15.0, pow(2.0, Double(ptyRetryCount - 2)))
 				NSLog("[Belve] Auto-retrying PTY for project=%@ (attempt %d/%d, delay %.0fs)",
 					project.name, ptyRetryCount, Self.ptyMaxRetries, delay)
 				postReconnectingState(attempt: ptyRetryCount, max: Self.ptyMaxRetries)
+				// Remote: kill stale tcpbackend daemon whose TCP address may be
+				// outdated after SSH tunnel re-establishment on a different port.
+				if project.isRemote, let paneId {
+					let projShort = String(project.id.uuidString.prefix(8))
+					let paneIdShort = String(paneId.prefix(8))
+					let sockPath = "/tmp/belve-shell/sessions/belve-\(projShort)-\(paneIdShort).sock"
+					let pidPath = sockPath + ".pid"
+					if let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+					   let pid = Int32(pidStr) {
+						kill(pid, SIGTERM)
+						NSLog("[Belve] Killed stale tcpbackend daemon pid=%d for %@", pid, sockPath)
+					}
+					try? FileManager.default.removeItem(atPath: sockPath)
+				}
 				DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
 					guard let self else { return }
 					let cols = self.lastResizeCols > 0 ? self.lastResizeCols : 80
