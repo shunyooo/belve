@@ -8,7 +8,8 @@ struct AgentNotificationStack: View {
 	var body: some View {
 		let notifications = deduplicatedNotifications()
 		VStack(spacing: 0) {
-			Divider().overlay(Theme.border)
+			// 上端の divider は ProjectListView 側の notificationDivider が描画する
+			// (= リサイズ hover 領域も兼ねる)。ここで重ねて描かない。
 			// ヘッダー（常に表示、クリックで収納トグル）
 			HStack {
 				Button(action: {
