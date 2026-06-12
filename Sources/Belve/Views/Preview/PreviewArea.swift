@@ -150,7 +150,13 @@ struct PreviewArea: View {
 			projectStore.refreshGitStatus()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveShowChanges)) { notif in
-			if let projectId = notif.userInfo?["projectId"] as? UUID, projectId != project.id { return }
+			if let projectId = notif.userInfo?["projectId"] as? UUID {
+				if projectId != project.id { return }
+			} else if projectStore.selectedProject?.id != project.id {
+				// projectId 未指定 (= Cmd+Shift+G 等) は currently selected project だけ反応。
+				// これを入れないと全 PreviewArea が toggle して他 view にも波及する。
+				return
+			}
 			layoutState.showChanges.toggle()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileDeleted)) { notif in

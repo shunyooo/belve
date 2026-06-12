@@ -1263,6 +1263,12 @@ struct FileTreeRow: View {
 				Button("Copy Relative Path") {
 					copyToClipboard(relativePath(item.path))
 				}
+				if !item.isDirectory {
+					Divider()
+					Button("Download...") {
+						downloadFile(item)
+					}
+				}
 				if item.isDirectory {
 					Divider()
 					Button("New File") {
@@ -1345,6 +1351,32 @@ struct FileTreeRow: View {
 		let pb = NSPasteboard.general
 		pb.clearContents()
 		pb.setString(s, forType: .string)
+	}
+
+	/// 右クリック → Download... で呼ばれる。NSSavePanel で保存先を選び、
+	/// provider.downloadFile で remote → local にコピー。
+	private func downloadFile(_ item: FileItem) {
+		let savePanel = NSSavePanel()
+		savePanel.nameFieldStringValue = item.name
+		savePanel.canCreateDirectories = true
+		savePanel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+		savePanel.begin { response in
+			guard response == .OK, let url = savePanel.url else { return }
+			let remotePath = item.path
+			let provider = project.provider
+			state.showStatus("Downloading \(item.name)...")
+			DispatchQueue.global(qos: .userInitiated).async {
+				let ok = provider.downloadFile(remotePath: remotePath, to: url)
+				DispatchQueue.main.async {
+					if ok {
+						state.showStatus("Downloaded: \(url.lastPathComponent)")
+					} else {
+						state.showStatus("Download failed: \(item.name)")
+						NSLog("[Belve] downloadFile failed: \(remotePath) -> \(url.path)")
+					}
+				}
+			}
+		}
 	}
 
 	private func relativePath(_ absolute: String) -> String {
