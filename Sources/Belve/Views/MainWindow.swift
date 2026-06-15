@@ -9,7 +9,9 @@ struct MainWindow: View {
 	@ObservedObject private var viewStore = ProjectViewStore.shared
 	@State private var sidebarWidthAtDragStart: CGFloat = 0
 	/// Per-view open file cache. view 切替で独立した editor 状態を維持する。
-	@State private var openFilesByView: [UUID: OpenFile] = [:]
+	@State private var openFilesByView: [UUID: OpenFile] = [:] {
+		didSet { persistOpenFiles() }
+	}
 	@State private var showSettings = false
 	@ObservedObject private var lspManager = LSPManager.shared
 	@State private var showSessionManager = false
@@ -132,7 +134,7 @@ struct MainWindow: View {
 				.background(WindowFrameAutosave(name: "BelveMainWindow"))
 				.onAppear {
 					sidebarWidthAtDragStart = layoutState.sidebarWidth
-					// Last-opened file restore is handled by PreviewArea.onAppear.
+					restoreOpenFiles()
 					// 通知の抑制条件: paneId が現在 sidebar に出ている view (= viewStore
 					// 配下の全 view の PaneNode tree) のいずれかに含まれていれば live。
 					// program 経由 claude (= 親 pane に紐付かない) の通知を抑止する。
@@ -1237,6 +1239,36 @@ struct MainWindow: View {
 		// PaneHostRegistry を unregister して再 mount → 新 PTY spawn
 		PaneHostRegistry.shared.unregister(paneId: activePaneId.uuidString)
 		projectStore.reloadProject(project.id)
+	}
+
+	// MARK: - Open file persistence
+
+	private static var openFilesURL: URL {
+		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+		let dir = appSupport.appendingPathComponent("Belve")
+		try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+		return dir.appendingPathComponent("open-files.json")
+	}
+
+	private func persistOpenFiles() {
+		var dict: [String: String] = [:]
+		for (viewId, file) in openFilesByView {
+			dict[viewId.uuidString] = file.path
+		}
+		if let data = try? JSONEncoder().encode(dict) {
+			try? data.write(to: Self.openFilesURL)
+		}
+	}
+
+	private func restoreOpenFiles() {
+		guard let data = try? Data(contentsOf: Self.openFilesURL),
+		      let dict = try? JSONDecoder().decode([String: String].self, from: data) else { return }
+		for (key, path) in dict {
+			guard let viewId = UUID(uuidString: key) else { continue }
+			if openFilesByView[viewId] == nil {
+				openFilesByView[viewId] = OpenFile(path: path, content: "", line: nil, column: nil)
+			}
+		}
 	}
 
 	private func openFolder() {

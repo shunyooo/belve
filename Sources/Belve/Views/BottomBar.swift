@@ -11,6 +11,7 @@ struct BottomBar: View {
 	let gitBranch: String?
 	let activeAgentProjectCount: Int
 	@ObservedObject var portManager: PortForwardManager
+	@ObservedObject var lspManager: LSPManager = .shared
 	let onUpdateForwards: (UUID, [PortForward]) -> Void
 	var onResolveDetection: ((UUID, Int, PortForwardManager.DetectionAction) -> Void)?
 	var onOpenBrowser: (() -> Void)?
@@ -29,6 +30,7 @@ struct BottomBar: View {
 			if let branch = gitBranch {
 				gitItem(branch: branch)
 			}
+			lspItem()
 			portsItem()
 			browserItem()
 			Spacer(minLength: 8)
@@ -70,6 +72,30 @@ struct BottomBar: View {
 		case .devContainer(let host, _):
 			let short = host.components(separatedBy: ".").first ?? host
 			return ("shippingbox", "\(short) / DevContainer", Theme.accent)
+		}
+	}
+
+	@ViewBuilder
+	private func lspItem() -> some View {
+		let langs = lspManager.activeLanguages
+		if !langs.isEmpty {
+			HStack(spacing: 4) {
+				Circle()
+					.fill(Theme.green)
+					.frame(width: 6, height: 6)
+				Text("LSP: \(langs.sorted().joined(separator: ", "))")
+					.font(.system(size: 11))
+					.foregroundStyle(Theme.textSecondary)
+			}
+		} else {
+			HStack(spacing: 4) {
+				Circle()
+					.fill(Theme.textTertiary)
+					.frame(width: 6, height: 6)
+				Text("LSP")
+					.font(.system(size: 11))
+					.foregroundStyle(Theme.textTertiary)
+			}
 		}
 	}
 

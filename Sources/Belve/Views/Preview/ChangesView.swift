@@ -1,10 +1,19 @@
 import SwiftUI
 import WebKit
 
-struct DiffFilter {
-	var staged: Bool = true
-	var unstaged: Bool = true
-	var committed: Bool = false
+// MARK: - Timeline Entry
+
+enum TimelineEntry: Hashable {
+	case unstaged
+	case staged
+	case commit(hash: String)
+
+	var isVirtual: Bool {
+		switch self {
+		case .unstaged, .staged: return true
+		case .commit: return false
+		}
+	}
 }
 
 /// File tree の node。directory なら children あり。file なら ChangedFile を持つ。
@@ -162,19 +171,180 @@ struct ChangedFile {
 	}
 }
 
+// MARK: - Timeline Sidebar
+
+fileprivate struct TimelineSidebar: View {
+	let commits: [GitCommitEntry]
+	let unpushedFrom: String
+	let unstagedCount: Int
+	let stagedCount: Int
+	@Binding var selectedEntries: Set<TimelineEntry>
+	@Binding var lastClickedEntry: TimelineEntry?
+
+	/// Ordered list of all timeline entries for range selection.
+	private var allEntries: [TimelineEntry] {
+		var entries: [TimelineEntry] = [.unstaged, .staged]
+		for commit in commits {
+			entries.append(.commit(hash: commit.hash))
+		}
+		return entries
+	}
+
+	var body: some View {
+		ScrollView {
+			VStack(alignment: .leading, spacing: 0) {
+				// Virtual entries
+				virtualEntryRow(.unstaged, label: "Unstaged", count: unstagedCount)
+				virtualEntryRow(.staged, label: "Staged", count: stagedCount)
+
+				// Separator between virtual entries and commits
+				if !commits.isEmpty {
+					dividerLine(label: nil)
+				}
+
+				// Commit entries
+				ForEach(Array(commits.enumerated()), id: \.element.hash) { index, commit in
+					let entry = TimelineEntry.commit(hash: commit.hash)
+					let isUnpushedBoundary = !unpushedFrom.isEmpty && commit.hash == unpushedFrom
+					let isAboveBoundary = isCommitAboveBoundary(index)
+
+					commitEntryRow(entry, commit: commit, isUnpushed: isAboveBoundary)
+
+					if isUnpushedBoundary {
+						dividerLine(label: "origin")
+					}
+				}
+			}
+			.padding(.vertical, 4)
+		}
+		.background(Theme.bg)
+	}
+
+	private func virtualEntryRow(_ entry: TimelineEntry, label: String, count: Int) -> some View {
+		let isSelected = selectedEntries.contains(entry)
+		return Button {
+			handleClick(entry: entry, isShift: NSEvent.modifierFlags.contains(.shift))
+		} label: {
+			HStack(spacing: 6) {
+				Image(systemName: isSelected ? "circle.fill" : "circle")
+					.font(.system(size: 8))
+					.foregroundStyle(isSelected ? Theme.accent : Theme.textTertiary)
+					.frame(width: 14)
+				Text(label)
+					.font(.system(size: 11, weight: .medium))
+					.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+					.lineLimit(1)
+				Spacer()
+				if count > 0 {
+					Text("\(count)")
+						.font(.system(size: 9, weight: .medium, design: .monospaced))
+						.foregroundStyle(Theme.textSecondary)
+						.padding(.horizontal, 5)
+						.padding(.vertical, 1)
+						.background(
+							RoundedRectangle(cornerRadius: 3)
+								.fill(Theme.surfaceActive)
+						)
+				}
+			}
+			.padding(.horizontal, 8)
+			.padding(.vertical, 5)
+			.background(
+				RoundedRectangle(cornerRadius: 4)
+					.fill(isSelected ? Theme.surfaceActive : Color.clear)
+			)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+	}
+
+	private func commitEntryRow(_ entry: TimelineEntry, commit: GitCommitEntry, isUnpushed: Bool) -> some View {
+		let isSelected = selectedEntries.contains(entry)
+		return Button {
+			handleClick(entry: entry, isShift: NSEvent.modifierFlags.contains(.shift))
+		} label: {
+			HStack(spacing: 6) {
+				Image(systemName: isSelected ? "circle.fill" : "circle")
+					.font(.system(size: 8))
+					.foregroundStyle(isSelected ? Theme.accent : Theme.textTertiary)
+					.frame(width: 14)
+				VStack(alignment: .leading, spacing: 1) {
+					HStack(spacing: 4) {
+						Text(String(commit.hash.prefix(7)))
+							.font(.system(size: 10, weight: .medium, design: .monospaced))
+							.foregroundStyle(isUnpushed ? Theme.accent : Theme.textSecondary)
+						Text(commit.date)
+							.font(.system(size: 9))
+							.foregroundStyle(Theme.textTertiary)
+					}
+					Text(commit.subject)
+						.font(.system(size: 10))
+						.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+						.lineLimit(1)
+						.truncationMode(.tail)
+				}
+				Spacer()
+			}
+			.padding(.horizontal, 8)
+			.padding(.vertical, 4)
+			.background(
+				RoundedRectangle(cornerRadius: 4)
+					.fill(isSelected ? Theme.surfaceActive : Color.clear)
+			)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+	}
+
+	private func dividerLine(label: String?) -> some View {
+		HStack(spacing: 4) {
+			Theme.borderSubtle.frame(height: 1)
+			if let label {
+				Text(label)
+					.font(.system(size: 9, weight: .medium))
+					.foregroundStyle(Theme.textTertiary)
+				Theme.borderSubtle.frame(height: 1)
+			}
+		}
+		.padding(.horizontal, 8)
+		.padding(.vertical, 4)
+	}
+
+	/// Determine if a commit at a given index is above (before) the unpushed boundary.
+	private func isCommitAboveBoundary(_ index: Int) -> Bool {
+		guard !unpushedFrom.isEmpty else { return false }
+		// All commits with index <= the boundary commit's index are unpushed
+		guard let boundaryIndex = commits.firstIndex(where: { $0.hash == unpushedFrom }) else { return false }
+		return index <= boundaryIndex
+	}
+
+	private func handleClick(entry: TimelineEntry, isShift: Bool) {
+		if isShift, let last = lastClickedEntry {
+			// Range selection
+			let all = allEntries
+			guard let lastIdx = all.firstIndex(of: last),
+				  let currentIdx = all.firstIndex(of: entry) else {
+				selectedEntries = [entry]
+				lastClickedEntry = entry
+				return
+			}
+			let range = min(lastIdx, currentIdx)...max(lastIdx, currentIdx)
+			selectedEntries = Set(all[range])
+		} else {
+			selectedEntries = [entry]
+		}
+		lastClickedEntry = entry
+	}
+}
+
+// MARK: - ChangesView
+
 struct ChangesView: View {
 	let project: Project
 	@ObservedObject var layoutState: ProjectLayoutState
 	var onOpenFile: ((String) -> Void)? = nil
 	var onDismiss: (() -> Void)? = nil
-	/// filter は layoutState に永続化されてる field を直接 binding で使う。
-	private var filter: DiffFilter {
-		DiffFilter(
-			staged: layoutState.diffFilterStaged,
-			unstaged: layoutState.diffFilterUnstaged,
-			committed: layoutState.diffFilterCommitted
-		)
-	}
+
 	@State private var changedFiles: [ChangedFile] = []
 	@State private var isLoading = false
 	@State private var totalAdded = 0
@@ -184,30 +354,22 @@ struct ChangesView: View {
 	@State private var diffWebView: WKWebView?
 	@State private var lastStatusHash: String = ""
 	@State private var pollTimer: Timer?
-	@State private var compareRef: String = ""
-	@State private var availableBranches: [String] = []
+
+	// Timeline state
+	@State private var commits: [GitCommitEntry] = []
+	@State private var unpushedFrom: String = ""
+	@State private var selectedEntries: Set<TimelineEntry> = [.unstaged, .staged]
+	@State private var lastClickedEntry: TimelineEntry? = nil
+	@State private var unstagedCount: Int = 0
+	@State private var stagedCount: Int = 0
+
+	/// Timeline sidebar width.
+	private let timelineWidth: CGFloat = 160
 
 	var body: some View {
 		VStack(spacing: 0) {
 			// Header
 			HStack(spacing: 10) {
-				filterToggle("Staged", isOn: $layoutState.diffFilterStaged)
-				filterToggle("Unstaged", isOn: $layoutState.diffFilterUnstaged)
-				filterToggle("Committed", isOn: $layoutState.diffFilterCommitted)
-
-				if layoutState.diffFilterCommitted && !availableBranches.isEmpty {
-					Picker("", selection: $compareRef) {
-						ForEach(availableBranches, id: \.self) { branch in
-							Text(branch).tag(branch)
-						}
-					}
-					.pickerStyle(.menu)
-					.frame(maxWidth: 140)
-					.labelsHidden()
-				}
-
-				Theme.borderSubtle.frame(width: 1, height: 14)
-
 				if isLoading {
 					ProgressView()
 						.controlSize(.small)
@@ -231,7 +393,8 @@ struct ChangesView: View {
 				Spacer()
 
 				Button {
-					loadAll()
+					loadCommits()
+					loadDiffForSelection()
 				} label: {
 					Image(systemName: "arrow.clockwise")
 						.font(.system(size: 11))
@@ -255,22 +418,26 @@ struct ChangesView: View {
 
 			Theme.borderSubtle.frame(height: 1)
 
-			// Left: file tree + Right: all diffs in one scroll
+			// Main content: Timeline | File tree + Diff
 			if changedFiles.isEmpty && !isLoading {
-				VStack(spacing: 8) {
-					Image(systemName: "checkmark.circle")
-						.font(.system(size: 28, weight: .thin))
-						.foregroundStyle(Theme.green)
-					Text("No changes")
-						.font(Theme.fontBody)
-						.foregroundStyle(Theme.textTertiary)
-				}
-				.frame(maxWidth: .infinity, maxHeight: .infinity)
-				.background(Theme.surface)
+				emptyState
 			} else {
 				GeometryReader { geo in
 					HStack(spacing: 0) {
-						// File tree (left)
+						// Timeline sidebar (left)
+						TimelineSidebar(
+							commits: commits,
+							unpushedFrom: unpushedFrom,
+							unstagedCount: unstagedCount,
+							stagedCount: stagedCount,
+							selectedEntries: $selectedEntries,
+							lastClickedEntry: $lastClickedEntry
+						)
+						.frame(width: timelineWidth)
+
+						Theme.borderSubtle.frame(width: 1)
+
+						// File tree (middle)
 						ScrollViewReader { proxy in
 							ScrollView {
 								VStack(alignment: .leading, spacing: 0) {
@@ -293,7 +460,7 @@ struct ChangesView: View {
 							position: $layoutState.changesTreeWidth,
 							minLeft: 140,
 							minRight: 280,
-							availableWidth: geo.size.width
+							availableWidth: geo.size.width - timelineWidth - 1
 						)
 						.frame(width: DividerMetrics.absoluteHitWidth)
 
@@ -310,31 +477,40 @@ struct ChangesView: View {
 			}
 		}
 		.onAppear {
-			loadBranches()
-			loadAll()
+			loadCommits()
+			loadDiffForSelection()
 			startPolling()
 		}
 		.onDisappear { stopPolling() }
-		.onChange(of: layoutState.diffFilterStaged) { loadAll() }
-		.onChange(of: layoutState.diffFilterUnstaged) { loadAll() }
-		.onChange(of: layoutState.diffFilterCommitted) { loadAll() }
-		.onChange(of: compareRef) { loadAll() }
+		.onChange(of: selectedEntries) { loadDiffForSelection() }
 	}
 
-	private func filterToggle(_ label: String, isOn: Binding<Bool>) -> some View {
-		Button {
-			isOn.wrappedValue.toggle()
-		} label: {
-			HStack(spacing: 4) {
-				Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
-					.font(.system(size: 11))
-					.foregroundStyle(isOn.wrappedValue ? Theme.accent : Theme.textSecondary)
-				Text(label)
-					.font(.system(size: 11))
-					.foregroundStyle(isOn.wrappedValue ? Theme.textPrimary : Theme.textSecondary)
+	private var emptyState: some View {
+		HStack(spacing: 0) {
+			// Timeline sidebar even in empty state
+			TimelineSidebar(
+				commits: commits,
+				unpushedFrom: unpushedFrom,
+				unstagedCount: unstagedCount,
+				stagedCount: stagedCount,
+				selectedEntries: $selectedEntries,
+				lastClickedEntry: $lastClickedEntry
+			)
+			.frame(width: timelineWidth)
+
+			Theme.borderSubtle.frame(width: 1)
+
+			VStack(spacing: 8) {
+				Image(systemName: "checkmark.circle")
+					.font(.system(size: 28, weight: .thin))
+					.foregroundStyle(Theme.green)
+				Text("No changes")
+					.font(Theme.fontBody)
+					.foregroundStyle(Theme.textTertiary)
 			}
+			.frame(maxWidth: .infinity, maxHeight: .infinity)
+			.background(Theme.surface)
 		}
-		.buttonStyle(.plain)
 	}
 
 	// MARK: - File Tree (= 再帰 tree 構造)
@@ -411,46 +587,6 @@ struct ChangesView: View {
 
 	@State private var hoveredFilePath: String?
 
-	private func fileRow(_ file: ChangedFile) -> some View {
-		let isSelected = selectedFilePath == file.path
-		let isHovered = hoveredFilePath == file.path
-		return HStack(spacing: 6) {
-			Text(file.statusLabel)
-				.font(.system(size: 9, weight: .bold, design: .monospaced))
-				.foregroundStyle(file.statusColor)
-				.frame(width: 14)
-			Text(file.filename)
-				.font(.system(size: 11))
-				.foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
-				.lineLimit(1)
-			Spacer()
-			if isHovered {
-				Button {
-					openFileInEditor(file.path)
-				} label: {
-					Image(systemName: "arrow.up.forward.square")
-						.font(.system(size: 10))
-						.foregroundStyle(Theme.textSecondary)
-				}
-				.buttonStyle(.plain)
-				.help("Open in editor")
-			}
-		}
-		.padding(.horizontal, 8)
-		.padding(.vertical, 3)
-		.background(
-			RoundedRectangle(cornerRadius: 4)
-				.fill(isSelected ? Theme.surfaceActive : Color.clear)
-		)
-		.contentShape(Rectangle())
-		.onTapGesture {
-			selectedFilePath = file.path
-			scrollToFile(file.path)
-		}
-		.onHover { hovering in hoveredFilePath = hovering ? file.path : nil }
-		.id(file.path)
-	}
-
 	private func openFileInEditor(_ path: String) {
 		let fullPath: String
 		let rootPath = project.effectivePath
@@ -512,22 +648,26 @@ struct ChangesView: View {
 	private func checkForChanges() {
 		let provider = project.provider
 		let rootPath = project.effectivePath
-		let currentFilter = filter
-		let ref = compareRef
-		NSLog("[Belve][diff] checkForChanges filter=S:%d U:%d C:%d ref=%@",
-			  currentFilter.staged ? 1 : 0, currentFilter.unstaged ? 1 : 0, currentFilter.committed ? 1 : 0, ref)
+		let currentSelection = selectedEntries
+		NSLog("[Belve][diff] checkForChanges selection=%@", currentSelection.map { "\($0)" }.joined(separator: ","))
 		DispatchQueue.global(qos: .utility).async {
 			var parts: [String] = []
-			if currentFilter.staged {
+			if currentSelection.contains(.staged) {
 				let diff = provider.gitDiffBulk(rootPath, args: ["--staged", "--stat"]) ?? ""
 				parts.append("S:" + diff)
 			}
-			if currentFilter.unstaged {
+			if currentSelection.contains(.unstaged) {
 				let diff = provider.gitDiffBulk(rootPath, args: ["--stat"]) ?? ""
 				parts.append("U:" + diff)
 			}
-			if currentFilter.committed {
-				let diff = provider.gitDiffBulk(rootPath, args: ["\(ref)...HEAD", "--stat"]) ?? ""
+			// For commit entries, use --stat for each selected commit
+			let commitHashes = currentSelection.compactMap { entry -> String? in
+				if case .commit(let hash) = entry { return hash }
+				return nil
+			}
+			if !commitHashes.isEmpty {
+				let (oldest, newest) = commitRange(commitHashes)
+				let diff = provider.gitDiffBulk(rootPath, args: ["\(oldest)^..\(newest)", "--stat"]) ?? ""
 				parts.append("C:" + diff)
 			}
 			let hash = parts.joined(separator: "|")
@@ -536,50 +676,62 @@ struct ChangesView: View {
 				NSLog("[Belve][diff] hash changed=%d len=%d", changed ? 1 : 0, hash.count)
 				if changed {
 					lastStatusHash = hash
-					loadAll()
+					loadDiffForSelection()
 				}
 			}
 		}
 	}
 
-	private func loadBranches() {
+	// MARK: - Commit loading
+
+	private func loadCommits() {
 		let provider = project.provider
 		let rootPath = project.effectivePath
+		NSLog("[Belve][changes] loadCommits rootPath=%@", rootPath)
 		DispatchQueue.global(qos: .utility).async {
-			// git branch -r でリモートブランチ一覧取得
-			let output = provider.gitDiffBulk(rootPath, args: ["branch", "-r", "--format=%(refname:short)"]) ?? ""
-			let branches = output.split(separator: "\n")
-				.map { $0.trimmingCharacters(in: .whitespaces) }
-				.filter { !$0.isEmpty && !$0.contains("HEAD") }
-				.sorted()
-			// デフォルト: origin/main or origin/master
-			let defaultRef = branches.first(where: { $0 == "origin/main" })
-				?? branches.first(where: { $0 == "origin/master" })
-				?? branches.first
-				?? "origin/main"
+			let result = provider.gitLog(rootPath, maxCount: 50)
+			NSLog("[Belve][changes] loadCommits got %d commits, unpushedFrom=%@", result.commits.count, result.unpushedFrom)
 			DispatchQueue.main.async {
-				availableBranches = branches
-				if compareRef.isEmpty {
-					compareRef = defaultRef
-				}
+				commits = result.commits
+				unpushedFrom = result.unpushedFrom
 			}
 		}
 	}
 
-	private func loadAll() {
+	// MARK: - Diff loading based on timeline selection
+
+	/// Compute the oldest and newest hashes from a set of commit hashes,
+	/// ordered by their position in the commits array (first = newest).
+	private func commitRange(_ hashes: [String]) -> (oldest: String, newest: String) {
+		let ordered = commits.filter { hashes.contains($0.hash) }
+		guard !ordered.isEmpty else { return (hashes.first ?? "", hashes.first ?? "") }
+		return (oldest: ordered.last!.hash, newest: ordered.first!.hash)
+	}
+
+	private func loadDiffForSelection() {
 		isLoading = true
 		let provider = project.provider
 		let rootPath = project.effectivePath
-		let currentFilter = filter
+		let currentSelection = selectedEntries
+
+		let includeUnstaged = currentSelection.contains(.unstaged)
+		let includeStaged = currentSelection.contains(.staged)
+		let commitHashes = currentSelection.compactMap { entry -> String? in
+			if case .commit(let hash) = entry { return hash }
+			return nil
+		}
 
 		DispatchQueue.global(qos: .userInitiated).async {
 			var allFiles: [String: ChangedFile] = [:] // path → file (dedup)
 			var added = 0
 			var removed = 0
+			var localUnstagedCount = 0
+			var localStagedCount = 0
 
-			// Staged — single git diff --staged (all files at once)
-			if currentFilter.staged {
+			// Staged
+			if includeStaged {
 				let stagedList = provider.gitChangedFiles(rootPath, args: ["--staged"])
+				localStagedCount = stagedList.count
 				let bulkDiff = provider.gitDiffBulk(rootPath, args: ["--staged"]) ?? ""
 				let splitDiffs = splitUnifiedDiff(bulkDiff)
 				for (status, path) in stagedList {
@@ -587,11 +739,16 @@ struct ChangesView: View {
 					countLines(diff, added: &added, removed: &removed)
 					allFiles[path] = ChangedFile(status: status, path: path, diff: diff)
 				}
+			} else {
+				// Still count staged files for the badge
+				let stagedList = provider.gitChangedFiles(rootPath, args: ["--staged"])
+				localStagedCount = stagedList.count
 			}
 
-			// Unstaged (including untracked) — single git diff
-			if currentFilter.unstaged {
+			// Unstaged (including untracked)
+			if includeUnstaged {
 				let workingList = provider.gitChangedFiles(rootPath, args: [])
+				localUnstagedCount = workingList.count
 				let bulkDiff = provider.gitDiffBulk(rootPath, args: []) ?? ""
 				let splitDiffs = splitUnifiedDiff(bulkDiff)
 				for (status, path) in workingList {
@@ -614,14 +771,25 @@ struct ChangesView: View {
 						allFiles[path] = ChangedFile(status: status, path: path, diff: diff)
 					}
 				}
+			} else {
+				// Still count unstaged files for the badge
+				let workingList = provider.gitChangedFiles(rootPath, args: [])
+				localUnstagedCount = workingList.count
 			}
 
-			// Committed (branch diff) — single git diff main...HEAD
-			if currentFilter.committed {
-				let branchList = provider.gitChangedFiles(rootPath, args: ["\(compareRef)...HEAD"])
-				let bulkDiff = provider.gitDiffBulk(rootPath, args: ["\(compareRef)...HEAD"]) ?? ""
+			// Commits
+			if !commitHashes.isEmpty {
+				let (oldest, newest) = commitRange(commitHashes)
+				let diffArg: String
+				if commitHashes.count == 1 {
+					diffArg = "\(oldest)^..\(oldest)"
+				} else {
+					diffArg = "\(oldest)^..\(newest)"
+				}
+				let commitList = provider.gitChangedFiles(rootPath, args: [diffArg])
+				let bulkDiff = provider.gitDiffBulk(rootPath, args: [diffArg]) ?? ""
 				let splitDiffs = splitUnifiedDiff(bulkDiff)
-				for (status, path) in branchList {
+				for (status, path) in commitList {
 					if allFiles[path] != nil { continue }
 					let diff = splitDiffs[path] ?? ""
 					countLines(diff, added: &added, removed: &removed)
@@ -636,6 +804,8 @@ struct ChangesView: View {
 				changedFiles = files
 				totalAdded = added
 				totalRemoved = removed
+				unstagedCount = localUnstagedCount
+				stagedCount = localStagedCount
 				isLoading = false
 			}
 		}

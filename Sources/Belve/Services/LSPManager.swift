@@ -10,6 +10,7 @@ final class LSPManager: ObservableObject {
 	private var declinedLanguages: Set<String> = []
 	private var promptedLanguages: Set<String> = []
 	@Published var pendingInstall: (language: String, serverName: String, project: Project)?
+	@Published var activeLanguages: Set<String> = []
 
 	private init() {}
 
@@ -28,6 +29,7 @@ final class LSPManager: ObservableObject {
 		services.removeAll()
 		activeProjectId = nil
 		activeRootPath = nil
+		await MainActor.run { activeLanguages = [] }
 	}
 
 	func hover(file: String, line: Int, column: Int, project: Project) async -> String? {
@@ -75,6 +77,7 @@ final class LSPManager: ObservableObject {
 			do {
 				try await service.start(rootPath: project.effectivePath, language: lang)
 				services[lang] = service
+				await MainActor.run { activeLanguages.insert(lang) }
 				return service
 			} catch {
 				NSLog("[Belve][LSP] Remote %@ server failed: %@", lang, error.localizedDescription)
@@ -100,6 +103,7 @@ final class LSPManager: ObservableObject {
 		do {
 			try await service.start(rootPath: project.effectivePath, language: lang)
 			services[lang] = service
+			await MainActor.run { activeLanguages.insert(lang) }
 			return service
 		} catch {
 			NSLog("[Belve][LSP] Failed to start %@ server: %@", lang, error.localizedDescription)
@@ -113,6 +117,7 @@ final class LSPManager: ObservableObject {
 			let service = LocalLSPProcess(language: language)
 			try await service.start(rootPath: project.effectivePath, language: language)
 			services[language] = service
+			await MainActor.run { activeLanguages.insert(language) }
 			NSLog("[Belve][LSP] %@ installed and started", language)
 		} catch {
 			NSLog("[Belve][LSP] Install failed for %@: %@", language, error.localizedDescription)

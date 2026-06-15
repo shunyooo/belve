@@ -214,6 +214,8 @@ func dispatchOp(cs *connState, req ctrlReq) ctrlRes {
 		return opGitDiffBulk(req)
 	case "gitChangedFiles":
 		return opGitChangedFiles(req)
+	case "gitLog":
+		return opGitLog(req)
 	case "watch":
 		return opWatch(cs, req)
 	case "unwatch":
@@ -533,6 +535,61 @@ func opGitChangedFiles(req ctrlReq) ctrlRes {
 	return ctrlRes{ID: req.ID, OK: true, Result: map[string]interface{}{"files": files}}
 }
 
+type gitLogEntry struct {
+	Hash    string `json:"hash"`
+	Subject string `json:"subject"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+}
+
+func opGitLog(req ctrlReq) ctrlRes {
+	if req.Path == "" {
+		return errRes(req.ID, "path required")
+	}
+	p := expandHome(req.Path)
+	maxCount := 50
+	if len(req.Args) > 0 {
+		if n, err := strconv.Atoi(req.Args[0]); err == nil && n > 0 {
+			maxCount = n
+		}
+	}
+	cmd := exec.Command("git", "-C", p, "log",
+		fmt.Sprintf("--max-count=%d", maxCount),
+		"--format=%H\x1f%s\x1f%an\x1f%ar")
+	out, err := cmd.Output()
+	if err != nil {
+		return ctrlRes{ID: req.ID, OK: true, Result: map[string]interface{}{"commits": []gitLogEntry{}, "unpushedFrom": ""}}
+	}
+	var commits []gitLogEntry
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x1f", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		commits = append(commits, gitLogEntry{
+			Hash:    parts[0],
+			Subject: parts[1],
+			Author:  parts[2],
+			Date:    parts[3],
+		})
+	}
+	// Find push boundary: first commit that's on origin/<current-branch>
+	unpushedFrom := ""
+	branchCmd := exec.Command("git", "-C", p, "rev-parse", "--abbrev-ref", "HEAD")
+	if branchOut, err := branchCmd.Output(); err == nil {
+		branch := strings.TrimSpace(string(branchOut))
+		remote := "origin/" + branch
+		unpushedCmd := exec.Command("git", "-C", p, "rev-parse", remote)
+		if remoteOut, err := unpushedCmd.Output(); err == nil {
+			unpushedFrom = strings.TrimSpace(string(remoteOut))
+		}
+	}
+	return ctrlRes{ID: req.ID, OK: true, Result: map[string]interface{}{"commits": commits, "unpushedFrom": unpushedFrom}}
+}
+
 // MARK: - Watch
 
 // fsevent push message — sent over the same NDJSON stream, distinguished
@@ -777,7 +834,7 @@ func (lp *lspProcess) readLoop() {
 	}
 }
 
-func findLspServer(language string) (string, []string, error) {
+func findLspServer(language, rootPath string) (string, []string, error) {
 	var names []string
 	var args []string
 	switch language {
@@ -794,6 +851,11 @@ func findLspServer(language string) (string, []string, error) {
 	if home, err := os.UserHomeDir(); err == nil {
 		searchDirs = append(searchDirs, filepath.Join(home, ".local/bin"))
 		searchDirs = append(searchDirs, filepath.Join(home, ".npm-global/bin"))
+	}
+	// Search project .venv (common for Python projects using uv/poetry)
+	if rootPath != "" {
+		venvBin := filepath.Join(rootPath, ".venv", "bin")
+		searchDirs = append([]string{venvBin}, searchDirs...)
 	}
 	for _, name := range names {
 		for _, dir := range searchDirs {
@@ -824,7 +886,7 @@ func opLspStart(cs *connState, req ctrlReq) ctrlRes {
 		return errRes(req.ID, "path required")
 	}
 
-	execPath, args, err := findLspServer(language)
+	execPath, args, err := findLspServer(language, rootPath)
 	if err != nil {
 		return ctrlRes{ID: req.ID, OK: false, Error: err.Error()}
 	}

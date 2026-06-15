@@ -48,11 +48,33 @@ term.loadAddon(unicodeGraphemes);
 term.unicode.activeVersion = '15-graphemes';
 // Set ambiguous-width characters to 2 cells (CJK locale).
 // Access the provider through xterm's internal unicode service.
+// Patch charProperties + wcwidth for specific ambiguous chars that render
+// wide in CJK fonts (①-⓿ etc.) but NOT box drawing (─│┌).
+function _isForceWide(cp) {
+	return (cp >= 0x2460 && cp <= 0x24FF)   // Enclosed Alphanumerics ①-⓿
+		|| (cp >= 0x3200 && cp <= 0x32FF)   // Enclosed CJK Letters ㈀-㋿
+		|| (cp >= 0x1F200 && cp <= 0x1F2FF); // Enclosed Ideographic Supplement
+}
 try {
-	var providers = term._core._unicodeService._providers;
-	for (var key in providers) {
-		if (providers[key] && typeof providers[key].ambiguousCharsAreWide !== 'undefined') {
-			providers[key].ambiguousCharsAreWide = true;
+	for (var key in unicodeGraphemes) {
+		var prov = unicodeGraphemes[key];
+		if (prov && typeof prov === 'object' && typeof prov.charProperties === 'function') {
+			(function(provider) {
+				var origCharProps = provider.charProperties.bind(provider);
+				var origWcwidth = provider.wcwidth.bind(provider);
+				provider.charProperties = function(cp, preceding) {
+					var result = origCharProps(cp, preceding);
+					if (_isForceWide(cp)) {
+						// Replace width bits (bits 1-2) with 2
+						result = (result & ~0x6) | (2 << 1);
+					}
+					return result;
+				};
+				provider.wcwidth = function(cp) {
+					if (_isForceWide(cp)) return 2;
+					return origWcwidth(cp);
+				};
+			})(prov);
 		}
 	}
 } catch(e) {}

@@ -35,6 +35,7 @@ protocol WorkspaceProvider {
 	func gitFullDiff(_ path: String, file: String, args: [String]) -> String?
 	func gitDiffBulk(_ path: String, args: [String]) -> String?
 	func gitChangedFiles(_ path: String, args: [String]) -> [(status: String, file: String)]
+	func gitLog(_ path: String, maxCount: Int) -> (commits: [GitCommitEntry], unpushedFrom: String)
 
 	// MARK: Search
 	func searchFileNames(rootPath: String, query: String, limit: Int) -> [SearchMatch]
@@ -73,6 +74,14 @@ struct GitDiffHunk {
 	let oldCount: Int
 	let newStart: Int
 	let newCount: Int
+}
+
+struct GitCommitEntry: Identifiable {
+	let hash: String
+	let subject: String
+	let author: String
+	let date: String
+	var id: String { hash }
 }
 
 // MARK: - Shared Helpers
@@ -364,6 +373,24 @@ extension WorkspaceProvider {
 			}
 		}
 		return results
+	}
+
+	func gitLog(_ path: String, maxCount: Int) -> (commits: [GitCommitEntry], unpushedFrom: String) {
+		if let pid = (self as? RemoteProjectScoped)?.projectIdForRPC {
+			return gitLogViaRPC(projectId: pid, path: path, maxCount: maxCount) ?? ([], "")
+		}
+		let qp = shellQuote(path)
+		let sep = "\u{1f}"
+		let logOut = run("git -C \(qp) log --max-count=\(maxCount) --format='%H\(sep)%s\(sep)%an\(sep)%ar'") ?? ""
+		var commits: [GitCommitEntry] = []
+		for line in logOut.split(separator: "\n") {
+			let parts = line.split(separator: Character(sep), maxSplits: 3)
+			guard parts.count == 4 else { continue }
+			commits.append(GitCommitEntry(hash: String(parts[0]), subject: String(parts[1]), author: String(parts[2]), date: String(parts[3])))
+		}
+		let branch = (run("git -C \(qp) rev-parse --abbrev-ref HEAD") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+		let unpushedFrom = (run("git -C \(qp) rev-parse origin/\(branch)") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+		return (commits, unpushedFrom)
 	}
 
 	// MARK: Search (shared via run())
@@ -1089,6 +1116,24 @@ func syncRPC(client: RemoteRPCClient, op: String, params: [String: Any]) -> RPCR
 	_ = sem.wait(timeout: .now() + 6.0)
 	guard let res = out, res.ok else { return nil }
 	return res
+}
+
+private func gitLogViaRPC(projectId: UUID, path: String, maxCount: Int) -> (commits: [GitCommitEntry], unpushedFrom: String)? {
+	guard let client = RemoteRPCRegistry.shared.client(for: projectId) else { return nil }
+	let res = syncRPC(client: client, op: "gitLog", params: ["path": path, "args": [String(maxCount)]])
+	guard let result = res?.result else { return nil }
+	var commits: [GitCommitEntry] = []
+	if let entries = result["commits"] as? [[String: Any]] {
+		for e in entries {
+			guard let hash = e["hash"] as? String,
+			      let subject = e["subject"] as? String,
+			      let author = e["author"] as? String,
+			      let date = e["date"] as? String else { continue }
+			commits.append(GitCommitEntry(hash: hash, subject: subject, author: author, date: date))
+		}
+	}
+	let unpushedFrom = result["unpushedFrom"] as? String ?? ""
+	return (commits, unpushedFrom)
 }
 
 extension SSHProvider {

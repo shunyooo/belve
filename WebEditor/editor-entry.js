@@ -572,10 +572,12 @@ window.editorOpenFile = function(content, filename, lineNumber = null, columnNum
 // Update content in-place without destroying the editor (preserves scroll position)
 window.editorUpdateContent = function(content) {
 	if (!editorView) return;
+	var scrollTop = editorView.scrollDOM.scrollTop;
 	var doc = editorView.state.doc;
 	editorView.dispatch({
 		changes: { from: 0, to: doc.length, insert: content }
 	});
+	editorView.scrollDOM.scrollTop = scrollTop;
 };
 
 // Set diff markers: [{from: lineNum, to: lineNum, type: "add"|"modify"|"delete"}, ...]

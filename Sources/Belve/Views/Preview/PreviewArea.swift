@@ -729,13 +729,16 @@ struct PreviewArea: View {
 
 	private func handleHoverInfoRequest(_ request: EditorDefinitionRequest, _ requestId: Int, _ completion: @escaping (String?) -> Void) {
 		let proj = project
+		NSLog("[Belve][hover] request file=%@ line=%d col=%d symbol=%@", request.filename, request.line, request.column, request.symbol)
 		Task { @MainActor in
 			if let markdown = await LSPManager.shared.hover(
 				file: request.filename, line: request.line, column: request.column, project: proj
 			) {
+				NSLog("[Belve][hover] got response: %d chars", markdown.count)
 				let html = markdownToHoverHTML(markdown)
 				completion(html)
 			} else {
+				NSLog("[Belve][hover] no result")
 				completion(nil)
 			}
 		}
