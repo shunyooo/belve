@@ -923,8 +923,10 @@ struct MainWindow: View {
 		guard let project = projectStore.selectedProject else { return }
 		isSearchingFiles = true
 		DispatchQueue.global(qos: .userInitiated).async {
-			let matches = project.provider.searchFileNames(rootPath: project.effectivePath, query: query, limit: 60)
-			let results = matches.map {
+			let nameMatches = project.provider.searchFileNames(rootPath: project.effectivePath, query: query, limit: 40)
+			let nameSet = Set(nameMatches.map(\.path))
+			let contentMatches = project.provider.searchFileContents(rootPath: project.effectivePath, query: query, limit: 40, excludingPaths: nameSet)
+			let results = (nameMatches + contentMatches).map {
 				MainWindowFileSearchResult(
 					path: $0.path,
 					relativePath: relativeDisplayPath($0.path, rootPath: project.effectivePath),

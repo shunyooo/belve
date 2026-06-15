@@ -233,6 +233,13 @@ class ProjectStore: ObservableObject {
 		if selectedProject?.id == project?.id { return }
 		let t0 = Date()
 		selectedProject = project
+		// 切替後にターミナルへ focus を戻す。SwiftUI が新 project の view を
+		// mount し終わる時間を見て短い delay 後に refocus する。
+		if project != nil {
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+				self?.refocusTerminal()
+			}
+		}
 		// 永続化: 起動時に同じ project を復元するため UserDefaults へ id を保存。
 		if let id = project?.id {
 			UserDefaults.standard.set(id.uuidString, forKey: "Belve.selectedProjectId")

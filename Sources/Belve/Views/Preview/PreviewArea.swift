@@ -540,11 +540,27 @@ struct PreviewArea: View {
 		isSearchingFiles = true
 		DispatchQueue.global(qos: .userInitiated).async {
 			let filenameResults = searchFileNames(query: query, limit: 40)
+			// ファイル名で当たったものは中身検索から除外して重複を避ける。
+			let excluded = Set(filenameResults.map(\.path))
+			let contentResults = searchFileContents(query: query, limit: 40, excluding: excluded)
+			let combined = filenameResults + contentResults
 			DispatchQueue.main.async {
 				guard revision == searchRevision else { return }
-				fileSearchResults = filenameResults
+				fileSearchResults = combined
 				isSearchingFiles = false
 			}
+		}
+	}
+
+	private func searchFileContents(query: String, limit: Int, excluding: Set<String>) -> [FileSearchResult] {
+		project.provider.searchFileContents(rootPath: rootPath, query: query, limit: limit, excludingPaths: excluding).map { match in
+			FileSearchResult(
+				path: match.path,
+				relativePath: relativeDisplayPath(for: match.path),
+				lineNumber: match.lineNumber,
+				snippet: match.snippet,
+				matchedFilename: match.matchedFilename
+			)
 		}
 	}
 
