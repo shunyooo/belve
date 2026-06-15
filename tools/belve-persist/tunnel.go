@@ -131,21 +131,56 @@ func (tm *tunnelManager) healthCheckLoop() {
 		}
 		tm.mu.Unlock()
 		for host, port := range snapshot {
-			if isLocalPortReachable(port) {
+			if !isLocalPortReachable(port) {
+				fmt.Fprintf(os.Stderr, "[belve-master] health-check: forward host=%s port=%d dead → re-establish\n", host, port)
+				tm.reEstablishForward(host, port)
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "[belve-master] health-check: forward host=%s port=%d dead → re-establish\n", host, port)
-			tm.mu.Lock()
-			delete(tm.routerForwards, host)
-			delete(tm.routerSpecs, host)
-			delete(tm.allocatedPorts, port)
-			tm.mu.Unlock()
-			// 同じ port を再 allocate して同じ番号で復旧 (= 既存 client の retry が
-			// 同 port を叩き続けるので、新 port になると arrival しない)。
-			if _, err := tm.ensureRouterForwardOnPort(host, port, 19200); err != nil {
-				fmt.Fprintf(os.Stderr, "[belve-master] health-check: re-establish failed host=%s: %v\n", host, err)
+			if !isTunnelEndToEndHealthy(port) {
+				fmt.Fprintf(os.Stderr, "[belve-master] health-check: tunnel host=%s port=%d end-to-end dead → kill ControlMaster + re-establish\n", host, port)
+				tm.killControlMaster(host)
+				tm.reEstablishForward(host, port)
 			}
 		}
+	}
+}
+
+func isTunnelEndToEndHealthy(port int) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	_, err = conn.Write([]byte("{\"projShort\":\"\",\"kind\":\"health\"}\n"))
+	return err == nil
+}
+
+func (tm *tunnelManager) killControlMaster(host string) {
+	args := []string{
+		"-o", "ControlPath=" + sshControlPath(host),
+		"-O", "exit",
+		host,
+	}
+	_ = exec.Command("ssh", args...).Run()
+	_ = os.Remove(sshControlPath(host))
+	fmt.Fprintf(os.Stderr, "[belve-master] killed ControlMaster host=%s\n", host)
+}
+
+func (tm *tunnelManager) reEstablishForward(host string, port int) {
+	tm.mu.Lock()
+	delete(tm.routerForwards, host)
+	delete(tm.routerSpecs, host)
+	delete(tm.allocatedPorts, port)
+	tm.mu.Unlock()
+
+	count := globalSetupManager.invalidateForHost(host)
+	if count > 0 {
+		fmt.Fprintf(os.Stderr, "[belve-master] health-check: invalidated %d project setups for host=%s\n", count, host)
+	}
+
+	if _, err := tm.ensureRouterForwardOnPort(host, port, 19200); err != nil {
+		fmt.Fprintf(os.Stderr, "[belve-master] health-check: re-establish failed host=%s: %v\n", host, err)
 	}
 }
 

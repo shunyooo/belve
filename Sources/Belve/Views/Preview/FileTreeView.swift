@@ -1263,11 +1263,9 @@ struct FileTreeRow: View {
 				Button("Copy Relative Path") {
 					copyToClipboard(relativePath(item.path))
 				}
-				if !item.isDirectory {
-					Divider()
-					Button("Download...") {
-						downloadFile(item)
-					}
+				Divider()
+				Button("Download...") {
+					downloadFile(item)
 				}
 				if item.isDirectory {
 					Divider()

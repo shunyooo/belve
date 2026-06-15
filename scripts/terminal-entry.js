@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SerializeAddon } from '@xterm/addon-serialize';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 // WebLinksAddon replaced by custom link provider (supports multi-line URLs)
 
 const fitAddon = new FitAddon();
@@ -42,6 +43,19 @@ const term = new Terminal({
 term.loadAddon(fitAddon);
 const serializeAddon = new SerializeAddon();
 term.loadAddon(serializeAddon);
+var unicodeGraphemes = new UnicodeGraphemesAddon();
+term.loadAddon(unicodeGraphemes);
+term.unicode.activeVersion = '15-graphemes';
+// Set ambiguous-width characters to 2 cells (CJK locale).
+// Access the provider through xterm's internal unicode service.
+try {
+	var providers = term._core._unicodeService._providers;
+	for (var key in providers) {
+		if (providers[key] && typeof providers[key].ambiguousCharsAreWide !== 'undefined') {
+			providers[key].ambiguousCharsAreWide = true;
+		}
+	}
+} catch(e) {}
 // Build full URL by joining continuation lines. Returns {url, continuations: [{y, startX, endX}]}
 function buildFullUrl(buf, startY, urlStart) {
 	var url = urlStart;

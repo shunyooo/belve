@@ -51,6 +51,7 @@ type projectSetup struct {
 	state setupState
 	err   string
 	done  chan struct{} // running の間 close 待ち
+	host  string
 }
 
 type setupManager struct {
@@ -62,6 +63,19 @@ type setupManager struct {
 var globalSetupManager = &setupManager{
 	projects:  map[string]*projectSetup{},
 	hostLocks: map[string]*sync.Mutex{},
+}
+
+func (sm *setupManager) invalidateForHost(host string) int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	count := 0
+	for pid, ps := range sm.projects {
+		if ps.host == host {
+			delete(sm.projects, pid)
+			count++
+		}
+	}
+	return count
 }
 
 // invalidate: 指定 project の状態をリセット (= 次回 ensureSetup で再実行)。
@@ -111,7 +125,7 @@ func (sm *setupManager) ensureSetup(req setupReq) (setupState, string) {
 	sm.mu.Lock()
 	ps, exists := sm.projects[req.ProjectID]
 	if !exists {
-		ps = &projectSetup{state: setupIdle}
+		ps = &projectSetup{state: setupIdle, host: req.Host}
 		sm.projects[req.ProjectID] = ps
 	}
 	switch ps.state {

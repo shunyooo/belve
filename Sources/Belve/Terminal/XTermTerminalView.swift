@@ -218,19 +218,6 @@ struct XTermTerminalView: NSViewRepresentable {
 	}
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
-		// resizeTerminal 等の操作は registry に保存された "primary" coordinator (= WebView と
-		// 一緒に最初に mount された方) に流す。新しい SwiftUI mount で生成された
-		// context.coordinator には isTerminalReady / ptyService 等の state が無いため
-		// (handler が primary に bind されてる)、ここで使うと no-op になる。
-		let activeCoord: Coordinator = {
-			if let paneId,
-			   let entry = PaneHostRegistry.shared.entries[paneId],
-			   let primary = entry.coordinator as? Coordinator {
-				return primary
-			}
-			return context.coordinator
-		}()
-
 		if viewWidth > 0, viewHeight > 0 {
 			let newFrame = NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight)
 			if nsView.frame.size != newFrame.size {
@@ -242,19 +229,9 @@ struct XTermTerminalView: NSViewRepresentable {
 		if let term = nsView as? TerminalWebView {
 			term.forwardsScrollWhenNotFocused = !isProjectSelected
 		}
-		// Focus は CommandAreaState.activePaneId が source of truth (構造改善 C)。
-		// 加えて isProjectSelected で「現在 sidebar で選択中の project」のみ focus
-		// 取得対象にする (= 全 project ZStack 同時 mount による誤 focus 奪取を防ぐ)。
-		if isProjectSelected,
-		   let paneId, let active = commandAreaState.activePaneId,
-		   active.uuidString == paneId,
-		   nsView.window?.firstResponder !== nsView,
-		   activeCoord.isTerminalReady {
-			DispatchQueue.main.async {
-				nsView.window?.makeFirstResponder(nsView)
-				nsView.evaluateJavaScript("terminalFocus(true)", completionHandler: nil)
-			}
-		}
+		// Focus はユーザー操作 (クリック, Cmd+;) でのみ設定する。
+		// updateNSView での auto-focus は Claude Code 等の出力で SwiftUI が
+		// 再評価されるたびにエディタからフォーカスを奪う原因になる。
 	}
 
 	func makeCoordinator() -> Coordinator {
