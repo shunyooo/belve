@@ -632,27 +632,13 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 
 	logf("broker started on %s", listenAddr)
 
-	// Self-health: 30s 周期で自分の listener に dial して accept ループが生きてるか
-	// 確認。死んでたら exit して上位 (belve-setup / docker exec -d) が新 broker を
-	// spawn できるようにする。「process alive だが listener 死んでる」half-bind
-	// 状態 (container で観測) を構造的に防ぐ (= 構造改善 E)。
-	go func() {
-		// dial する宛先は listenAddr の port 部分。0.0.0.0 → 127.0.0.1 に変える。
-		probeAddr := listenAddr
-		if strings.HasPrefix(probeAddr, "0.0.0.0:") {
-			probeAddr = "127.0.0.1:" + strings.TrimPrefix(probeAddr, "0.0.0.0:")
-		}
-		for {
-			time.Sleep(30 * time.Second)
-			c, err := net.DialTimeout("tcp", probeAddr, 2*time.Second)
-			if err != nil {
-				logf("self-health dial failed (%v) — exiting so orchestrator can respawn", err)
-				fmt.Fprintf(os.Stderr, "[belve-persist] broker self-health failed: %v; exiting\n", err)
-				os.Exit(2)
-			}
-			c.Close()
-		}
-	}()
+	// Note: 旧版は 30s 周期で 127.0.0.1:port に loopback dial する self-health
+	// check を持っていたが、CPU 高負荷 (claude + MCP) や GC pause で accept loop
+	// が瞬間的に詰まると簡単に偽陽性 → broker exit → 全 session 消滅していた
+	// (2026-06-22 報告)。判断主体を Mac 側 master に移し、broker は
+	// 「accept が error で終わったら自然 exit」する以外に自殺しない。
+	// half-bind を検出すべきは「実際に接続失敗を観測してる Mac 側」であり、
+	// そこから docker exec pkill で respawn させる。
 
 	getOrCreateSession := func(name string, initCols, initRows uint16, extraEnv []string) *tcpSession {
 		mu.Lock()
