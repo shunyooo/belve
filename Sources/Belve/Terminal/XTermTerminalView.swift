@@ -508,67 +508,41 @@ struct XTermTerminalView: NSViewRepresentable {
 							return
 						}
 					}
-					do {
-						let useMux = AppConfig.shared.muxEnabled(forHost: host)
-						// 旧 path (= per-pane TCP) でも mux path でも、まず ensureRouterForward
-						// で SSH forward を確立する必要がある (port 19200 / 19201 の違い)。
-						// mux mode は Mac master が yamux session を維持するので、forward
-						// は mac-master 側が tunnelManager 経由で張る。pane spawn 時点では
-						// 何もしなくて良いが、ensureSetup が走ってないと listener が無い
-						// 可能性があるため触らない。
-						let port: Int
-						if useMux {
-							port = 0 // unused
-						} else {
-							port = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
-						}
-						// Phase 4: launcher 廃止。belve-persist を直接 spawn する。
-						// `-tcpbackend` モードに attach-or-fork を内蔵化したので、
-						// この 1 個の Process が必要なら daemon を fork してから
-						// PTY client として attach する。
-						guard let belveBin = Self.belvePersistBinaryPath() else {
-							NSLog("[Belve] belve-persist binary not found")
-							postConnectionState(isLoading: false)
-							postConnectionStatus("belve-persist not found")
-							postDisconnectedState(isDisconnected: true)
-							return
-						}
-						let sockPath: String
-						let sessionName: String
-						if let override = self.overrideSocket {
-							sockPath = override
-							sessionName = (override as NSString).lastPathComponent.replacingOccurrences(of: ".sock", with: "")
-						} else {
-							let paneIdShort = String((paneId ?? UUID().uuidString).prefix(8))
-							sessionName = "belve-\(projShort)-\(paneIdShort)"
-							sockPath = "/tmp/belve-shell/sessions/\(sessionName).sock"
-						}
-						try? FileManager.default.createDirectory(
-							atPath: "/tmp/belve-shell/sessions",
-							withIntermediateDirectories: true
-						)
-						var args: [String] = [
-							"-socket", sockPath,
-							"-cols", String(cols),
-							"-rows", String(rows),
-							"-session", sessionName,
-							"-route", projShort,
-						]
-						if useMux {
-							let muxSock = MuxListenerPath.forHost(host)
-							args.append(contentsOf: ["-mux-via", muxSock])
-							NSLog("[Belve] pane via mux: host=%@ sock=%@", host, muxSock)
-						} else {
-							args.append(contentsOf: ["-tcpbackend", "127.0.0.1:\(port)"])
-						}
-						spawnPTY(launcherPath: belveBin, args: args, env: env, cols: cols, rows: rows, project: project)
-					} catch {
-						NSLog("[Belve] router forward failed: \(error)")
+					// mux 経由で pane を起動。SSH forward (19201) は mac-master が
+					// yamux session 確立時に張る (= ここで触らない)。pane client は
+					// Unix socket 経由で mac-master に繋ぎ、stream を yamux に乗せる。
+					guard let belveBin = Self.belvePersistBinaryPath() else {
+						NSLog("[Belve] belve-persist binary not found")
 						postConnectionState(isLoading: false)
-						postConnectionStatus("Tunnel failed: \(error.localizedDescription)")
+						postConnectionStatus("belve-persist not found")
 						postDisconnectedState(isDisconnected: true)
 						return
 					}
+					let sockPath: String
+					let sessionName: String
+					if let override = self.overrideSocket {
+						sockPath = override
+						sessionName = (override as NSString).lastPathComponent.replacingOccurrences(of: ".sock", with: "")
+					} else {
+						let paneIdShort = String((paneId ?? UUID().uuidString).prefix(8))
+						sessionName = "belve-\(projShort)-\(paneIdShort)"
+						sockPath = "/tmp/belve-shell/sessions/\(sessionName).sock"
+					}
+					try? FileManager.default.createDirectory(
+						atPath: "/tmp/belve-shell/sessions",
+						withIntermediateDirectories: true
+					)
+					let muxSock = MuxListenerPath.forHost(host)
+					let args: [String] = [
+						"-socket", sockPath,
+						"-cols", String(cols),
+						"-rows", String(rows),
+						"-session", sessionName,
+						"-route", projShort,
+						"-mux-via", muxSock,
+					]
+					NSLog("[Belve] pane via mux: host=%@ sock=%@", host, muxSock)
+					spawnPTY(launcherPath: belveBin, args: args, env: env, cols: cols, rows: rows, project: project)
 				}
 			} else {
 				spawnPTY(launcherPath: launcherPath, env: env, cols: cols, rows: rows, project: project)

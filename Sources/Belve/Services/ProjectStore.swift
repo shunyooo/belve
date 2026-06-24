@@ -1233,49 +1233,33 @@ class ProjectStore: ObservableObject {
 		let rh = remoteHostForForward(p)
 		PortForwardManager.shared.sync(project: p, host: host, remoteHost: rh)
 		PortForwardManager.shared.registerForScanning(projectId: p.id, host: host, isDevContainer: isDev)
-		do {
-			// Phase 2 (master 化): まず master に setup を投げる。Master 側で
-			// per-host 直列化 + idempotent state 管理されてるので並列に呼んで OK。
-			// 失敗しても今は launcher が保険で同じ事をやるので fall through する
-			// (Phase 2b で launcher 側を撤廃したらここの failure を厳格化する)。
-			if let binDir = Self.belveBinDir() {
-				do {
-					try await MasterClient.shared.ensureSetup(
-						projectId: p.id,
-						host: host,
-						isDevContainer: isDev,
-						workspacePath: workspacePath,
-						projShort: projShort,
-						binDir: binDir
-					)
-					NSLog("[Belve][master] ensureSetup ok project=%@", String(p.id.uuidString.prefix(8)))
-				} catch {
-					NSLog("[Belve][master] ensureSetup failed project=%@ error=%@",
-					      String(p.id.uuidString.prefix(8)), error.localizedDescription)
-				}
-			}
-
-			if AppConfig.shared.muxEnabled(forHost: host) {
-				// Phase 6: mux 経由。SSH forward は mac-master が yamux session
-				// 確立時に張る (= ここで触らない)。registerControlMux は Unix
-				// socket endpoint で RPC client を構築する。
-				RemoteRPCRegistry.shared.registerControlMux(
-					projectId: p.id, host: host, projShort: projShort
-				)
-			} else {
-				let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
-				RemoteRPCRegistry.shared.registerControlPort(
+		// Phase 2 (master 化): まず master に setup を投げる。Master 側で
+		// per-host 直列化 + idempotent state 管理されてるので並列に呼んで OK。
+		if let binDir = Self.belveBinDir() {
+			do {
+				try await MasterClient.shared.ensureSetup(
 					projectId: p.id,
-					localPort: UInt16(routerLocalPort),
-					projShort: projShort
+					host: host,
+					isDevContainer: isDev,
+					workspacePath: workspacePath,
+					projShort: projShort,
+					binDir: binDir
 				)
+				NSLog("[Belve][master] ensureSetup ok project=%@", String(p.id.uuidString.prefix(8)))
+			} catch {
+				NSLog("[Belve][master] ensureSetup failed project=%@ error=%@",
+				      String(p.id.uuidString.prefix(8)), error.localizedDescription)
 			}
-			self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
-			self.fetchAndCacheCwd(for: p.id)
-		} catch {
-			NSLog("[Belve][rpc] setup failed project=%@ error=%@",
-				  String(p.id.uuidString.prefix(8)), error.localizedDescription)
 		}
+
+		// mux 経由。SSH forward (19201) は mac-master が yamux session
+		// 確立時に張る (= ここで触らない)。registerControlMux は Unix
+		// socket endpoint で RPC client を構築する。
+		RemoteRPCRegistry.shared.registerControlMux(
+			projectId: p.id, host: host, projShort: projShort
+		)
+		self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
+		self.fetchAndCacheCwd(for: p.id)
 	}
 
 	/// Belve.app bundle 内の bin dir。Master が deploy_bundle で remote に

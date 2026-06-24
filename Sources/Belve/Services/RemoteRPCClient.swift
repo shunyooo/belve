@@ -21,15 +21,12 @@ import Network
 /// reader runs on a dedicated DispatchQueue and only writes to `pending`
 /// under the lock.
 final class RemoteRPCClient: @unchecked Sendable {
+	/// Log label only. 実際の接続は muxVia (Unix socket) 経由で mac-master へ。
 	let host: String
-	let port: UInt16
-	/// Phase B: VM router 経由で繋ぐときに送る preamble の projShort。空なら
-	/// preamble 送らない (= 直接 control listener に繋ぐ legacy 経路用)。
+	/// VM router 経由で繋ぐときに送る preamble の projShort。
 	let routeProjShort: String
-	/// Phase 6: mux 経由の場合、TCP の代わりにこの Unix socket に接続して
-	/// yamux stream として control RPC を流す。設定されてれば host/port は
-	/// 表示用 (= log のラベル) としてのみ使う。
-	let muxVia: String?
+	/// mac-master の per-host Unix socket path。yamux stream として control RPC を流す。
+	let muxVia: String
 
 	private var connection: NWConnection?
 	private var pending: [String: CheckedContinuation<RPCResponse, Error>] = [:]
@@ -43,14 +40,11 @@ final class RemoteRPCClient: @unchecked Sendable {
 	/// Push-event handlers (file watch etc.). Multiple subscribers allowed.
 	private var pushHandlers: [(String, [String: Any]) -> Void] = []
 
-	/// `muxVia` を省略可能にしない (= 全 caller が経路選択を明示する)。
-	/// silent fallback を防ぐため。`routeProjShort` も同じ理由でデフォルトなし。
-	init(host: String, port: UInt16, routeProjShort: String, muxVia: String?) {
+	init(host: String, routeProjShort: String, muxVia: String) {
 		self.host = host
-		self.port = port
 		self.routeProjShort = routeProjShort
 		self.muxVia = muxVia
-		self.queue = DispatchQueue(label: "belve.rpc.\(host).\(port)", qos: .userInitiated)
+		self.queue = DispatchQueue(label: "belve.rpc.\(host)", qos: .userInitiated)
 	}
 
 	// MARK: - Public API
@@ -164,17 +158,9 @@ final class RemoteRPCClient: @unchecked Sendable {
 			connection = nil
 			connectionReady = false
 		}
-		let endpoint: NWEndpoint
-		if let muxPath = muxVia {
-			// Phase 6: mac-master の per-host Unix socket に接続。
-			// router preamble は同じく送信する (= router 側で demux に使う)。
-			endpoint = NWEndpoint.unix(path: muxPath)
-		} else {
-			endpoint = NWEndpoint.hostPort(
-				host: NWEndpoint.Host(host),
-				port: NWEndpoint.Port(integerLiteral: port)
-			)
-		}
+		// mac-master の per-host Unix socket に接続。
+		// router preamble は接続後に送信する (= router 側で demux に使う)。
+		let endpoint = NWEndpoint.unix(path: muxVia)
 		let conn = NWConnection(to: endpoint, using: .tcp)
 		var resumed = false
 		conn.stateUpdateHandler = { [weak self] state in
@@ -302,7 +288,6 @@ final class RemoteRPCRegistry: @unchecked Sendable {
 	static let shared = RemoteRPCRegistry()
 
 	private var clients: [UUID: RemoteRPCClient] = [:]
-	private var localPorts: [UUID: UInt16] = [:]
 	/// Cached `pwd` result per project (= broker cwd, which is the workspace
 	/// root inside the container for DevContainer / on the VM for SSH). Used
 	/// to resolve `./...` paths (DevContainer's `effectivePath = "."`) to a
@@ -320,40 +305,15 @@ final class RemoteRPCRegistry: @unchecked Sendable {
 		lock.withLock { cwds[projectId] = cwd }
 	}
 
-	/// Register the local port that's been forwarded to the project's control
-	/// listener. Called by `ProjectStore.select` after `SSHTunnelManager` sets
-	/// up the forward. Calling again with a different port replaces the client.
-	///
-	/// `projShort`: Phase B router 経由の場合、connection 直後に送る preamble に
-	/// 入れる project 短縮 ID (UUID 先頭 8 文字)。空なら preamble なしで直接
-	/// control listener に繋ぐ legacy 経路。
-	func registerControlPort(projectId: UUID, localPort: UInt16, projShort: String = "") {
-		let oldClient: RemoteRPCClient? = lock.withLock {
-			if localPorts[projectId] == localPort { return nil }
-			let prev = clients[projectId]
-			localPorts[projectId] = localPort
-			// Bypass DNS — always loopback (the SSH forward terminates locally).
-			clients[projectId] = RemoteRPCClient(
-				host: "127.0.0.1", port: localPort,
-				routeProjShort: projShort, muxVia: nil
-			)
-			return prev
-		}
-		oldClient?.disconnect()
-	}
-
-	/// Phase 6: mux 経由で control RPC を確立する。host は AppConfig の mux flag
-	/// 評価に使う key。projShort は yamux stream の preamble に入れる。
-	/// `registerControlPort` と排他: 同じ projectId に対して mux 版が呼ばれたら
-	/// 旧 TCP client は破棄して mux client に置き換える。
+	/// mux 経由で control RPC を確立する。yamux session は mac-master が host 単位
+	/// で維持しており、Swift 側は per-host Unix socket に繋いで stream を開く。
+	/// projShort は stream の preamble に入れて router 側で demux に使う。
 	func registerControlMux(projectId: UUID, host: String, projShort: String) {
 		let muxVia = MuxListenerPath.forHost(host)
 		let oldClient: RemoteRPCClient? = lock.withLock {
 			let prev = clients[projectId]
-			localPorts.removeValue(forKey: projectId)
 			clients[projectId] = RemoteRPCClient(
-				host: host, port: 0,
-				routeProjShort: projShort, muxVia: muxVia
+				host: host, routeProjShort: projShort, muxVia: muxVia
 			)
 			return prev
 		}
@@ -367,7 +327,6 @@ final class RemoteRPCRegistry: @unchecked Sendable {
 	func teardown(projectId: UUID) {
 		let removed: RemoteRPCClient? = lock.withLock {
 			let c = clients.removeValue(forKey: projectId)
-			localPorts.removeValue(forKey: projectId)
 			cwds.removeValue(forKey: projectId)
 			return c
 		}
@@ -378,7 +337,6 @@ final class RemoteRPCRegistry: @unchecked Sendable {
 		let snapshot: [RemoteRPCClient] = lock.withLock {
 			let all = Array(clients.values)
 			clients.removeAll()
-			localPorts.removeAll()
 			cwds.removeAll()
 			return all
 		}

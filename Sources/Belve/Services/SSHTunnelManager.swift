@@ -15,11 +15,6 @@ final class SSHTunnelManager: @unchecked Sendable {
 		try await MasterClient.shared.ensureControlMaster(host: host)
 	}
 
-	/// Per-VM router 用の forward を保証し、Mac 側 local port を返す。
-	func ensureRouterForward(host: String, remotePort: Int = 19200) async throws -> Int {
-		try await MasterClient.shared.ensureRouterForward(host: host, remotePort: remotePort)
-	}
-
 	/// 全 forward + master を teardown。BelveApp 起動時 / 終了時に呼ばれる。
 	/// 本来は master が常駐するので「Belve.app 起動時の stale 掃除」は不要だが、
 	/// 互換性のため残す (= no-op に近い)。Master 側で実際の cleanup を行う。

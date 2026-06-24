@@ -5,14 +5,6 @@ enum FileTreePosition: String, Codable, CaseIterable {
 	case right
 }
 
-/// SSH channel 多重化 (yamux) のオプトイン設定。
-/// `enabled=true` で全 host が新 path、それ以外は `hosts` に列挙された host だけ
-/// 新 path。設計詳細は docs/notes/2026-06-24-yamux-multiplex.md。
-struct MuxConfig: Codable, Equatable {
-	var enabled: Bool = false
-	var hosts: [String] = []
-}
-
 /// Global app configuration, persisted to ~/Library/Application Support/Belve/config.json
 class AppConfig: ObservableObject {
 	static let shared = AppConfig()
@@ -42,22 +34,6 @@ class AppConfig: ObservableObject {
 		didSet { if oldValue != fileTreePosition { save() } }
 	}
 
-	/// SSH channel 多重化 (yamux) のオプトイン設定。Phase 6 ロールアウト用。
-	/// 環境変数 `BELVE_USE_MUX=1` で常時有効化、`=0` で常時無効化が可能 (= 開発時の試行用)。
-	@Published var mux: MuxConfig = MuxConfig() {
-		didSet { if oldValue != mux { save() } }
-	}
-
-	/// 指定 host で mux 経路を使うべきかの判定。env > enabled > hosts の順で評価。
-	func muxEnabled(forHost host: String) -> Bool {
-		if let env = ProcessInfo.processInfo.environment["BELVE_USE_MUX"] {
-			if env == "1" || env.lowercased() == "true" { return true }
-			if env == "0" || env.lowercased() == "false" { return false }
-		}
-		if mux.enabled { return true }
-		return mux.hosts.contains(host)
-	}
-
 	/// xterm.js の font size (8-28 pt)。Cmd +/- でユーザー調整可能。
 	@Published var terminalFontSize: CGFloat = 13 {
 		didSet {
@@ -80,7 +56,6 @@ class AppConfig: ObservableObject {
 	private struct Persisted: Codable {
 		var fileTree: FileTreeConfig?
 		var ui: UIConfig?
-		var mux: MuxConfig?
 
 		struct FileTreeConfig: Codable {
 			var excludePatterns: [String]?
@@ -120,9 +95,6 @@ class AppConfig: ObservableObject {
 		if let raw = persisted.ui?.fileTreePosition, let pos = FileTreePosition(rawValue: raw) {
 			fileTreePosition = pos
 		}
-		if let muxCfg = persisted.mux {
-			mux = muxCfg
-		}
 	}
 
 	func save() {
@@ -134,8 +106,7 @@ class AppConfig: ObservableObject {
 				viewMode: viewMode.rawValue,
 				terminalFontSize: terminalFontSize,
 				fileTreePosition: fileTreePosition.rawValue
-			),
-			mux: mux
+			)
 		)
 		if let data = try? JSONEncoder().encode(persisted) {
 			try? data.write(to: Self.configURL)
