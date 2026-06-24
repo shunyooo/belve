@@ -847,6 +847,12 @@ struct XTermTerminalView: NSViewRepresentable {
 					self.lastResizeRows = rows
 					self.ptyService?.setSize(cols: cols, rows: rows)
 				}
+				// View 切替直後など xterm.js WebGL renderer の dirty-row tracking
+				// が GPU state cache と合わなくなり「動いてる行だけ見える」状態に
+				// なる事案への対処。fit() 後に WebGL addon を dispose+reload して
+				// renderer を強制再初期化する。cost は ~10ms 程度で view 切替頻度
+				// なら無視できる。
+				webView.evaluateJavaScript("window.terminalReloadWebgl && window.terminalReloadWebgl()", completionHandler: nil)
 			}
 		}
 

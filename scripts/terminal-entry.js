@@ -289,16 +289,22 @@ term.open(terminalContainer);
 // GPU can be reclaimed transiently (sleep/wake, another app taking the GPU), and
 // a fresh addon instance usually recovers. Permanent fallback to DOM only if
 // reinitialization keeps failing.
-(function attachWebgl() {
+//
+// `_currentWebgl` / `window.terminalReloadWebgl()` は View 切替時の
+// 「buffer に内容あるのに canvas が黒い (= 動いてる行だけ見える)」事案で
+// addon ごと再ロードしたい時に使う。dispose だけで DOM renderer に
+// fallback され、loadAddon で新インスタンスが GPU 状態を再構築する。
+var _currentWebgl = null;
+function loadWebgl() {
 	var retries = 0;
 	var maxRetries = 3;
 	var retryDelayMs = 800;
-
 	function load() {
 		try {
 			var webgl = new WebglAddon();
 			webgl.onContextLoss(function() {
-				webgl.dispose();
+				try { webgl.dispose(); } catch (e) {}
+				if (_currentWebgl === webgl) _currentWebgl = null;
 				if (retries < maxRetries) {
 					retries++;
 					setTimeout(load, retryDelayMs);
@@ -306,13 +312,31 @@ term.open(terminalContainer);
 				// else: give up, xterm.js stays on DOM renderer.
 			});
 			term.loadAddon(webgl);
+			_currentWebgl = webgl;
 			retries = 0;  // successful (re)load resets the counter
 		} catch (e) {
 			// WebGL unavailable — stay on the DOM renderer.
+			_currentWebgl = null;
 		}
 	}
 	load();
-})();
+}
+loadWebgl();
+
+// xterm.js WebGL renderer は hidden→visible 遷移で dirty-row tracking と
+// GPU state cache が壊れて「動いてる行だけ見える」状態になる事がある。
+// この関数で addon を dispose+再 loadAddon して renderer を完全リセット。
+// 呼び元は Swift の performRefit (View 切替時)。
+window.terminalReloadWebgl = function() {
+	if (_currentWebgl) {
+		try { _currentWebgl.dispose(); } catch (e) {}
+		_currentWebgl = null;
+	}
+	loadWebgl();
+	if (window.term) {
+		term.refresh(0, term.rows - 1);
+	}
+};
 
 window.term = term;
 window.fitAddon = fitAddon;
