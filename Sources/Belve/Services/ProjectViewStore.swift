@@ -66,10 +66,23 @@ final class ProjectViewStore: ObservableObject {
 	/// 指定 view を active に設定。Sidebar で view row を click した時に呼ぶ。
 	/// projectId は view が属する project (= 不一致なら no-op)。
 	func setActiveView(_ viewId: UUID, for projectId: UUID) {
-		guard let list = viewsByProject[projectId], list.contains(where: { $0.id == viewId }) else { return }
+		guard let list = viewsByProject[projectId], let _ = list.first(where: { $0.id == viewId }) else { return }
 		guard activeViewIdByProject[projectId] != viewId else { return }
 		activeViewIdByProject[projectId] = viewId
 		scheduleSave()
+		// View 切替は xterm.js の canvas が paint されないまま新 pane が
+		// マウントされる事があり、ターミナル中身が空表示になる (= リサイズ
+		// すると直る) 症状を引き起こす。Project 切替時と同じく refit を
+		// post して term.refresh() を強制発火させる。即時 + 遅延 2 段で、
+		// SwiftUI レイアウト確定前後どちらでも追従する。
+		NotificationCenter.default.post(
+			name: .belveTerminalRefit, object: nil, userInfo: ["projectId": projectId]
+		)
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+			NotificationCenter.default.post(
+				name: .belveTerminalRefit, object: nil, userInfo: ["projectId": projectId]
+			)
+		}
 	}
 
 	/// 新 view を生成して active に設定。返り値は生成した view。
