@@ -31,3 +31,6 @@ sandbox/character-sprites/variants/
 sandbox/character-sprites/reports/
 sandbox/character-sprites/debug/
 sandbox/character-sprites/.backup-*/
+
+# Adjacent clones of other repos (e.g. dropped here for cross-referencing).
+ghostty/
