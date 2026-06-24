@@ -179,7 +179,7 @@ func (tm *tunnelManager) reEstablishForward(host string, port int) {
 		fmt.Fprintf(os.Stderr, "[belve-master] health-check: invalidated %d project setups for host=%s\n", count, host)
 	}
 
-	if _, err := tm.ensureRouterForwardOnPort(host, port, 19200); err != nil {
+	if _, err := tm.ensureRouterForwardOnPort(host, port, muxRouterRemotePort); err != nil {
 		fmt.Fprintf(os.Stderr, "[belve-master] health-check: re-establish failed host=%s: %v\n", host, err)
 	}
 }
@@ -235,7 +235,7 @@ func isLocalPortReachable(port int) bool {
 // stale state バグへの保険。死んでたら再確立する。
 func (tm *tunnelManager) ensureRouterForward(host string, remotePort int) (int, error) {
 	if remotePort == 0 {
-		remotePort = 19200
+		remotePort = muxRouterRemotePort
 	}
 	tm.mu.Lock()
 	if p, ok := tm.routerForwards[host]; ok {

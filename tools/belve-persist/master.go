@@ -187,8 +187,6 @@ func masterDispatch(mc *masterConn, req masterReq) masterRes {
 		return opInvalidateAllSetups(req)
 	case "ensureControlMaster":
 		return opEnsureControlMaster(req)
-	case "ensureRouterForward":
-		return opEnsureRouterForward(req)
 	case "tunnelStatus":
 		return opTunnelStatus(req)
 	case "teardownAllTunnels":
@@ -430,21 +428,6 @@ func opEnsureControlMaster(req masterReq) masterRes {
 		return masterRes{ID: req.ID, OK: false, Error: err.Error()}
 	}
 	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"host": host}}
-}
-
-// ensureRouterForward params: {host, remotePort?}
-// 戻り値: {localPort: int}
-func opEnsureRouterForward(req masterReq) masterRes {
-	host := strParam(req.Params, "host")
-	if host == "" {
-		return masterRes{ID: req.ID, OK: false, Error: "host required"}
-	}
-	remotePort := intParam(req.Params, "remotePort")
-	port, err := globalTunnelManager.ensureRouterForward(host, remotePort)
-	if err != nil {
-		return masterRes{ID: req.ID, OK: false, Error: err.Error()}
-	}
-	return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{"localPort": port}}
 }
 
 func opTunnelStatus(req masterReq) masterRes {

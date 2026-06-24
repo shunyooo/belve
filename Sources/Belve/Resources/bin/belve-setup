@@ -67,8 +67,8 @@ _ensure_vm_router() {
     local current_md5
     current_md5=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
     local running=0
-    if ss -tln 2>/dev/null | grep -q '127.0.0.1:19200' \
-        || netstat -tln 2>/dev/null | grep -q '127.0.0.1:19200'; then
+    if ss -tln 2>/dev/null | grep -q '127.0.0.1:19201' \
+        || netstat -tln 2>/dev/null | grep -q '127.0.0.1:19201'; then
         running=1
     fi
     local old_md5=""
@@ -77,23 +77,22 @@ _ensure_vm_router() {
         return 0
     fi
     if [ "$running" = "1" ]; then
-        pkill -9 -f 'belve-persist.*-router 127.0.0.1:19200' 2>/dev/null || true
+        pkill -9 -f 'belve-persist.*-mux-router 127.0.0.1:19201' 2>/dev/null || true
         sleep 0.3
     fi
     # `9>&-` で flock の FD を子プロセスから明示的に閉じる。これをやらないと
     # router (長命) が FD を継承したまま flock を保持し続け、後続の belve-setup
     # が永遠に lock を取れなくなる (10min runtime debug で発見した bug)。
     #
-    # `-mux-router 127.0.0.1:19201` (Phase 6) は yamux 多重化版を別 port で listen。
-    # 旧 router (19200) と同居して動く。Mac 側 AppConfig.mux で opt-in。
-    # 詳細は docs/notes/2026-06-24-yamux-multiplex.md。
+    # `-mux-router 127.0.0.1:19201` は yamux 多重化された SSH channel を捌く
+    # 単一エンドポイント。Mac mac-master から SSH forward でこの port に繋ぎ、
+    # 1 TCP に N stream を多重化する。詳細は docs/notes/2026-06-24-yamux-multiplex.md。
     nohup "$HOME/.belve/bin/belve-persist" \
-        -router 127.0.0.1:19200 \
         -mux-router 127.0.0.1:19201 \
         >/dev/null 2>&1 9>&- &
     disown 2>/dev/null || true
     for i in 1 2 3 4 5 6 7 8 9 10; do
-        bash -c 'echo > /dev/tcp/127.0.0.1/19200' 2>/dev/null && echo "$current_md5" > "$stamp" && return 0
+        bash -c 'echo > /dev/tcp/127.0.0.1/19201' 2>/dev/null && echo "$current_md5" > "$stamp" && return 0
         sleep 0.2
     done
 }

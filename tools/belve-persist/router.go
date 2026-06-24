@@ -58,30 +58,6 @@ var (
 
 const repairCooldown = 8 * time.Second
 
-func runRouter(listenAddr string) {
-	listener, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[belve-persist] router listen %s: %v\n", listenAddr, err)
-		return
-	}
-	fmt.Fprintf(os.Stderr, "[belve-persist] router listening on %s\n", listenAddr)
-	for {
-		client, err := listener.Accept()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[belve-persist] router accept: %v\n", err)
-			continue
-		}
-		go func(c net.Conn) {
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Fprintf(os.Stderr, "[belve-persist] router panic: %v\n", r)
-				}
-			}()
-			handleRouterConn(c)
-		}(client)
-	}
-}
-
 // muxYamuxConfig: Belve のユースケース (claude TUI + MCP の重い burst, replay
 // buffer 4 MiB) に合わせたチューニング。詳細は
 // docs/notes/2026-06-24-yamux-multiplex.md 参照。
@@ -96,9 +72,7 @@ func muxYamuxConfig() *yamux.Config {
 
 // runMuxRouter: Mac mac-master からの yamux session を accept する。1 TCP =
 // 1 yamux session = N streams で、各 stream が 1 pane / 1 control RPC に対応する。
-// Stream は既存 router の preamble protocol をそのまま流す (= dispatchRouterStream
-// 流用)。旧 runRouter (19200) と完全分離して走るので、新旧 path が同 process 内
-// で共存できる (= 設定 mistake が silent に通らない)。
+// Stream は既存 router の preamble protocol をそのまま流す (= dispatchRouterStream 流用)。
 func runMuxRouter(listenAddr string) {
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -192,28 +166,8 @@ func muxTraceVM(format string, args ...interface{}) {
 		append([]interface{}{time.Now().Format(time.RFC3339Nano)}, args...)...)
 }
 
-func handleRouterConn(client net.Conn) {
-	defer client.Close()
-	// Preamble を 1 行読み取り。あまりに大きい preamble (= bug or attack) は
-	// 弾く。本来は 100 byte 以内に収まる。
-	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
-	reader := bufio.NewReader(client)
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[belve-persist] router preamble read err: %v\n", err)
-		return
-	}
-	_ = client.SetReadDeadline(time.Time{}) // 解除
-
-	pre, ok := parseAndValidatePreamble(line)
-	if !ok {
-		return
-	}
-	dispatchRouterStream(client, reader, pre)
-}
-
 // parseAndValidatePreamble: NDJSON preamble 1 行を読んで validate する。
-// `handleRouterConn` (旧 path) と `handleMuxStream` (新 path) で共通。
+// `handleMuxStream` から呼ばれる。
 func parseAndValidatePreamble(line []byte) (routePreamble, bool) {
 	var pre routePreamble
 	if err := json.Unmarshal(line, &pre); err != nil {
