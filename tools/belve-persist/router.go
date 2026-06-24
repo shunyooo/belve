@@ -61,11 +61,23 @@ const repairCooldown = 8 * time.Second
 // muxYamuxConfig: Belve のユースケース (claude TUI + MCP の重い burst, replay
 // buffer 4 MiB) に合わせたチューニング。詳細は
 // docs/notes/2026-06-24-yamux-multiplex.md 参照。
+//
+// KeepAliveInterval / ConnectionWriteTimeout は Mac laptop の sleep 耐性に
+// 直結するパラメータ:
+//   - KeepAliveInterval: 何もない時 yamux が ping を打つ間隔。これを超える
+//     sleep をすると idle pane でも session が死ぬ。
+//   - ConnectionWriteTimeout: write が block した時の timeout。sleep 中に
+//     VM 側が active pane に何か出力すると Mac TCP recv buffer が満杯 →
+//     yamux write が block → この時間で session 死亡。
+//
+// 初期値 (30s / 10s) は標準的だがノート PC の蓋閉じで簡単に死ぬので、
+// 5 min / 30 s に拡張する。trade-off は「本当に死んだ session の検知が
+// 最大 5 分遅れる」だが、1 VM / 1 user 規模では資源リーク無視できる。
 func muxYamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.MaxStreamWindowSize = 16 << 20 // 16 MiB
-	cfg.KeepAliveInterval = 30 * time.Second
-	cfg.ConnectionWriteTimeout = 10 * time.Second
+	cfg.KeepAliveInterval = 5 * time.Minute
+	cfg.ConnectionWriteTimeout = 30 * time.Second
 	cfg.AcceptBacklog = 256
 	return cfg
 }
