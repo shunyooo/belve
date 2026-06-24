@@ -1,10 +1,68 @@
 # yamux による SSH channel 多重化 (Phase 6)
 
 **作成日**: 2026-06-24
-**ステータス**: 着手中 (Phase 0)
+**ステータス**: ✅ 実装完了 (Phase 1-4 + 後片付け、Phase 5 のみ未着手)
 **関連**:
 - [2026-04-22 broker-architecture-redesign](2026-04-22-broker-architecture-redesign.md) (Phase B — forward 1本化)
 - [2026-04-23 mac-master-design](2026-04-23-mac-master-design.md)
+
+---
+
+## 実装後サマリ (2026-06-24 当日)
+
+着手当日に Phase 1-4 + 後片付けまで一気に通した。結果と「計画と違ったこと」を以下に記録する (計画パートはそのまま参照用に残す)。
+
+### 完了した commit (`main` 取り込み済み)
+
+```
+b53b939d3f8 fix(tunnel): schema-version the tunnel state file to discard stale entries
+e78fdf5c964 refactor(persist): drop legacy TCP router/backend code paths
+3b5f191f66f feat(master): auto-restart mac-master on binary mismatch
+bb315edfabb refactor(mux): drop feature flag, always use yamux multiplexing
+6a25cbd17e1 wip(mux): yamux channel multiplexing with feature flag (rollback point)
+```
+
+ロールバック: `git revert <hash>` で個別、または `git reset --hard c8cc19902da` (本作業前) で全戻し。
+
+### 計画と違ったこと
+
+**1. Feature flag (§3.6) を撤去した**
+
+当初は `AppConfig.mux.{enabled, hosts}` + `BELVE_USE_MUX` env var で段階ロールアウトする計画だった。しかし実装途中で:
+
+- flag があると「いざとなれば旧 path に戻せる」という空気が残り、結局「優しい fallback」と地続きになる
+- 旧 path コードがメンテ対象として残り続ける
+- flag 切替の検証コストが二経路ぶん発生
+
+の議論があり、**flag を撤去して mux 一本に絞った** (`bb315edfabb`)。ロールバックはコード内 flag ではなく git commit ベースで対応する方針に変更し、`CLAUDE.md` の設計原則に明文化した。
+
+**2. mac-master の自動再起動を入れた**
+
+これは計画外。実装中、Go バイナリを rebuild しても「既存 master sock が生きてれば attach」するため、開発ループで毎回 `pkill -f mac-master` が必要なことが判明。既存の binary identity check (mtime + size) が **warning だけで attach** していたのを、**mismatch なら kill → respawn** に変えた (`3b5f191f66f`)。
+
+2026-04-27 事故 (= master kill で全 pane 固まる) の懸念は、Phase 6 で per-pane daemon に reconnect loop が入ったため緩和される。
+
+**3. tunnel state file の schema versioning**
+
+これも計画外、運用バグの後追い対応。旧 master が書いた `/tmp/belve-master-state.json` の `routerForwards` (host → local port マップ) を新 master がそのまま再利用してしまい、**Mac local 19222 → VM 19200 (旧 router)** だった forward を「19201 行き」と誤認して broker port (= yamux 喋らない) に yamux session を張りに行き即切断ループになる事故が出た。
+
+state schema に `Version: 2` を入れて、不一致なら state ファイルを discard する形に修正した (`b53b939d3f8`)。今後 remotePort や持ち物が変わる時は `persistedTunnelStateVersion` を bump する運用。
+
+### 検証で確認できたこと
+
+- yamux session up が `closed` でフラップせず維持される (broker port 誤接続の事故修正後)
+- mac-master の TCP 接続: 1 host あたり **1 本** (`localhost:LPORT -> localhost:19223 ESTABLISHED`) で全 pane が多重化される
+- VM 側 `-mux-router :19201` プロセスのみが残り、旧 `-router :19200` は完全消失
+- per-pane daemon の reconnect loop が動作し、master 再起動を跨いで pane が回復する
+- Belve.app rebuild → 再起動だけで mac-master と VM router 双方の新バイナリが自動展開される
+
+### Phase 5 (未着手) で見るべき項目
+
+- 実負荷 (42 pane) で SSH MaxSessions 起因の切断が再発しないかの本検証
+- yamux config (`MaxStreamWindowSize=16MB`, `KeepAliveInterval=30s`, `AcceptBacklog=256`) のチューニング
+- mux session 状態の UI 表示 (現状は log を見ないと分からない)
+- VM 側 `sshd_config.d/belve-maxsessions.conf` (= `MaxSessions 100`) の撤回判定 (= mux 化後はデフォルト値で十分なはず)
+- pane daemon log の "tcp disconnected" 表現が中身 Unix socket なのと噛み合っていないのを修正
 
 ---
 
