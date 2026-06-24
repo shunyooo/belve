@@ -57,11 +57,19 @@ func initTunnelManager() {
 	go globalTunnelManager.healthCheckLoop()
 }
 
+// persistedTunnelStateVersion: state file schema version。後方互換性が崩れる
+// 変更があるたびに bump して、旧 entry が誤って再利用されるのを防ぐ。
+//
+// 2: mux 化に伴って remotePort が 19200 → 19201 に変わったため、v1 の entry を
+//    そのまま使うと「Mac local 19222 → VM 19200 (旧 router)」の forward を
+//    「19201 (mux-router) 行き」と誤認して broker port に yamux 接続してしまう
+//    事故が起きた (2026-06-24)。schema バンプで旧 state を discard する。
+const persistedTunnelStateVersion = 2
+
 // persistedTunnelState: tunnelStateFile に書き出す JSON shape。
-// 必要なのは host → local port mapping だけ (forward の有無は起動時に
-// `isLocalPortReachable` で確認し、生きてれば再 allocate 不要、死んでれば
-// 同 port で `ensureRouterForwardOnPort` を呼ぶ)。
+// `Version` が現行と一致しない state file は読み捨てる。
 type persistedTunnelState struct {
+	Version        int            `json:"version"`
 	RouterForwards map[string]int `json:"routerForwards"`
 }
 
@@ -79,6 +87,12 @@ func (tm *tunnelManager) loadState() {
 		fmt.Fprintf(os.Stderr, "[belve-master] loadState parse error: %v\n", err)
 		return
 	}
+	if st.Version != persistedTunnelStateVersion {
+		fmt.Fprintf(os.Stderr, "[belve-master] loadState schema version mismatch got=%d want=%d → discarding\n",
+			st.Version, persistedTunnelStateVersion)
+		_ = os.Remove(tunnelStateFile)
+		return
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	for host, port := range st.RouterForwards {
@@ -93,6 +107,7 @@ func (tm *tunnelManager) loadState() {
 // (state file 無しでも master は動く)。
 func (tm *tunnelManager) saveStateLocked() {
 	st := persistedTunnelState{
+		Version:        persistedTunnelStateVersion,
 		RouterForwards: make(map[string]int, len(tm.routerForwards)),
 	}
 	for host, port := range tm.routerForwards {
