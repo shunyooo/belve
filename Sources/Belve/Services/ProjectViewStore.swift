@@ -73,16 +73,20 @@ final class ProjectViewStore: ObservableObject {
 		// View 切替は xterm.js の canvas が paint されないまま新 pane が
 		// マウントされる事があり、ターミナル中身が空表示になる (= リサイズ
 		// すると直る) 症状を引き起こす。Project 切替時と同じく refit を
-		// post して term.refresh() を強制発火させる。即時 + 遅延 2 段で、
-		// SwiftUI レイアウト確定前後どちらでも追従する。
-		NotificationCenter.default.post(
-			name: .belveTerminalRefit, object: nil, userInfo: ["projectId": projectId]
-		)
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+		// post して term.refresh() を強制発火させる。
+		//
+		// 即時 / 100ms / 500ms の 3 段で、SwiftUI レイアウト確定タイミングが
+		// パッと早い / 遅いどちらでも追従する。500ms は heavier WebGL reload
+		// path (= 同 pane が hidden→visible した直後 GPU state がもつれてる
+		// ケース) の最終保険。
+		let post = {
 			NotificationCenter.default.post(
 				name: .belveTerminalRefit, object: nil, userInfo: ["projectId": projectId]
 			)
 		}
+		post()
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { post() }
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { post() }
 	}
 
 	/// 新 view を生成して active に設定。返り値は生成した view。
