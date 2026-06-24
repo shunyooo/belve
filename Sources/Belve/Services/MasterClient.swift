@@ -54,23 +54,26 @@ final class MasterClient: @unchecked Sendable {
 				try? FileManager.default.removeItem(atPath: Self.socketPath)
 			} else if let version = try? await fetchVersionWithTimeout(seconds: 1.5) {
 				if version == Self.expectedVersion {
-					// Binary identity check: 一致なら attach、不一致なら **警告のみ**
-					// (auto-kill しない)。Master を kill すると router port forward が
-					// 死亡 → per-pane belve-persist client が TCP backend を失い、
-					// 全 pane が PTY exit する → 全 terminal が固まる
-					// (2026-04-27 事故)。stale master 問題は手動 pkill で対処、
-					// 自動化は per-pane の auto-reconnect が入ってから。
+					// Binary identity check: 内容が変わってたら kill + respawn する。
+					// (2026-04-27 事故では auto-kill で全 pane が固まったが、Phase 6
+					// で per-pane daemon に reconnect loop が入ったため、master が
+					// 再起動しても pane は新 Unix socket に再接続できる。よって
+					// 「マニュアル pkill が必要」体験を撤廃し、ビルドのたびに自動で
+					// 新コードに差し替わる開発ループに戻す。)
 					if let bundled = bundledBinaryIdentity(),
 					   let existing = try? await fetchBinaryIdentity(),
 					   existing != bundled {
-						NSLog("[Belve][master] WARN binary identity mismatch existing=(mtime=%lld size=%lld) bundled=(mtime=%lld size=%lld) — attaching anyway (manual `pkill -f mac-master` to refresh)",
+						NSLog("[Belve][master] binary identity mismatch existing=(mtime=%lld size=%lld) bundled=(mtime=%lld size=%lld) → restart",
 							existing.mtime, existing.size, bundled.mtime, bundled.size)
+						killExistingMaster()
+					} else {
+						NSLog("[Belve][master] attached to existing master version=%@", version)
+						return version
 					}
-					NSLog("[Belve][master] attached to existing master version=%@", version)
-					return version
+				} else {
+					NSLog("[Belve][master] version mismatch existing=%@ expected=%@ → restart", version, Self.expectedVersion)
+					killExistingMaster()
 				}
-				NSLog("[Belve][master] version mismatch existing=%@ expected=%@ → restart", version, Self.expectedVersion)
-				killExistingMaster()
 			} else {
 				NSLog("[Belve][master] existing socket but no response → kill")
 				killExistingMaster()
