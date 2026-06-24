@@ -1178,7 +1178,7 @@ func runMasterBackend(socketPath string, backend backendDialer, sessName, routeP
 			for {
 				t, data, err := readMsg(conn)
 				if err != nil {
-					logf("tcp read error: %v", err)
+					logf("backend read error: %v", err)
 					reconnectStatus, reconnectText = classifyReconnectStatus(err)
 					return
 				}
@@ -1196,8 +1196,9 @@ func runMasterBackend(socketPath string, backend backendDialer, sessName, routeP
 			}
 		}()
 
-		// TCP disconnected — loop back and reconnect
-		logf("tcp disconnected, will reconnect")
+		// Backend disconnected — loop back and reconnect.
+		// Backend は TCP (旧) または Unix socket (mux) のどちらでもありうる。
+		logf("backend disconnected, will reconnect")
 		if reconnectStatus == "" {
 			reconnectStatus, reconnectText = classifyReconnectStatus(nil)
 		}
