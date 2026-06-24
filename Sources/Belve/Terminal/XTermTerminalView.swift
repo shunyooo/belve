@@ -509,7 +509,19 @@ struct XTermTerminalView: NSViewRepresentable {
 						}
 					}
 					do {
-						let port = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
+						let useMux = AppConfig.shared.muxEnabled(forHost: host)
+						// 旧 path (= per-pane TCP) でも mux path でも、まず ensureRouterForward
+						// で SSH forward を確立する必要がある (port 19200 / 19201 の違い)。
+						// mux mode は Mac master が yamux session を維持するので、forward
+						// は mac-master 側が tunnelManager 経由で張る。pane spawn 時点では
+						// 何もしなくて良いが、ensureSetup が走ってないと listener が無い
+						// 可能性があるため触らない。
+						let port: Int
+						if useMux {
+							port = 0 // unused
+						} else {
+							port = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
+						}
 						// Phase 4: launcher 廃止。belve-persist を直接 spawn する。
 						// `-tcpbackend` モードに attach-or-fork を内蔵化したので、
 						// この 1 個の Process が必要なら daemon を fork してから
@@ -535,14 +547,20 @@ struct XTermTerminalView: NSViewRepresentable {
 							atPath: "/tmp/belve-shell/sessions",
 							withIntermediateDirectories: true
 						)
-						let args = [
+						var args: [String] = [
 							"-socket", sockPath,
 							"-cols", String(cols),
 							"-rows", String(rows),
-							"-tcpbackend", "127.0.0.1:\(port)",
 							"-session", sessionName,
 							"-route", projShort,
 						]
+						if useMux {
+							let muxSock = MuxListenerPath.forHost(host)
+							args.append(contentsOf: ["-mux-via", muxSock])
+							NSLog("[Belve] pane via mux: host=%@ sock=%@", host, muxSock)
+						} else {
+							args.append(contentsOf: ["-tcpbackend", "127.0.0.1:\(port)"])
+						}
 						spawnPTY(launcherPath: belveBin, args: args, env: env, cols: cols, rows: rows, project: project)
 					} catch {
 						NSLog("[Belve] router forward failed: \(error)")

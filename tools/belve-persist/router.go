@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/libp2p/go-yamux/v5"
 )
 
 // Plain SSH (= no container) の broker が listen してる loopback ポート。
@@ -80,6 +82,116 @@ func runRouter(listenAddr string) {
 	}
 }
 
+// muxYamuxConfig: Belve のユースケース (claude TUI + MCP の重い burst, replay
+// buffer 4 MiB) に合わせたチューニング。詳細は
+// docs/notes/2026-06-24-yamux-multiplex.md 参照。
+func muxYamuxConfig() *yamux.Config {
+	cfg := yamux.DefaultConfig()
+	cfg.MaxStreamWindowSize = 16 << 20 // 16 MiB
+	cfg.KeepAliveInterval = 30 * time.Second
+	cfg.ConnectionWriteTimeout = 10 * time.Second
+	cfg.AcceptBacklog = 256
+	return cfg
+}
+
+// runMuxRouter: Mac mac-master からの yamux session を accept する。1 TCP =
+// 1 yamux session = N streams で、各 stream が 1 pane / 1 control RPC に対応する。
+// Stream は既存 router の preamble protocol をそのまま流す (= dispatchRouterStream
+// 流用)。旧 runRouter (19200) と完全分離して走るので、新旧 path が同 process 内
+// で共存できる (= 設定 mistake が silent に通らない)。
+func runMuxRouter(listenAddr string) {
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[belve-persist] mux-router listen %s: %v\n", listenAddr, err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[belve-persist] mux-router listening on %s\n", listenAddr)
+	for {
+		client, err := listener.Accept()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[belve-persist] mux-router accept: %v\n", err)
+			continue
+		}
+		go handleMuxSession(client)
+	}
+}
+
+func handleMuxSession(conn net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[belve-persist] mux-router session panic: %v\n", r)
+		}
+	}()
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+		_ = tc.SetKeepAlive(true)
+	}
+	sess, err := yamux.Server(conn, muxYamuxConfig(), nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[belve-persist] yamux.Server: %v\n", err)
+		conn.Close()
+		return
+	}
+	defer sess.Close()
+	for {
+		stream, err := sess.AcceptStream()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[belve-persist] mux-router AcceptStream: %v\n", err)
+			return
+		}
+		go handleMuxStream(stream)
+	}
+}
+
+func handleMuxStream(stream *yamux.Stream) {
+	defer stream.Close()
+	muxTraceVM("stream-open id=%d", stream.StreamID())
+	_ = stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+	reader := bufio.NewReader(stream)
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[belve-persist] mux-router preamble read: %v\n", err)
+		return
+	}
+	_ = stream.SetReadDeadline(time.Time{})
+
+	pre, ok := parseAndValidatePreamble(line)
+	if !ok {
+		return
+	}
+	muxTraceVM("stream-route id=%d projShort=%q kind=%q", stream.StreamID(), pre.ProjShort, pre.Kind)
+	dispatchRouterStream(stream, reader, pre)
+	muxTraceVM("stream-close id=%d", stream.StreamID())
+}
+
+// muxTraceVM: BELVE_MUX_TRACE=1 の時だけ /tmp/belve-mux-vm.log に append。
+// binary payload は記録しない (= 30 GB log 事故防止)。preamble / lifecycle のみ。
+var (
+	muxTraceMu   sync.Mutex
+	muxTraceFile *os.File
+	muxTraceInit sync.Once
+)
+
+func muxTraceVM(format string, args ...interface{}) {
+	if os.Getenv("BELVE_MUX_TRACE") != "1" {
+		return
+	}
+	muxTraceInit.Do(func() {
+		f, err := os.OpenFile("/tmp/belve-mux-vm.log",
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			muxTraceFile = f
+		}
+	})
+	muxTraceMu.Lock()
+	defer muxTraceMu.Unlock()
+	if muxTraceFile == nil {
+		return
+	}
+	fmt.Fprintf(muxTraceFile, "%s "+format+"\n",
+		append([]interface{}{time.Now().Format(time.RFC3339Nano)}, args...)...)
+}
+
 func handleRouterConn(client net.Conn) {
 	defer client.Close()
 	// Preamble を 1 行読み取り。あまりに大きい preamble (= bug or attack) は
@@ -93,16 +205,35 @@ func handleRouterConn(client net.Conn) {
 	}
 	_ = client.SetReadDeadline(time.Time{}) // 解除
 
+	pre, ok := parseAndValidatePreamble(line)
+	if !ok {
+		return
+	}
+	dispatchRouterStream(client, reader, pre)
+}
+
+// parseAndValidatePreamble: NDJSON preamble 1 行を読んで validate する。
+// `handleRouterConn` (旧 path) と `handleMuxStream` (新 path) で共通。
+func parseAndValidatePreamble(line []byte) (routePreamble, bool) {
 	var pre routePreamble
 	if err := json.Unmarshal(line, &pre); err != nil {
 		fmt.Fprintf(os.Stderr, "[belve-persist] router preamble parse err: %v line=%q\n", err, line)
-		return
+		return pre, false
 	}
 	if pre.Kind != "pty" && pre.Kind != "control" {
 		fmt.Fprintf(os.Stderr, "[belve-persist] router unknown kind: %q\n", pre.Kind)
-		return
+		return pre, false
 	}
+	return pre, true
+}
 
+// dispatchRouterStream: preamble 解析済みの client (= raw TCP or yamux.Stream)
+// を upstream broker に proxy する。preamble 後の buffered byte は upstream へ
+// flush。bidir copy。
+//
+// `client` の SetNoDelay は TCPConn の時だけ有効。yamux.Stream は internal flow
+// control を持つので NoDelay 操作不要。
+func dispatchRouterStream(client net.Conn, reader *bufio.Reader, pre routePreamble) {
 	target, err := resolveTarget(pre)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[belve-persist] router resolve err: %v projShort=%q kind=%q\n", err, pre.ProjShort, pre.Kind)
@@ -118,6 +249,7 @@ func handleRouterConn(client net.Conn) {
 
 	// PTY は 1 byte ずつ流れる事が多い (キーストローク)。Nagle が効くと
 	// パケット集約で ~40-200ms の遅延が乗るので両方向で TCP_NODELAY を有効化。
+	// yamux.Stream は対象外 (= 内部で flow control 済み)。
 	if tc, ok := client.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(true)
 	}
@@ -126,12 +258,10 @@ func handleRouterConn(client net.Conn) {
 	}
 
 	// 双方向 piping。bufio に残ってる byte を先に upstream へ流す。
-	// (読んだ preamble 行はもう消費済みなので、buffer 残り = preamble 後ろの
-	// 本来のプロトコルバイト)
 	go func() {
 		// upstream → client
 		_, _ = io.Copy(client, upstream)
-		_ = client.SetReadDeadline(time.Now()) // pump 1 を解除
+		_ = client.SetReadDeadline(time.Now()) // pump 1 を解除 (TCPConn のみ効く)
 	}()
 	if buffered := reader.Buffered(); buffered > 0 {
 		head := make([]byte, buffered)

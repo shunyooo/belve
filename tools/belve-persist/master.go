@@ -85,6 +85,10 @@ func (mc *masterConn) write(v interface{}) error {
 
 func runMacMaster(socketPath string) {
 	initTunnelManager()
+	// Mux manager は常に初期化しておく (Phase 6)。誰も繋がなければ listener
+	// すら起動しない (= lazy)。host 単位の listener は ensureSetup の成功時に
+	// 起動する。
+	globalMuxManager = newMuxManager(globalTunnelManager)
 	if socketPath == "" {
 		fmt.Fprintln(os.Stderr, "[belve-master] -socket required")
 		os.Exit(1)
@@ -379,6 +383,15 @@ func opEnsureSetup(req masterReq) masterRes {
 		BinDir:         strParam(p, "binDir"),
 	}
 	st, errStr := globalSetupManager.ensureSetup(sreq)
+	// Setup 成功 host については mux listener も立てておく (Phase 6)。
+	// listener 起動だけで yamux session の確立は lazy (= pane client が
+	// 繋ぐまで spawn しない)。listener が無いと pane client の `-mux-via`
+	// が "no such file" になるので、setup-ready のタイミングで作る。
+	if st == setupReady && sreq.Host != "" && globalMuxManager != nil {
+		if err := globalMuxManager.ensureListener(sreq.Host); err != nil {
+			fmt.Fprintf(os.Stderr, "[belve-master] mux listener (%s): %v\n", sreq.Host, err)
+		}
+	}
 	result := map[string]string{"state": st.String()}
 	if errStr != "" {
 		result["error"] = errStr

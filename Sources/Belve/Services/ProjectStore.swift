@@ -1255,12 +1255,21 @@ class ProjectStore: ObservableObject {
 				}
 			}
 
-			let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
-			RemoteRPCRegistry.shared.registerControlPort(
-				projectId: p.id,
-				localPort: UInt16(routerLocalPort),
-				projShort: projShort
-			)
+			if AppConfig.shared.muxEnabled(forHost: host) {
+				// Phase 6: mux 経由。SSH forward は mac-master が yamux session
+				// 確立時に張る (= ここで触らない)。registerControlMux は Unix
+				// socket endpoint で RPC client を構築する。
+				RemoteRPCRegistry.shared.registerControlMux(
+					projectId: p.id, host: host, projShort: projShort
+				)
+			} else {
+				let routerLocalPort = try await SSHTunnelManager.shared.ensureRouterForward(host: host)
+				RemoteRPCRegistry.shared.registerControlPort(
+					projectId: p.id,
+					localPort: UInt16(routerLocalPort),
+					projShort: projShort
+				)
+			}
 			self.subscribeRPCFsEvents(projectId: p.id, rootPath: p.effectivePath)
 			self.fetchAndCacheCwd(for: p.id)
 		} catch {

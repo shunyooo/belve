@@ -83,8 +83,13 @@ _ensure_vm_router() {
     # `9>&-` で flock の FD を子プロセスから明示的に閉じる。これをやらないと
     # router (長命) が FD を継承したまま flock を保持し続け、後続の belve-setup
     # が永遠に lock を取れなくなる (10min runtime debug で発見した bug)。
+    #
+    # `-mux-router 127.0.0.1:19201` (Phase 6) は yamux 多重化版を別 port で listen。
+    # 旧 router (19200) と同居して動く。Mac 側 AppConfig.mux で opt-in。
+    # 詳細は docs/notes/2026-06-24-yamux-multiplex.md。
     nohup "$HOME/.belve/bin/belve-persist" \
         -router 127.0.0.1:19200 \
+        -mux-router 127.0.0.1:19201 \
         >/dev/null 2>&1 9>&- &
     disown 2>/dev/null || true
     for i in 1 2 3 4 5 6 7 8 9 10; do

@@ -94,6 +94,10 @@ func main() {
 	initRows := flag.Int("rows", 0, "initial PTY rows")
 	tcpListen := flag.String("tcplisten", "", "TCP listen address for broker mode (e.g. 0.0.0.0:19222)")
 	tcpBackend := flag.String("tcpbackend", "", "TCP backend address (e.g. 172.17.0.2:19222)")
+	// Mux backend (Phase 6): Mac master の per-host Unix socket に bridge する。
+	// `-tcpbackend` と排他で、こちらが指定されたら mac-master 経由で yamux
+	// 多重化された SSH channel を共有する。
+	muxVia := flag.String("mux-via", "", "Unix socket path of mac-master mux listener (e.g. /tmp/belve-mux-listener-XXX.sock)")
 	sessionName := flag.String("session", "", "session name for TCP multiplexing")
 	// 接続直後に router に投げる JSON preamble の projShort。指定があれば
 	// MSG_INIT の前に `{"projShort":"X","kind":"pty"}\n` を送る。router が
@@ -108,6 +112,10 @@ func main() {
 	// preamble に従って container broker / VM-local broker に proxy する。
 	// この 1 ポートだけ Mac から SSH forward すれば全 project を捌ける。
 	routerListen := flag.String("router", "", "TCP listen address for router mode (e.g. 0.0.0.0:19200)")
+	// Mux router mode (Phase 6): yamux server で 1 TCP に N stream を多重化。
+	// 旧 router (19200) と完全分離した別 port で並走する。詳細は
+	// docs/notes/2026-06-24-yamux-multiplex.md。
+	muxRouterListen := flag.String("mux-router", "", "TCP listen address for yamux router mode (e.g. 0.0.0.0:19201)")
 	// Mac master mode: Belve.app から Unix socket で IPC を受け、project setup /
 	// tunnel / session を一元管理する。詳細は docs/notes/2026-04-23-mac-master-design.md。
 	macMaster := flag.String("mac-master", "", "Unix socket path for Mac master mode (e.g. /tmp/belve-master.sock)")
@@ -135,11 +143,21 @@ func main() {
 
 	// Router mode is foreground if it's the only role.
 	if *routerListen != "" {
-		if *tcpListen == "" && *tcpBackend == "" && *socketPath == "" && *ctrlListen == "" {
+		if *tcpListen == "" && *tcpBackend == "" && *socketPath == "" && *ctrlListen == "" && *muxRouterListen == "" {
 			runRouter(*routerListen)
 			return
 		}
 		go runRouter(*routerListen)
+	}
+
+	// Mux router (Phase 6): foreground if the only role, else background. 旧 router と
+	// 同居可能で、ポートが違うので相互に干渉しない。
+	if *muxRouterListen != "" {
+		if *tcpListen == "" && *tcpBackend == "" && *socketPath == "" && *ctrlListen == "" && *routerListen == "" {
+			runMuxRouter(*muxRouterListen)
+			return
+		}
+		go runMuxRouter(*muxRouterListen)
 	}
 
 	// Control listener runs as a background goroutine alongside whatever main
@@ -165,17 +183,28 @@ func main() {
 		return
 	}
 
+	if *tcpBackend != "" && *muxVia != "" {
+		fmt.Fprintln(os.Stderr, "-tcpbackend and -mux-via are mutually exclusive")
+		os.Exit(1)
+	}
+
 	// TCP backend mode (host side) — host persist daemon bridges Unix socket ↔ TCP
-	if *tcpBackend != "" {
+	// Mux mode (host side) — Unix socket clients bridged to mac-master Unix listener
+	if *tcpBackend != "" || *muxVia != "" {
 		if *socketPath == "" || *sessionName == "" {
-			fmt.Fprintln(os.Stderr, "tcpbackend requires -socket and -session")
+			fmt.Fprintln(os.Stderr, "tcpbackend/mux-via requires -socket and -session")
 			os.Exit(1)
 		}
+		isMux := *muxVia != ""
 		// `-daemon` 付きで来たら master 本体として起動 (= forked child)。
 		// それ以外は client として、必要なら daemon を spawn してから attach する
 		// (= 旧 belve-launcher.sh の per-pane orchestration を内蔵化、Phase 4)。
 		if *daemon {
-			runMasterTCPBackend(*socketPath, *tcpBackend, *sessionName, *routeProjShort, uint16(*initCols), uint16(*initRows))
+			if isMux {
+				runMasterMuxBackend(*socketPath, *muxVia, *sessionName, *routeProjShort, uint16(*initCols), uint16(*initRows))
+			} else {
+				runMasterTCPBackend(*socketPath, *tcpBackend, *sessionName, *routeProjShort, uint16(*initCols), uint16(*initRows))
+			}
 			return
 		}
 		// 1) 既存 master があれば attach
@@ -189,7 +218,11 @@ func main() {
 				return
 			}
 			_ = os.Remove(*socketPath)
-			spawnTCPBackendDaemon(*socketPath, *tcpBackend, *sessionName, *routeProjShort, *initCols, *initRows)
+			if isMux {
+				spawnMuxBackendDaemon(*socketPath, *muxVia, *sessionName, *routeProjShort, *initCols, *initRows)
+			} else {
+				spawnTCPBackendDaemon(*socketPath, *tcpBackend, *sessionName, *routeProjShort, *initCols, *initRows)
+			}
 		})
 		// 3) socket が現れるまで待って attach
 		for i := 0; i < 50; i++ {
@@ -283,6 +316,10 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 		mu.Lock()
 		if !skipReplay && len(replayBuf) > 0 {
 			writeReplayChunks(c, replayBuf)
+			// Replay 内の DECSET 1002/1006 等が xterm.js でマウストラッキングを
+			// ON にしたまま残ると、TUI app 終了後に「マウス移動で座標が echo」
+			// の崩壊状態を引き起こす。replay 末尾で DECRST 流して clean state に。
+			writeMsg(c, msgData, terminalModeReset())
 		}
 		clients = append(clients, c)
 		mu.Unlock()
@@ -967,9 +1004,47 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 
 // --- TCP backend (host side) ---
 
+// backendDialer abstracts how the host-side daemon connects to its upstream.
+// For TCP backend mode (旧 path): dial 127.0.0.1:LPORT (SSH forward).
+// For mux mode (Phase 6): dial /tmp/belve-mux-listener-<host>.sock.
+// label は logf 用 (e.g. "127.0.0.1:19222" / "unix:/tmp/...").
+type backendDialer struct {
+	dial  func() (net.Conn, error)
+	label string
+}
+
+func tcpBackendDialer(tcpAddr string) backendDialer {
+	return backendDialer{
+		dial: func() (net.Conn, error) {
+			return net.DialTimeout("tcp", tcpAddr, 5*time.Second)
+		},
+		label: tcpAddr,
+	}
+}
+
+func unixBackendDialer(sockPath string) backendDialer {
+	return backendDialer{
+		dial: func() (net.Conn, error) {
+			return net.DialTimeout("unix", sockPath, 5*time.Second)
+		},
+		label: "unix:" + sockPath,
+	}
+}
+
 // runMasterTCPBackend runs a host persist daemon that bridges Unix socket clients
 // to a TCP broker in the container. No child process or PTY needed on the host side.
 func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, cols, rows uint16) {
+	runMasterBackend(socketPath, tcpBackendDialer(tcpAddr), sessName, routeProjShort, cols, rows)
+}
+
+// runMasterMuxBackend: Phase 6 の mux 経路。tcpAddr の代わりに Mac master が
+// listen してる per-host Unix socket に接続する。中身は runMasterTCPBackend と
+// 完全に同じロジックを共有する。
+func runMasterMuxBackend(socketPath, muxViaPath, sessName, routeProjShort string, cols, rows uint16) {
+	runMasterBackend(socketPath, unixBackendDialer(muxViaPath), sessName, routeProjShort, cols, rows)
+}
+
+func runMasterBackend(socketPath string, backend backendDialer, sessName, routeProjShort string, cols, rows uint16) {
 	// Always kill old daemons for this socket, then take over.
 	killOldDaemons(socketPath)
 	os.Remove(socketPath)
@@ -992,6 +1067,10 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 		mu.Lock()
 		if !skipReplay && len(replayBuf) > 0 {
 			writeReplayChunks(c, replayBuf)
+			// Replay 内の DECSET 1002/1006 等が xterm.js でマウストラッキングを
+			// ON にしたまま残ると、TUI app 終了後に「マウス移動で座標が echo」
+			// の崩壊状態を引き起こす。replay 末尾で DECRST 流して clean state に。
+			writeMsg(c, msgData, terminalModeReset())
 		}
 		clients = append(clients, c)
 		mu.Unlock()
@@ -1074,7 +1153,7 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 		if attempt > 0 {
 			msg := fmt.Sprintf("%s (%d/%d)\r\n", strings.TrimRight(reconnectText, "\r\n"),
 				attempt, maxReconnects)
-			notice := belveNoticeData(reconnectStatus, msg)
+			notice := append(append([]byte{}, terminalModeReset()...), belveNoticeData(reconnectStatus, msg)...)
 			mu.Lock()
 			for _, c := range clients {
 				writeMsg(c, msgData, notice)
@@ -1083,9 +1162,9 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 			time.Sleep(2 * time.Second)
 		}
 
-		conn, err := net.DialTimeout("tcp", tcpAddr, 5*time.Second)
+		conn, err := backend.dial()
 		if err != nil {
-			logf("tcp connect failed: %v (attempt %d)", err, attempt+1)
+			logf("backend connect failed (%s): %v (attempt %d)", backend.label, err, attempt+1)
 			continue
 		}
 		// PTY は 1 byte 単位の write が多いので Nagle を明示的に切る
@@ -1134,7 +1213,7 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 		tcpConn = conn
 		tcpMu.Unlock()
 
-		logf("tcp connected to %s session=%s", tcpAddr, sessName)
+		logf("backend connected to %s session=%s", backend.label, sessName)
 
 		// Read from TCP → broadcast to Unix socket clients
 		func() {
@@ -1174,6 +1253,35 @@ func runMasterTCPBackend(socketPath, tcpAddr, sessName, routeProjShort string, c
 
 	logf("max reconnects exhausted, exiting")
 	listener.Close()
+}
+
+// spawnMuxBackendDaemon: mux mode (Phase 6) の self-fork。spawnTCPBackendDaemon
+// と同じ仕組みで、-tcpbackend の代わりに -mux-via を渡す。
+func spawnMuxBackendDaemon(socketPath, muxViaPath, sessName, routeProjShort string, cols, rows int) {
+	selfPath := os.Args[0]
+	args := []string{selfPath,
+		"-daemon",
+		"-socket", socketPath,
+		"-mux-via", muxViaPath,
+		"-session", sessName,
+	}
+	if routeProjShort != "" {
+		args = append(args, "-route", routeProjShort)
+	}
+	if cols > 0 && rows > 0 {
+		args = append(args, "-cols", fmt.Sprintf("%d", cols), "-rows", fmt.Sprintf("%d", rows))
+	}
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Env = os.Environ()
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "mux-via daemon spawn: %v\n", err)
+		os.Exit(1)
+	}
+	cmd.Process.Release()
 }
 
 // spawnDaemon starts the master as a background process.
@@ -1329,6 +1437,30 @@ func belveStatusData(message string) []byte {
 		return nil
 	}
 	return []byte(fmt.Sprintf("\x1b]9;belve-status;%s\x07", message))
+}
+
+// terminalModeReset: DEC private mode のうち TUI app が有効化しっぱなしで死ぬと
+// 困る代表的なものを disable する escape sequence 列を返す。
+// - mouse tracking: ON のままだとマウス移動で `CSI < B;X;Y M` が PTY に送られ、
+//   non-TUI な bash が echo して画面崩壊する
+// - bracketed paste: ON のまま貼り付けると "[200~ ~[201~" がそのまま表示される
+// - alt screen: ON のままだと bash の scrollback が見えない
+// 新規 unix-socket client 接続時 (replay 直後) と reconnect 通知時に流す。
+func terminalModeReset() []byte {
+	return []byte(
+		"\x1b[?1000l" + // X10 mouse
+			"\x1b[?1001l" + // X10/X11 mouse highlight
+			"\x1b[?1002l" + // cell motion tracking
+			"\x1b[?1003l" + // all motion tracking
+			"\x1b[?1004l" + // focus reporting
+			"\x1b[?1005l" + // UTF-8 mouse
+			"\x1b[?1006l" + // SGR mouse
+			"\x1b[?1015l" + // urxvt mouse
+			"\x1b[?2004l" + // bracketed paste
+			"\x1b[?1049l" + // restore main screen (exit alt buffer)
+			"\x1b[?25h" + // ensure cursor visible
+			"\x1b[?7h", // re-enable auto-wrap
+	)
 }
 
 func belveNoticeData(statusMessage, visibleMessage string) []byte {
