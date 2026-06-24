@@ -235,14 +235,30 @@ func dispatchRouterStream(client net.Conn, reader *bufio.Reader, pre routePreamb
 // Plain SSH (= projShort 空 or .env 無し) の場合、router が直接 broker を
 // 起こす権限を持つので docker は触らず単に dial → ダメなら諦める。
 func dialWithHealing(target string, pre routePreamble) (net.Conn, error) {
-	// First try
-	if conn, err := net.DialTimeout("tcp", target, 1500*time.Millisecond); err == nil {
-		return conn, nil
+	// Generous first-attempt window. これまで 1.5 秒 1 発勝負だったため、
+	// container 内の broker が GC pause / accept loop 詰まり等で瞬間的に
+	// 応答しないだけで repair が誤発動し、broker 全部 kill → 全 pane の
+	// session state 消失 (= ターミナル初期化) を引き起こしていた
+	// (2026-06-24 報告)。
+	//
+	// 5 秒 × 3 試行で粘ってから repair に進む。本当に broker が居ない場合は
+	// 連続でずっと ECONNREFUSED が返る (~ms オーダー) ので 3 試行も 1 秒未満で
+	// 終わり、復旧速度を犠牲にしないで偽陽性だけ減らせる。
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		conn, err := net.DialTimeout("tcp", target, 5*time.Second)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		// ECONNREFUSED は broker process そのものが居ない時に瞬時に返る。
+		// 一旦間を置く必要はあるが、長く待っても無駄なので 200ms だけ。
+		time.Sleep(200 * time.Millisecond)
 	}
-	// Container broker が居なければ docker exec で復旧。projShort 空なら
-	// 復旧手段がないので諦め。
+	// 3 回連続失敗 = broker は本当に死んでる可能性高い → repair に進む。
+	fmt.Fprintf(os.Stderr, "[belve-persist] router dial %s failed 3x (last=%v), proceeding to repair\n", target, lastErr)
 	if pre.ProjShort == "" {
-		return nil, fmt.Errorf("dial %s failed (no recovery for plain ssh)", target)
+		return nil, fmt.Errorf("dial %s failed (no recovery for plain ssh): %w", target, lastErr)
 	}
 	info, err := readProjInfo(pre.ProjShort)
 	if err != nil || info.CID == "" {
