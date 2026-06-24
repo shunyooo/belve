@@ -558,6 +558,17 @@ function ensurePathLinkProvider() {
 // Fit terminal to container, returning actual cols/rows.
 // Called from Swift after layout settles — uses fitAddon which accounts for
 // scrollbar width, padding, and actual DOM dimensions.
+//
+// View 切替後の「中身は buffer にあるのに canvas が空表示」事案: xterm.js の
+// WebGL renderer は前回 render 時点で hidden だった場合、refresh() だけでは
+// 全行を再描画しないことがある (= dirty tracking + GPU state cache の取り合わせ
+// の問題)。なのでこの関数では:
+//   1. fitAddon.fit() 後に DOM の offsetWidth 読み出しで強制 reflow
+//   2. WebGL の textureAtlas を clear
+//   3. term.refresh() を 2 回 (即時 + rAF 後) 撃って 1 回目を取りこぼした
+//      フレームを保険で補う
+// 1 + 2 で殆どの場合は救えるが、まれに rAF までスケジュールが流れない
+// パターン (= タブが backgrounded の直後) があるため 3 で最終保険。
 window.terminalFit = function() {
 	if (!window.term || !window.fitAddon) return null;
 	var before = { cols: term.cols, rows: term.rows, baseY: term.buffer.active.baseY, viewportY: term.buffer.active.viewportY, cursorY: term.buffer.active.cursorY };
@@ -570,8 +581,16 @@ window.terminalFit = function() {
 	if (term._core && term._core.viewport) {
 		term._core.viewport.syncScrollArea();
 	}
+	// Force browser layout (= ensures canvas size is finalized before redraw).
+	if (term.element) { void term.element.offsetWidth; }
 	if (term.clearTextureAtlas) term.clearTextureAtlas();
 	term.refresh(0, term.rows - 1);
+	// rAF 後の二度撃ち。WebGL renderer の dirty-row tracking が
+	// hidden→visible 遷移で取りこぼすケースの最終保険。
+	requestAnimationFrame(function() {
+		if (term.clearTextureAtlas) term.clearTextureAtlas();
+		term.refresh(0, term.rows - 1);
+	});
 	term.scrollToBottom();
 	var final_ = { baseY: term.buffer.active.baseY, viewportY: term.buffer.active.viewportY };
 	postMessage({ type: 'debug', message: '[terminalFit] before=' + JSON.stringify(before) + ' proposed=' + JSON.stringify(dims) + ' after=' + JSON.stringify(after) + ' final=' + JSON.stringify(final_) });
