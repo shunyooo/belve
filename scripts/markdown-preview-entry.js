@@ -53,9 +53,16 @@ marked.setOptions({
 
 // marked の renderer をカスタマイズして highlight.js を適用
 const renderer = new marked.Renderer();
+function escapeHtml(s) {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 renderer.code = function({ text, lang }) {
 	if (lang === "mermaid") {
-		return '<pre><code class="language-mermaid">' + text + '</code></pre>';
+		// source を HTML エスケープして DOM へ。後で `code.textContent` で読み戻す
+		// 設計のため、生の `<br/>` を入れると browser parse で <br> 要素に変換され
+		// textContent が空文字 (改行) になり、mermaid に届く時に消えてしまう。
+		// エスケープしておけば textContent で `<br/>` のまま読み戻せる。
+		return '<pre><code class="language-mermaid">' + escapeHtml(text) + '</code></pre>';
 	}
 	let highlighted;
 	if (lang && hljs.getLanguage(lang)) {
