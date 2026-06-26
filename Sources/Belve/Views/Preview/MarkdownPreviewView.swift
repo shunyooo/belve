@@ -6,6 +6,8 @@ import WebKit
 /// に切り替える二段構え。デフォルトはこの preview。
 struct MarkdownPreviewView: NSViewRepresentable {
 	let content: String
+	/// scroll 同期用の file path key。空なら scroll 同期しない (= 旧 caller との互換)。
+	var filePath: String = ""
 
 	func makeNSView(context: Context) -> WKWebView {
 		let config = WKWebViewConfiguration()
@@ -17,6 +19,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 		webView.magnification = 1.0
 		context.coordinator.webView = webView
 		context.coordinator.pendingContent = content
+		context.coordinator.filePath = filePath
 		if let html = Self.buildHTML() {
 			webView.loadHTMLString(html, baseURL: nil)
 		}
@@ -64,6 +67,11 @@ struct MarkdownPreviewView: NSViewRepresentable {
 		var pendingContent: String?
 		var isReady = false
 		var lastRendered: String?
+		var filePath: String = ""
+		/// 初回 render 後に store の scroll % を反映するためのフラグ。
+		/// content render 完了 → DOM 確定 → setScrollPercent の順で呼ぶ必要があり、
+		/// `ready` 時点ではまだ DOM が無いので render 後に投げる。
+		private var didApplyInitialScroll = false
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let body = message.body as? [String: Any],
@@ -76,7 +84,9 @@ struct MarkdownPreviewView: NSViewRepresentable {
 						.replacingOccurrences(of: "\\", with: "\\\\")
 						.replacingOccurrences(of: "`", with: "\\`")
 						.replacingOccurrences(of: "$", with: "\\$")
-					webView?.evaluateJavaScript("markdownRender(`\(escaped)`)")
+					webView?.evaluateJavaScript("markdownRender(`\(escaped)`)") { [weak self] _, _ in
+						self?.applyInitialScrollIfNeeded()
+					}
 					lastRendered = pending
 					pendingContent = nil
 				}
@@ -85,8 +95,23 @@ struct MarkdownPreviewView: NSViewRepresentable {
 				   let url = URL(string: urlString) {
 					NSWorkspace.shared.open(url)
 				}
+			case "scroll":
+				if !filePath.isEmpty, let pct = body["percent"] as? Double {
+					MarkdownScrollStore.shared.set(CGFloat(pct), for: filePath)
+				}
 			default:
 				break
+			}
+		}
+
+		private func applyInitialScrollIfNeeded() {
+			guard !didApplyInitialScroll, !filePath.isEmpty else { return }
+			didApplyInitialScroll = true
+			let pct = MarkdownScrollStore.shared.get(for: filePath)
+			guard pct > 0 else { return }
+			// render 完了直後は layout がまだ確定してない事があるので一拍置いてから。
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+				self?.webView?.evaluateJavaScript("window.setScrollPercent && window.setScrollPercent(\(pct))", completionHandler: nil)
 			}
 		}
 	}

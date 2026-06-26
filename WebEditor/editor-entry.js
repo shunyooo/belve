@@ -561,6 +561,7 @@ window.editorOpenFile = function(content, filename, lineNumber = null, columnNum
 		state: createEditorState(content, filename),
 		parent: editorContainer
 	});
+	attachScrollListener();
 
 	if (lineNumber != null) {
 		requestAnimationFrame(() => {
@@ -664,5 +665,40 @@ document.addEventListener("keydown", (event) => {
 		isMetaPressed = true;
 	}
 });
+
+// Scroll position 同期 (Markdown ファイルで Edit ↔ Preview トグル時の
+// 位置引き継ぎ用)。CodeMirror の scrollDOM を購読して % を Swift に流す。
+// rAF throttle で過剰送信を抑える。markdown 以外の file type でも常に
+// 送信するが、Swift 側 store の使用は markdown のみが行う想定なので無害。
+let _scrollPostScheduled = false;
+function postScrollPercent() {
+	if (!editorView) return;
+	const sd = editorView.scrollDOM;
+	const max = sd.scrollHeight - sd.clientHeight;
+	const pct = max > 0 ? sd.scrollTop / max : 0;
+	postMessage({ type: "scroll", percent: pct });
+}
+function attachScrollListener() {
+	if (!editorView) return;
+	editorView.scrollDOM.addEventListener("scroll", function() {
+		if (_scrollPostScheduled) return;
+		_scrollPostScheduled = true;
+		requestAnimationFrame(function() {
+			_scrollPostScheduled = false;
+			postScrollPercent();
+		});
+	}, { passive: true });
+}
+// 注: attachScrollListener() の呼び出しは editorOpenFile 内で行う
+// (= editorView が初期化された後でないと scrollDOM が無い)。
+
+// Swift から呼ぶ: トグルで mount された直後に「前回の % まで scroll しろ」と指示。
+window.setScrollPercent = function(pct) {
+	if (!editorView) return;
+	const sd = editorView.scrollDOM;
+	const max = sd.scrollHeight - sd.clientHeight;
+	if (max <= 0) return;
+	sd.scrollTop = max * pct;
+};
 
 postMessage({ type: "ready" });

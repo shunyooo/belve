@@ -214,6 +214,13 @@ struct CodeEditorView: NSViewRepresentable {
 						}
 					}
 				}
+			case "scroll":
+				// markdown ファイルの Edit ↔ Preview トグルで scroll 位置を引き継ぐため
+				// scroll % を MarkdownScrollStore に記録する。他の file type にとっては
+				// 副作用ないので無条件で書き込む。
+				if let pct = body["percent"] as? Double, let file = lastOpenedFile?.0 {
+					MarkdownScrollStore.shared.set(CGFloat(pct), for: file)
+				}
 			default:
 				break
 			}
@@ -238,6 +245,8 @@ struct CodeEditorView: NSViewRepresentable {
 				let script = "editorUpdateContent(`\(escaped)`)"
 				webView?.evaluateJavaScript(script, completionHandler: nil)
 			} else {
+				// 新規 open は前回の scroll % を反映 (= Preview ↔ Edit トグル時の引継ぎ)。
+				let storedPct = MarkdownScrollStore.shared.get(for: filename)
 				let escapedFilename = filename
 					.replacingOccurrences(of: "\\", with: "\\\\")
 					.replacingOccurrences(of: "`", with: "\\`")
@@ -245,7 +254,18 @@ struct CodeEditorView: NSViewRepresentable {
 				let lineArgument = line.map(String.init) ?? "null"
 				let columnArgument = column.map(String.init) ?? "null"
 				let script = "editorOpenFile(`\(escaped)`, `\(escapedFilename)`, \(lineArgument), \(columnArgument))"
-				webView?.evaluateJavaScript(script, completionHandler: nil)
+				webView?.evaluateJavaScript(script) { [weak self] _, _ in
+					if storedPct > 0, line == nil {
+						// line jump 指定があれば revealLocation を尊重して scroll は触らない。
+						// 無指定 = 「前回の続きを見たい」ケースなので store の % を反映。
+						DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+							self?.webView?.evaluateJavaScript(
+								"window.setScrollPercent && window.setScrollPercent(\(storedPct))",
+								completionHandler: nil
+							)
+						}
+					}
+				}
 			}
 
 			// Load diff markers in background

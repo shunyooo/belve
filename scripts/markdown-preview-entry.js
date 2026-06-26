@@ -278,4 +278,33 @@ document.addEventListener("click", function (e) {
 	});
 });
 
+// Scroll position 同期 (Edit ↔ Preview トグル時の位置引き継ぎ用)。
+// % を連続で Swift に postMessage、Swift 側で store に書き込む。
+// rAF throttle で過剰送信を抑える。
+let _scrollPostScheduled = false;
+function postScrollPercent() {
+	const el = document.scrollingElement || document.documentElement;
+	const max = el.scrollHeight - el.clientHeight;
+	const pct = max > 0 ? el.scrollTop / max : 0;
+	window.webkit.messageHandlers.markdownPreviewHandler.postMessage({
+		type: "scroll", percent: pct,
+	});
+}
+window.addEventListener("scroll", function() {
+	if (_scrollPostScheduled) return;
+	_scrollPostScheduled = true;
+	requestAnimationFrame(function() {
+		_scrollPostScheduled = false;
+		postScrollPercent();
+	});
+}, { passive: true });
+
+// Swift から呼ぶ: トグルで mount された直後に「前回の % まで scroll しろ」と指示。
+window.setScrollPercent = function(pct) {
+	const el = document.scrollingElement || document.documentElement;
+	const max = el.scrollHeight - el.clientHeight;
+	if (max <= 0) return;
+	el.scrollTop = max * pct;
+};
+
 window.webkit.messageHandlers.markdownPreviewHandler.postMessage({ type: "ready" });

@@ -333,7 +333,7 @@ struct PreviewArea: View {
 									isDirty = newContent != savedContentReference
 								}
 							} else {
-								MarkdownPreviewView(content: file.content)
+								MarkdownPreviewView(content: file.content, filePath: file.path)
 							}
 							markdownEditToggleButton
 								.padding(12)
