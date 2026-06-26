@@ -201,6 +201,11 @@ struct ProjectListView: View {
 				.padding(.trailing, 6)
 				.padding(.top, 4)
 			}
+			.overlay(alignment: .bottomLeading) {
+				ShortcutHelpButton()
+					.padding(.leading, 8)
+					.padding(.bottom, 6)
+			}
 		}
 		// 注意: ScrollView 全体に .animation(value:) を当てると 12+ row
 		// の全 modifier が implicit animation 対象になる可能性がある。
