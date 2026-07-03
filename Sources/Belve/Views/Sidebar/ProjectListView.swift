@@ -8,6 +8,37 @@ import CoreTransferable
 /// crash したため、最小依存の Data 経路に切替え。2026-05-05)。
 /// `.data` content type だが、within-app DD では typed dropDestination
 /// (= for: PaneTransferToken.self) で解決されるので他 Data drop と混線しない。
+struct ViewTransferToken: Transferable, Hashable {
+	let viewId: UUID
+	let projectId: UUID
+
+	private static let magic: [UInt8] = [0x42, 0x4C, 0x56, 0x56] // "BLVV"
+
+	static var transferRepresentation: some TransferRepresentation {
+		DataRepresentation(contentType: .data) { token in
+			var data = Data(magic)
+			data.append(token.viewId.uuidString.data(using: .utf8) ?? Data())
+			data.append(0x7C)
+			data.append(token.projectId.uuidString.data(using: .utf8) ?? Data())
+			return data
+		} importing: { data in
+			guard data.count > 4, Array(data.prefix(4)) == magic else {
+				throw CocoaError(.coderInvalidValue)
+			}
+			guard let payload = String(data: data.dropFirst(4), encoding: .utf8) else {
+				throw CocoaError(.coderInvalidValue)
+			}
+			let parts = payload.split(separator: "|")
+			guard parts.count == 2,
+			      let vid = UUID(uuidString: String(parts[0])),
+			      let pid = UUID(uuidString: String(parts[1])) else {
+				throw CocoaError(.coderInvalidValue)
+			}
+			return ViewTransferToken(viewId: vid, projectId: pid)
+		}
+	}
+}
+
 struct PaneTransferToken: Transferable, Hashable {
 	let paneId: UUID
 	let sourceViewId: UUID
@@ -620,6 +651,22 @@ struct ProjectListView: View {
 				.contentShape(Rectangle())
 			}
 			.buttonStyle(.plain)
+			.draggable(ViewTransferToken(viewId: v.id, projectId: project.id)) {
+				Text(v.name)
+					.font(.system(size: 11))
+					.padding(6)
+					.background(Theme.surface)
+					.cornerRadius(4)
+			}
+			.dropDestination(for: ViewTransferToken.self) { tokens, _ in
+				guard let token = tokens.first,
+				      token.projectId == project.id,
+				      token.viewId != v.id else { return false }
+				let views = viewStore.views(for: project.id)
+				guard let targetIndex = views.firstIndex(where: { $0.id == v.id }) else { return false }
+				viewStore.moveView(token.viewId, in: project.id, toIndex: targetIndex)
+				return true
+			}
 			.dropDestination(for: PaneTransferToken.self) { tokens, _ in
 				guard let token = tokens.first,
 				      token.projectId == project.id,

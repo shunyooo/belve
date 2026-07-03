@@ -168,7 +168,23 @@ func isTunnelEndToEndHealthy(port int) bool {
 	defer conn.Close()
 	conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
 	_, err = conn.Write([]byte("{\"projShort\":\"\",\"kind\":\"health\"}\n"))
-	return err == nil
+	if err != nil {
+		return false
+	}
+	// Write success only proves local buffer accepted data. Read to verify
+	// the remote end actually received it and responded (router closes the
+	// connection after unknown kind, so we expect EOF or any data).
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 1)
+	_, readErr := conn.Read(buf)
+	// EOF = router received our preamble and closed = tunnel works.
+	// Any data = also fine. Only a timeout means the tunnel is dead.
+	if readErr != nil {
+		if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+			return false
+		}
+	}
+	return true
 }
 
 func (tm *tunnelManager) killControlMaster(host string) {

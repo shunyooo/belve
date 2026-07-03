@@ -126,6 +126,19 @@ final class ProjectViewStore: ObservableObject {
 		scheduleSave()
 	}
 
+	/// View の並べ替え。Sidebar の D&D から呼ぶ。
+	func moveView(_ viewId: UUID, in projectId: UUID, toIndex: Int) {
+		guard var list = viewsByProject[projectId],
+		      let fromIndex = list.firstIndex(where: { $0.id == viewId }),
+		      fromIndex != toIndex,
+		      toIndex >= 0, toIndex <= list.count else { return }
+		let item = list.remove(at: fromIndex)
+		let insertAt = toIndex > fromIndex ? toIndex - 1 : toIndex
+		list.insert(item, at: min(insertAt, list.count))
+		viewsByProject[projectId] = list
+		scheduleSave()
+	}
+
 	/// View の rename。Sidebar の inline edit から呼ぶ。
 	func renameView(_ viewId: UUID, in projectId: UUID, to newName: String) {
 		guard var list = viewsByProject[projectId],

@@ -176,6 +176,7 @@ struct ChangedFile {
 fileprivate struct TimelineSidebar: View {
 	let commits: [GitCommitEntry]
 	let unpushedFrom: String
+	let currentBranch: String
 	let unstagedCount: Int
 	let stagedCount: Int
 	@Binding var selectedEntries: Set<TimelineEntry>
@@ -193,6 +194,21 @@ fileprivate struct TimelineSidebar: View {
 	var body: some View {
 		ScrollView {
 			VStack(alignment: .leading, spacing: 0) {
+				// Current branch header
+				if !currentBranch.isEmpty {
+					HStack(spacing: 4) {
+						Image(systemName: "arrow.triangle.branch")
+							.font(.system(size: 9))
+							.foregroundStyle(Theme.accent)
+						Text(currentBranch)
+							.font(.system(size: 10, weight: .medium))
+							.foregroundStyle(Theme.textPrimary)
+							.lineLimit(1)
+					}
+					.padding(.horizontal, 10)
+					.padding(.vertical, 4)
+				}
+
 				// Virtual entries
 				virtualEntryRow(.unstaged, label: "Unstaged", count: unstagedCount)
 				virtualEntryRow(.staged, label: "Staged", count: stagedCount)
@@ -211,7 +227,8 @@ fileprivate struct TimelineSidebar: View {
 					commitEntryRow(entry, commit: commit, isUnpushed: isAboveBoundary)
 
 					if isUnpushedBoundary {
-						dividerLine(label: "origin")
+						let originLabel = currentBranch.isEmpty ? "origin" : "origin/\(currentBranch)"
+						dividerLine(label: originLabel)
 					}
 				}
 			}
@@ -358,6 +375,7 @@ struct ChangesView: View {
 	// Timeline state
 	@State private var commits: [GitCommitEntry] = []
 	@State private var unpushedFrom: String = ""
+	@State private var currentBranch: String = ""
 	@State private var selectedEntries: Set<TimelineEntry> = [.unstaged, .staged]
 	@State private var lastClickedEntry: TimelineEntry? = nil
 	@State private var unstagedCount: Int = 0
@@ -428,6 +446,7 @@ struct ChangesView: View {
 						TimelineSidebar(
 							commits: commits,
 							unpushedFrom: unpushedFrom,
+							currentBranch: currentBranch,
 							unstagedCount: unstagedCount,
 							stagedCount: stagedCount,
 							selectedEntries: $selectedEntries,
@@ -491,6 +510,7 @@ struct ChangesView: View {
 			TimelineSidebar(
 				commits: commits,
 				unpushedFrom: unpushedFrom,
+				currentBranch: currentBranch,
 				unstagedCount: unstagedCount,
 				stagedCount: stagedCount,
 				selectedEntries: $selectedEntries,
@@ -687,13 +707,13 @@ struct ChangesView: View {
 	private func loadCommits() {
 		let provider = project.provider
 		let rootPath = project.effectivePath
-		NSLog("[Belve][changes] loadCommits rootPath=%@", rootPath)
 		DispatchQueue.global(qos: .utility).async {
 			let result = provider.gitLog(rootPath, maxCount: 50)
-			NSLog("[Belve][changes] loadCommits got %d commits, unpushedFrom=%@", result.commits.count, result.unpushedFrom)
+			let branch = provider.gitBranch(rootPath) ?? ""
 			DispatchQueue.main.async {
 				commits = result.commits
 				unpushedFrom = result.unpushedFrom
+				currentBranch = branch
 			}
 		}
 	}

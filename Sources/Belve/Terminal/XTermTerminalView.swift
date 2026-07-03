@@ -1130,9 +1130,9 @@ struct XTermTerminalView: NSViewRepresentable {
 				NSLog("[Belve] Auto-retrying PTY for project=%@ (attempt %d/%d, delay %.0fs)",
 					project.name, ptyRetryCount, Self.ptyMaxRetries, delay)
 				postReconnectingState(attempt: ptyRetryCount, max: Self.ptyMaxRetries)
-				// Remote: kill stale tcpbackend daemon whose TCP address may be
-				// outdated after SSH tunnel re-establishment on a different port.
-				if project.isRemote, let paneId {
+				// Remote: daemon の reconnect ループに任せる（最初の数回）。
+				// 繰り返し失敗する場合のみ daemon を kill して新規作成。
+				if project.isRemote, let paneId, ptyRetryCount > 5 {
 					let projShort = String(project.id.uuidString.prefix(8))
 					let paneIdShort = String(paneId.prefix(8))
 					let sockPath = "/tmp/belve-shell/sessions/belve-\(projShort)-\(paneIdShort).sock"
