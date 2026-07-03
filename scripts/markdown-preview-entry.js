@@ -73,6 +73,38 @@ renderer.code = function({ text, lang }) {
 	const cls = lang ? ' class="language-' + lang + ' hljs"' : ' class="hljs"';
 	return '<pre><code' + cls + '>' + highlighted + '</code></pre>';
 };
+
+// 画像 src を belve-img:// scheme に書き換え、Swift 側 handler が remote / local
+// から bytes を取得できるようにする。http(s):/data: はそのまま (= 外部 / inline)。
+// 相対パスは markdown file の dir (window.__belveMarkdownDir) 基準で絶対化する。
+function resolveImagePath(src) {
+	if (!src) return src;
+	if (/^(https?:|data:|belve-img:)/i.test(src)) return src;
+	let abs;
+	if (src.startsWith("/")) {
+		abs = src;
+	} else {
+		const base = window.__belveMarkdownDir || "";
+		abs = normalizePath(base + "/" + src);
+	}
+	return "belve-img://x/" + encodeURIComponent(abs);
+}
+// POSIX パス正規化 (. / .. を畳む)。base が絶対前提。
+function normalizePath(p) {
+	const parts = p.split("/");
+	const out = [];
+	for (const seg of parts) {
+		if (seg === "" || seg === ".") continue;
+		if (seg === "..") { out.pop(); continue; }
+		out.push(seg);
+	}
+	return "/" + out.join("/");
+}
+renderer.image = function({ href, title, text }) {
+	const resolved = resolveImagePath(href);
+	const t = title ? ' title="' + escapeHtml(title) + '"' : "";
+	return '<img src="' + escapeHtml(resolved) + '" alt="' + escapeHtml(text || "") + '"' + t + '>';
+};
 marked.use({ renderer });
 
 // Mermaid: 起動時に 1 回だけ初期化。startOnLoad=false で自分で発火 (= preview
