@@ -93,7 +93,9 @@ final class BelveImageSchemeHandler: NSObject, WKURLSchemeHandler {
 		let prefix = "\(scheme)://x/"
 		guard s.hasPrefix(prefix) else { return nil }
 		let encoded = String(s.dropFirst(prefix.count))
-		guard let decoded = encoded.removingPercentEncoding, decoded.hasPrefix("/") else { return nil }
+		// 絶対 (/...) / 相対 (docs/...) 両方許可。相対は provider.downloadFile が
+		// remote workspace (RWS / effectivePath) 基準で解決する。
+		guard let decoded = encoded.removingPercentEncoding, !decoded.isEmpty else { return nil }
 		return decoded
 	}
 

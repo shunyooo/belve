@@ -80,17 +80,22 @@ renderer.code = function({ text, lang }) {
 function resolveImagePath(src) {
 	if (!src) return src;
 	if (/^(https?:|data:|belve-img:)/i.test(src)) return src;
-	let abs;
+	let combined;
 	if (src.startsWith("/")) {
-		abs = src;
+		combined = src; // 絶対パスはそのまま
 	} else {
 		const base = window.__belveMarkdownDir || "";
-		abs = normalizePath(base + "/" + src);
+		combined = base ? base + "/" + src : src;
 	}
-	return "belve-img://x/" + encodeURIComponent(abs);
+	// combined の絶対 / 相対を保ったまま正規化する。DevContainer は
+	// effectivePath="." で file path が相対 (e.g. "docs/foo.md") なので、
+	// ここで絶対化すると downloadFile の RWS 基準解決が効かず docker cp が
+	// container 内で見つけられなくなる。相対は相対のまま Swift へ渡す。
+	return "belve-img://x/" + encodeURIComponent(normalizePath(combined));
 }
-// POSIX パス正規化 (. / .. を畳む)。base が絶対前提。
+// POSIX パス正規化 (. / .. を畳む)。先頭 "/" の有無 (= 絶対/相対) は維持。
 function normalizePath(p) {
+	const isAbs = p.startsWith("/");
 	const parts = p.split("/");
 	const out = [];
 	for (const seg of parts) {
@@ -98,7 +103,7 @@ function normalizePath(p) {
 		if (seg === "..") { out.pop(); continue; }
 		out.push(seg);
 	}
-	return "/" + out.join("/");
+	return (isAbs ? "/" : "") + out.join("/");
 }
 renderer.image = function({ href, title, text }) {
 	const resolved = resolveImagePath(href);
