@@ -99,6 +99,8 @@ flush_assistant_messages() {
                 }
                 // 範囲内の assistant text を「最後だけ」採用 (= claude stream の
                 // partial / cumulative text で fragment 化するのを回避)。
+                // Claude Code 形式 (type=assistant) と codex rollout 形式
+                // (type=event_msg + payload.type=agent_message) の両対応。
                 let lastText = '';
                 for (let i = start; i < lines.length; i++) {
                     try {
@@ -109,6 +111,11 @@ flush_assistant_messages() {
                                 if (b.type === 'text' && b.text && b.text.trim()) {
                                     lastText = b.text.trim();
                                 }
+                            }
+                        } else if (e.type === 'event_msg') {
+                            const p = e.payload || {};
+                            if (p.type === 'agent_message' && p.message && String(p.message).trim()) {
+                                lastText = String(p.message).trim();
                             }
                         }
                     } catch {}
@@ -227,8 +234,13 @@ case "${1:-}" in
                     # No background tasks — normal completion
                     # Send short completed event first (guaranteed to arrive)
                     emit_event "completed" "Done"
-                    # Then try to extract and send the actual assistant response
+                    # Then try to extract and send the actual assistant response.
+                    # codex は payload に last_assistant_message を直接持つ。
                     msg=$(parse_json '
+                        const direct = j.last_assistant_message || "";
+                        if (direct && String(direct).trim()) {
+                            return String(direct).replace(/\r/g,"").replace(/\n/g,"\\n").replace(/\t/g," ").replace(/[\x00-\x08\x0b-\x1f\x7f]/g,"").substring(0,2000).trim();
+                        }
                         const tp = j.transcript_path || "";
                         if (!tp) return "";
                         function extract() {

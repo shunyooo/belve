@@ -485,7 +485,12 @@ class FileTreeState: ObservableObject {
 	private func ancestorDirectories(for path: String, rootPath: String) -> [String] {
 		var directories: [String] = []
 		var current = (path as NSString).deletingLastPathComponent
-		let normalizedRoot = (rootPath as NSString).standardizingPath
+		// NSString.standardizingPath は "~" を Mac ローカルの home に展開してしまう。
+		// SSH プロジェクトの "~/src" パスが壊れるので、末尾スラッシュ除去のみ行う。
+		var normalizedRoot = rootPath
+		while normalizedRoot.hasSuffix("/") && normalizedRoot.count > 1 {
+			normalizedRoot = String(normalizedRoot.dropLast())
+		}
 
 		while !current.isEmpty && current != normalizedRoot && current.hasPrefix(normalizedRoot) {
 			directories.append(current)
@@ -838,10 +843,13 @@ struct FileTreeView: View {
 			}
 			.onAppear {
 				if state.items.isEmpty {
-					state.loadRoot(project: project, rootPath: rootPath)
-				}
-				// Hidden 時に発生した openFile 変化を catchup: 表示中ファイルを reveal。
-				if let path = currentFilePath, !path.isEmpty {
+					let revealTarget = currentFilePath
+					state.loadRoot(project: project, rootPath: rootPath) {
+						if let path = revealTarget, !path.isEmpty {
+							state.reveal(path: path, rootPath: rootPath, project: project)
+						}
+					}
+				} else if let path = currentFilePath, !path.isEmpty {
 					state.reveal(path: path, rootPath: rootPath, project: project)
 				}
 			}

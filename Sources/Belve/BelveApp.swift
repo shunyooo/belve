@@ -102,6 +102,7 @@ extension Notification.Name {
 	static let belvePaneClosed = Notification.Name("belvePaneClosed")
 	static let belveRefreshFileTree = Notification.Name("belveRefreshFileTree")
 	static let belveOpenSettings = Notification.Name("belveOpenSettings")
+	static let belveFindInPreview = Notification.Name("belveFindInPreview")
 	static let belveTerminalDisconnected = Notification.Name("belveTerminalDisconnected")
 	static let belveSplitVertical = Notification.Name("belveSplitVertical")
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
@@ -317,6 +318,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 						userInfo: ["index": digit - 1]
 					)
 				}
+				return nil
+			case "f" where !shift:
+				NotificationCenter.default.post(name: .belveFindInPreview, object: nil)
 				return nil
 			case "," where !shift:
 				NotificationCenter.default.post(name: .belveOpenSettings, object: nil)

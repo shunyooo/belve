@@ -55,29 +55,34 @@ function _isForceWide(cp) {
 		|| (cp >= 0x3200 && cp <= 0x32FF)   // Enclosed CJK Letters ㈀-㋿
 		|| (cp >= 0x1F200 && cp <= 0x1F2FF); // Enclosed Ideographic Supplement
 }
-try {
-	for (var key in unicodeGraphemes) {
-		var prov = unicodeGraphemes[key];
-		if (prov && typeof prov === 'object' && typeof prov.charProperties === 'function') {
-			(function(provider) {
-				var origCharProps = provider.charProperties.bind(provider);
-				var origWcwidth = provider.wcwidth.bind(provider);
-				provider.charProperties = function(cp, preceding) {
-					var result = origCharProps(cp, preceding);
-					if (_isForceWide(cp)) {
-						// Replace width bits (bits 1-2) with 2
-						result = (result & ~0x6) | (2 << 1);
-					}
-					return result;
-				};
-				provider.wcwidth = function(cp) {
-					if (_isForceWide(cp)) return 2;
-					return origWcwidth(cp);
-				};
-			})(prov);
+// TEMP: patch disabled to verify selection-offset bug on CJK lines.
+// 選択ずれが直れば原因はこのパッチと選択レイヤーの幅計算不整合。
+var _WIDTH_PATCH_ENABLED = false;
+if (_WIDTH_PATCH_ENABLED) {
+	try {
+		for (var key in unicodeGraphemes) {
+			var prov = unicodeGraphemes[key];
+			if (prov && typeof prov === 'object' && typeof prov.charProperties === 'function') {
+				(function(provider) {
+					var origCharProps = provider.charProperties.bind(provider);
+					var origWcwidth = provider.wcwidth.bind(provider);
+					provider.charProperties = function(cp, preceding) {
+						var result = origCharProps(cp, preceding);
+						if (_isForceWide(cp)) {
+							// Replace width bits (bits 1-2) with 2
+							result = (result & ~0x6) | (2 << 1);
+						}
+						return result;
+					};
+					provider.wcwidth = function(cp) {
+						if (_isForceWide(cp)) return 2;
+						return origWcwidth(cp);
+					};
+				})(prov);
+			}
 		}
-	}
-} catch(e) {}
+	} catch(e) {}
+}
 // Build full URL by joining continuation lines. Returns {url, continuations: [{y, startX, endX}]}
 function buildFullUrl(buf, startY, urlStart) {
 	var url = urlStart;

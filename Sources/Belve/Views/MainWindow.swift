@@ -1261,12 +1261,23 @@ struct MainWindow: View {
 	}
 
 	private func restoreOpenFiles() {
+		// openFilesByView にはセットしない（空 content で Markdown が空表示になる）。
+		// 代わりに layoutState.lastOpenedFile にパスを書き込む。
+		// PreviewArea.onAppear が lastOpenedFile から loadFile する。
 		guard let data = try? Data(contentsOf: Self.openFilesURL),
 		      let dict = try? JSONDecoder().decode([String: String].self, from: data) else { return }
 		for (key, path) in dict {
 			guard let viewId = UUID(uuidString: key) else { continue }
-			if openFilesByView[viewId] == nil {
-				openFilesByView[viewId] = OpenFile(path: path, content: "", line: nil, column: nil)
+			// projectLayoutState は viewId で引けないので、全プロジェクトの
+			// activeViewId を走査してマッチする layoutState に書き込む。
+			for project in projectStore.projects {
+				let activeView = ProjectViewStore.shared.activeView(for: project.id)
+				if activeView.id == viewId {
+					let layout = projectLayoutState(for: project)
+					if layout.lastOpenedFile == nil {
+						layout.lastOpenedFile = path
+					}
+				}
 			}
 		}
 	}

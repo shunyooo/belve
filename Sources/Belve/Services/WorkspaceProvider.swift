@@ -918,7 +918,7 @@ struct DevContainerProvider: WorkspaceProvider, RemoteProjectScoped {
 		}
 		let cid = info.cid
 		// docker cp container:path to host tmp, then scp to local
-		let tmpRemote = "/tmp/belve-download-\(ProcessInfo.processInfo.processIdentifier)"
+		let tmpRemote = "/tmp/belve-download-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(8))"
 		let containerPath: String
 		if remotePath.hasPrefix("/") {
 			containerPath = remotePath

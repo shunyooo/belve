@@ -4,6 +4,27 @@ import WebKit
 /// Markdown ファイルの read-only HTML preview。WYSIWYG エディタは normalize 問題で
 /// 廃止 (= 2026-04-23 milkdown 撤去)、編集が必要な時は CodeEditorView (CodeMirror)
 /// に切り替える二段構え。デフォルトはこの preview。
+private final class FindableWebView: WKWebView {
+	override var acceptsFirstResponder: Bool { true }
+
+	override func mouseDown(with event: NSEvent) {
+		window?.makeFirstResponder(self)
+		super.mouseDown(with: event)
+	}
+
+	override func performKeyEquivalent(with event: NSEvent) -> Bool {
+		let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+		if flags == .command, event.charactersIgnoringModifiers == "f" {
+			evaluateJavaScript("window.showFindBar && window.showFindBar()", completionHandler: nil)
+			return true
+		}
+		if event.keyCode == 53 { // Escape
+			evaluateJavaScript("window.hideFindBar && window.hideFindBar()", completionHandler: nil)
+		}
+		return super.performKeyEquivalent(with: event)
+	}
+}
+
 struct MarkdownPreviewView: NSViewRepresentable {
 	let content: String
 	/// scroll 同期用の file path key。空なら scroll 同期しない (= 旧 caller との互換)。
@@ -19,7 +40,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 		if let provider {
 			config.setURLSchemeHandler(BelveImageSchemeHandler(provider: provider), forURLScheme: BelveImageSchemeHandler.scheme)
 		}
-		let webView = WKWebView(frame: .zero, configuration: config)
+		let webView = FindableWebView(frame: .zero, configuration: config)
 		webView.setValue(false, forKey: "drawsBackground")
 		// trackpad pinch でズーム可能に (= mermaid 図等の拡大確認用)
 		webView.allowsMagnification = true
@@ -73,12 +94,28 @@ struct MarkdownPreviewView: NSViewRepresentable {
 		var isReady = false
 		var lastRendered: String?
 		var filePath: String = ""
-		/// markdown file の dir (相対 image path の base)。JS に渡して解決させる。
 		var markdownDir: String = ""
-		/// 初回 render 後に store の scroll % を反映するためのフラグ。
-		/// content render 完了 → DOM 確定 → setScrollPercent の順で呼ぶ必要があり、
-		/// `ready` 時点ではまだ DOM が無いので render 後に投げる。
 		private var didApplyInitialScroll = false
+		private var findObserver: Any?
+
+		override init() {
+			super.init()
+			findObserver = NotificationCenter.default.addObserver(
+				forName: .belveFindInPreview, object: nil, queue: .main
+			) { [weak self] _ in
+				guard let webView = self?.webView else { return }
+				webView.window?.makeFirstResponder(webView)
+				webView.evaluateJavaScript("window.showFindBar && window.showFindBar()") { _, _ in
+					webView.evaluateJavaScript("document.getElementById('find-input') && document.getElementById('find-input').focus()", completionHandler: nil)
+				}
+			}
+		}
+
+		deinit {
+			if let obs = findObserver {
+				NotificationCenter.default.removeObserver(obs)
+			}
+		}
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
 			guard let body = message.body as? [String: Any],

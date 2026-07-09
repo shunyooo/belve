@@ -14,6 +14,28 @@ struct ViewTransferToken: Transferable, Hashable {
 
 	private static let magic: [UInt8] = [0x42, 0x4C, 0x56, 0x56] // "BLVV"
 
+	init(viewId: UUID, projectId: UUID) {
+		self.viewId = viewId
+		self.projectId = projectId
+	}
+
+	init(rawData data: Data) throws {
+		guard data.count > 4, Array(data.prefix(4)) == Self.magic else {
+			throw CocoaError(.coderInvalidValue)
+		}
+		guard let payload = String(data: data.dropFirst(4), encoding: .utf8) else {
+			throw CocoaError(.coderInvalidValue)
+		}
+		let parts = payload.split(separator: "|")
+		guard parts.count == 2,
+		      let vid = UUID(uuidString: String(parts[0])),
+		      let pid = UUID(uuidString: String(parts[1])) else {
+			throw CocoaError(.coderInvalidValue)
+		}
+		self.viewId = vid
+		self.projectId = pid
+	}
+
 	static var transferRepresentation: some TransferRepresentation {
 		DataRepresentation(contentType: .data) { token in
 			var data = Data(magic)
@@ -45,6 +67,31 @@ struct PaneTransferToken: Transferable, Hashable {
 	let projectId: UUID
 
 	private static let magic: [UInt8] = [0x42, 0x4C, 0x56, 0x50] // "BLVP"
+
+	init(paneId: UUID, sourceViewId: UUID, projectId: UUID) {
+		self.paneId = paneId
+		self.sourceViewId = sourceViewId
+		self.projectId = projectId
+	}
+
+	init(rawData data: Data) throws {
+		guard data.count > 4, Array(data.prefix(4)) == Self.magic else {
+			throw CocoaError(.coderInvalidValue)
+		}
+		guard let payload = String(data: data.dropFirst(4), encoding: .utf8) else {
+			throw CocoaError(.coderInvalidValue)
+		}
+		let parts = payload.split(separator: "|")
+		guard parts.count == 3,
+		      let pid = UUID(uuidString: String(parts[0])),
+		      let svid = UUID(uuidString: String(parts[1])),
+		      let projId = UUID(uuidString: String(parts[2])) else {
+			throw CocoaError(.coderInvalidValue)
+		}
+		self.paneId = pid
+		self.sourceViewId = svid
+		self.projectId = projId
+	}
 
 	static var transferRepresentation: some TransferRepresentation {
 		DataRepresentation(contentType: .data) { token in
@@ -134,6 +181,7 @@ struct ProjectListView: View {
 	/// Section key (groupName / pinnedKey / "") currently being hovered during
 	/// a drag. Used to highlight the target header.
 	@State private var dragOverSectionKey: String?
+	@State private var viewDropTargetId: UUID?
 	@State private var notificationAreaHeight: CGFloat = {
 		let saved = UserDefaults.standard.double(forKey: "Belve.notificationAreaHeight")
 		return saved > 0 ? saved : 140
@@ -632,25 +680,23 @@ struct ProjectListView: View {
 			.padding(.horizontal, 6)
 			.padding(.vertical, 2)
 		} else {
-			Button(action: {
+			HStack(spacing: 6) {
+				Image(systemName: isActive ? "circle.fill" : "circle")
+					.font(.system(size: 7))
+					.foregroundStyle(isActive ? Theme.accent : Theme.textTertiary)
+				Text(v.name)
+					.font(.system(size: 11))
+					.foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
+					.lineLimit(1)
+				Spacer()
+			}
+			.padding(.horizontal, 6)
+			.padding(.vertical, 2)
+			.contentShape(Rectangle())
+			.onTapGesture {
 				selectedProject = project
 				viewStore.setActiveView(v.id, for: project.id)
-			}) {
-				HStack(spacing: 6) {
-					Image(systemName: isActive ? "circle.fill" : "circle")
-						.font(.system(size: 7))
-						.foregroundStyle(isActive ? Theme.accent : Theme.textTertiary)
-					Text(v.name)
-						.font(.system(size: 11))
-						.foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
-						.lineLimit(1)
-					Spacer()
-				}
-				.padding(.horizontal, 6)
-				.padding(.vertical, 2)
-				.contentShape(Rectangle())
 			}
-			.buttonStyle(.plain)
 			.draggable(ViewTransferToken(viewId: v.id, projectId: project.id)) {
 				Text(v.name)
 					.font(.system(size: 11))
@@ -658,22 +704,48 @@ struct ProjectListView: View {
 					.background(Theme.surface)
 					.cornerRadius(4)
 			}
-			.dropDestination(for: ViewTransferToken.self) { tokens, _ in
-				guard let token = tokens.first,
-				      token.projectId == project.id,
-				      token.viewId != v.id else { return false }
-				let views = viewStore.views(for: project.id)
-				guard let targetIndex = views.firstIndex(where: { $0.id == v.id }) else { return false }
-				viewStore.moveView(token.viewId, in: project.id, toIndex: targetIndex)
-				return true
-			}
-			.dropDestination(for: PaneTransferToken.self) { tokens, _ in
-				guard let token = tokens.first,
-				      token.projectId == project.id,
-				      token.sourceViewId != v.id else { return false }
-				onMovePaneToView?(token.paneId, token.sourceViewId, v.id)
-				selectedProject = project
-				viewStore.setActiveView(v.id, for: project.id)
+			.background(
+				RoundedRectangle(cornerRadius: 4)
+					.fill(viewDropTargetId == v.id ? Theme.accent.opacity(0.15) : Color.clear)
+			)
+			.overlay(
+				RoundedRectangle(cornerRadius: 4)
+					.stroke(viewDropTargetId == v.id ? Theme.accent.opacity(0.5) : Color.clear, lineWidth: 1)
+			)
+			.onDrop(of: [.data], isTargeted: Binding(
+				get: { viewDropTargetId == v.id },
+				set: { targeted in
+					if targeted { viewDropTargetId = v.id }
+					else if viewDropTargetId == v.id { viewDropTargetId = nil }
+				}
+			)) { providers in
+				for provider in providers {
+					provider.loadDataRepresentation(forTypeIdentifier: "public.data") { data, _ in
+						guard let data else { return }
+						// Try ViewTransferToken first
+						if let viewToken = try? ViewTransferToken(rawData: data),
+						   viewToken.projectId == project.id,
+						   viewToken.viewId != v.id {
+							let views = viewStore.views(for: project.id)
+							guard let targetIndex = views.firstIndex(where: { $0.id == v.id }) else { return }
+							DispatchQueue.main.async {
+								viewStore.moveView(viewToken.viewId, in: project.id, toIndex: targetIndex)
+							}
+							return
+						}
+						// Try PaneTransferToken
+						if let paneToken = try? PaneTransferToken(rawData: data),
+						   paneToken.projectId == project.id,
+						   paneToken.sourceViewId != v.id {
+							DispatchQueue.main.async {
+								onMovePaneToView?(paneToken.paneId, paneToken.sourceViewId, v.id)
+								selectedProject = project
+								viewStore.setActiveView(v.id, for: project.id)
+							}
+							return
+						}
+					}
+				}
 				return true
 			}
 			.contextMenu {

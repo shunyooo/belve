@@ -344,4 +344,104 @@ window.setScrollPercent = function(pct) {
 	el.scrollTop = max * pct;
 };
 
+// In-page search (Cmd+F from Swift)
+(function() {
+	var bar = document.createElement("div");
+	bar.id = "find-bar";
+	bar.style.cssText = "position:fixed;bottom:0;left:0;right:0;z-index:9999;padding:6px 12px;background:rgba(30,30,46,0.96);border-top:1px solid rgba(255,255,255,0.1);backdrop-filter:blur(8px);transform:translateY(100%);opacity:0;transition:transform 0.15s ease-out,opacity 0.15s ease-out;pointer-events:none;";
+	bar.innerHTML = '<input id="find-input" type="text" placeholder="Search…" style="width:240px;padding:4px 8px;font-size:13px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#cdd6f4;outline:none;">'
+		+ '<span id="find-count" style="margin-left:8px;font-size:11px;color:rgba(255,255,255,0.5);"></span>';
+	document.body.appendChild(bar);
+
+	var marks = [];
+	var currentIdx = -1;
+
+	function clearMarks() {
+		marks.forEach(function(m) {
+			var parent = m.parentNode;
+			parent.replaceChild(document.createTextNode(m.textContent), m);
+			parent.normalize();
+		});
+		marks = [];
+		currentIdx = -1;
+		document.getElementById("find-count").textContent = "";
+	}
+
+	function doSearch(query) {
+		clearMarks();
+		if (!query) return;
+		var walker = document.createTreeWalker(document.getElementById("preview") || document.body, NodeFilter.SHOW_TEXT, null);
+		var textNodes = [];
+		while (walker.nextNode()) textNodes.push(walker.currentNode);
+		var lower = query.toLowerCase();
+		textNodes.forEach(function(node) {
+			var text = node.textContent;
+			var idx = text.toLowerCase().indexOf(lower);
+			if (idx === -1) return;
+			var parts = [];
+			var last = 0;
+			while (idx !== -1) {
+				if (idx > last) parts.push(document.createTextNode(text.slice(last, idx)));
+				var mark = document.createElement("mark");
+				mark.style.cssText = "background:#f9e2af;color:#1e1e2e;border-radius:2px;padding:0 1px;";
+				mark.textContent = text.slice(idx, idx + query.length);
+				parts.push(mark);
+				marks.push(mark);
+				last = idx + query.length;
+				idx = text.toLowerCase().indexOf(lower, last);
+			}
+			if (last < text.length) parts.push(document.createTextNode(text.slice(last)));
+			var parent = node.parentNode;
+			parts.forEach(function(p) { parent.insertBefore(p, node); });
+			parent.removeChild(node);
+		});
+		document.getElementById("find-count").textContent = marks.length + " found";
+		if (marks.length > 0) {
+			currentIdx = 0;
+			marks[0].scrollIntoView({ block: "center" });
+			marks[0].style.background = "#fab387";
+		}
+	}
+
+	var findBarVisible = false;
+
+	window.showFindBar = function() {
+		if (findBarVisible) {
+			window.hideFindBar();
+			return;
+		}
+		findBarVisible = true;
+		bar.style.transform = "translateY(0)";
+		bar.style.opacity = "1";
+		bar.style.pointerEvents = "auto";
+		var input = document.getElementById("find-input");
+		input.value = "";
+		clearMarks();
+		input.focus();
+	};
+
+	window.hideFindBar = function() {
+		findBarVisible = false;
+		bar.style.transform = "translateY(100%)";
+		bar.style.opacity = "0";
+		bar.style.pointerEvents = "none";
+		clearMarks();
+	};
+
+	document.getElementById("find-input").addEventListener("input", function(e) {
+		doSearch(e.target.value);
+	});
+
+	document.getElementById("find-input").addEventListener("keydown", function(e) {
+		if (e.key === "Escape") {
+			window.hideFindBar();
+		} else if (e.key === "Enter" && marks.length > 0) {
+			if (currentIdx >= 0) marks[currentIdx].style.background = "#f9e2af";
+			currentIdx = (currentIdx + 1) % marks.length;
+			marks[currentIdx].style.background = "#fab387";
+			marks[currentIdx].scrollIntoView({ block: "center" });
+		}
+	});
+})();
+
 window.webkit.messageHandlers.markdownPreviewHandler.postMessage({ type: "ready" });

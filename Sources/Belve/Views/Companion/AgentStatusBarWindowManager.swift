@@ -26,18 +26,7 @@ final class AgentStatusBarWindowManager {
 	}
 
 	func updateStatusBar(hasCompanions: Bool) {
-		if hasCompanions {
-			if panel == nil && !userHidden {
-				let p = AgentStatusBarPanel()
-				panel = p
-				restoreOrPosition(p)
-				p.orderFrontRegardless()
-				observeMoves(p)
-			}
-		} else {
-			dismiss()
-			userHidden = false
-		}
+		// 自動表示を無効化。toggleVisibility (Cmd+Shift+A) で手動表示のみ。
 	}
 
 	func dismiss() {

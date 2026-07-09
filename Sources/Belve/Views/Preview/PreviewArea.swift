@@ -35,9 +35,10 @@ struct PreviewArea: View {
 	@State private var fileWatchRPCID: String?
 	/// 上記 watch の対象 dir。同じ dir に開き直した時に re-watch しないため。
 	@State private var fileWatchRPCDir: String?
-	/// RPC push 購読の解除トークン (closure ベースなので具体的に解除はせず、
-	/// 内部でフィルタする方針 — 多重 subscribe を防ぐためのフラグ的役割)。
-	@State private var fileWatchRPCSubscribed: Bool = false
+	/// RPC push 購読済みの client。client が再作成されたら再購読が必要なので
+	/// bool ではなく client の identity で管理する (= 再接続後に push が
+	/// 届かなくなる問題の対策)。
+	@State private var fileWatchSubscribedClient: RemoteRPCClient?
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
 	@State private var fileSearchResults: [FileSearchResult] = []
@@ -832,27 +833,23 @@ struct PreviewArea: View {
 	private func startFileWatch() {
 		stopFileWatch()
 		guard let file = openFile else { return }
+		logFileWatch("startFileWatch path=\(file.path) remote=\(project.isRemote) subscribed=\(fileWatchSubscribedClient != nil)")
 		NSLog("[Belve][filewatch] start path=%@ remote=%d", file.path, project.isRemote ? 1 : 0)
 		if project.isRemote {
-			// Remote project は **必ず RPC 経路**。silent fallback はしない
-			// (= 11 inactive project が永遠に ssh stat を叩いて入力ラグの
-			// 元になっていた過去の事例。CLAUDE.md の「優しい fallback 禁止」
-			// 参照)。RPC client が無ければリトライして待つ。
 			if let client = RemoteRPCRegistry.shared.client(for: project.id) {
+				logFileWatch("startFileWatch: got RPC client, starting watch")
 				startFileWatchRPC(file: file, client: client)
 				return
 			}
-			// RPC client が未登録 (= 起動直後で PTY setup がまだ完了してない)。
-			// 3 秒後にリトライして client が登録されてれば watch 開始。
-			NSLog("[Belve][filewatch] no RPC client for project=%@ — will retry in 3s", project.name)
+			logFileWatch("startFileWatch: no RPC client, will retry")
 			let projectId = project.id
 			DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in
 				guard let file = openFile else { return }
 				if let client = RemoteRPCRegistry.shared.client(for: projectId) {
-					NSLog("[Belve][filewatch] retry succeeded for project=%@", project.name)
+					logFileWatch("startFileWatch: retry succeeded")
 					startFileWatchRPC(file: file, client: client)
 				} else {
-					NSLog("[Belve][filewatch] retry failed — no RPC client for project=%@, file watch disabled", project.name)
+					logFileWatch("startFileWatch: retry failed, no RPC client")
 				}
 			}
 			return
@@ -862,12 +859,41 @@ struct PreviewArea: View {
 	}
 
 	private func startFileWatchRPC(file: OpenFile, client: RemoteRPCClient) {
+		// Push 購読は client ごとに 1 回。client が再作成されたら (= 再接続後)
+		// 新しい client に再購読 + dir watch を強制再登録する。
+		// closure 側で「現在の openFile.path と一致する event のみ」を
+		// フィルタするので、ファイル切替時は re-subscribe 不要。
+		if fileWatchSubscribedClient !== client {
+			fileWatchSubscribedClient = client
+			fileWatchRPCDir = nil
+			fileWatchRPCID = nil
+			client.subscribePush { type, msg in
+				if type == "fsevent" {
+					let line = "\(Date()) push type=\(type) kind=\(msg["kind"] ?? "?") path=\(msg["path"] ?? "?")\n"
+					if let d = line.data(using: .utf8) {
+						let u = URL(fileURLWithPath: "/tmp/belve-filewatch.log")
+						if let fh = try? FileHandle(forWritingTo: u) { fh.seekToEndOfFile(); fh.write(d); fh.closeFile() }
+						else { try? d.write(to: u) }
+					}
+				}
+				guard type == "fsevent",
+				      let evPath = msg["path"] as? String,
+				      let kind = msg["kind"] as? String,
+				      kind == "modify" || kind == "create" || kind == "rename"
+				else { return }
+				DispatchQueue.main.async {
+					handleExternalFileChange(at: evPath)
+				}
+			}
+		}
+
 		let rawDir = (file.path as NSString).deletingLastPathComponent
 		// 相対パス (DevContainer の effectivePath="." 由来) を broker の cwd で
 		// 絶対パスに解決。broker 側の fsnotify は CWD 非依存で動くため、
 		// 相対パスのまま送ると wrong dir を watch する。
 		let dir: String
-		if rawDir.hasPrefix("/") {
+		if rawDir.hasPrefix("/") || rawDir.hasPrefix("~") {
+			// 絶対 or チルダ — broker 側の expandHome が解決する
 			dir = rawDir
 		} else if let cwd = RemoteRPCRegistry.shared.cwd(for: project.id) {
 			let joined = rawDir == "." ? cwd : (cwd as NSString).appendingPathComponent(rawDir)
@@ -888,29 +914,13 @@ struct PreviewArea: View {
 				do {
 					let res = try await client.send(op: "watch", params: ["path": dir])
 					if let id = res.result?["watchId"] as? String {
-						NSLog("[Belve][filewatch] watch registered dir=%@ watchId=%@", dir, id)
+						logFileWatch("watch registered dir=\(dir) watchId=\(id)")
 						await MainActor.run { fileWatchRPCID = id }
 					} else {
-						NSLog("[Belve][filewatch] watch returned no watchId for dir=%@ res=%@", dir, String(describing: res.raw))
+						logFileWatch("watch returned no watchId dir=\(dir)")
 					}
 				} catch {
-					NSLog("[Belve][filewatch] watch failed: %@", error.localizedDescription)
-				}
-			}
-		}
-		// push 購読は 1 回だけ。closure 側で「現在の openFile.path と一致する
-		// modify event のみ」をフィルタするので、ファイル切替時に re-subscribe
-		// しなくて済む。
-		if !fileWatchRPCSubscribed {
-			fileWatchRPCSubscribed = true
-			client.subscribePush { type, msg in
-				guard type == "fsevent",
-				      let evPath = msg["path"] as? String,
-				      let kind = msg["kind"] as? String,
-				      kind == "modify" || kind == "create"
-				else { return }
-				DispatchQueue.main.async {
-					handleExternalFileChange(at: evPath)
+					logFileWatch("watch failed dir=\(dir): \(error.localizedDescription)")
 				}
 			}
 		}
@@ -928,10 +938,37 @@ struct PreviewArea: View {
 		return path
 	}
 
+	/// fsevent path (絶対) と openFile.path (~/... or 相対 or 絶対) を比較。
+	/// SSH プロジェクトの ~ パスは絶対パスの末尾と一致するかで判定する。
+	private func pathsMatch(_ evPath: String, _ filePath: String) -> Bool {
+		if evPath == filePath { return true }
+		let resolved = resolveFilePath(filePath)
+		if evPath == resolved { return true }
+		// ~/src/foo → evPath が /home/user/src/foo の場合、末尾一致で判定
+		if filePath.hasPrefix("~/") {
+			let suffix = String(filePath.dropFirst(1)) // "/src/foo"
+			return evPath.hasSuffix(suffix)
+		}
+		return false
+	}
+
+	private func logFileWatch(_ msg: String) {
+		let line = "\(Date()) \(msg)\n"
+		if let d = line.data(using: .utf8) {
+			let u = URL(fileURLWithPath: "/tmp/belve-filewatch.log")
+			if let fh = try? FileHandle(forWritingTo: u) { fh.seekToEndOfFile(); fh.write(d); fh.closeFile() }
+			else { try? d.write(to: u) }
+		}
+	}
+
 	private func handleExternalFileChange(at evPath: String) {
-		guard let current = openFile else { return }
-		let resolvedCurrent = resolveFilePath(current.path)
-		guard resolvedCurrent == evPath || current.path == evPath, !isDirty else { return }
+		guard let current = openFile else {
+			logFileWatch("handleChange: no openFile")
+			return
+		}
+		let matched = pathsMatch(evPath, current.path)
+		logFileWatch("handleChange: evPath=\(evPath) current=\(current.path) matched=\(matched) isDirty=\(isDirty)")
+		guard matched, !isDirty else { return }
 		// readFile と openFile 更新は元の相対パス (= current.path) を使う。
 		// evPath は fsevent 由来の絶対パスなので provider.readFile に渡すと
 		// 相対パスベースの provider (DevContainer 等) で読めない。

@@ -43,8 +43,6 @@ final class BelveImageSchemeHandler: NSObject, WKURLSchemeHandler {
 		let provider = self.provider
 		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
 			guard let self else { return }
-			// download を temp file 経由で取得 (provider は binary-safe な file 取得 API
-			// しか持たないため)。取得後 bytes を読み出す。
 			let ext = (absPath as NSString).pathExtension
 			let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("belve-md-img")
 			try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -53,6 +51,9 @@ final class BelveImageSchemeHandler: NSObject, WKURLSchemeHandler {
 
 			let ok = provider.downloadFile(remotePath: absPath, to: tmpFile)
 			let data = ok ? (try? Data(contentsOf: tmpFile)) : nil
+			if !ok || data == nil {
+				NSLog("[Belve][md-img] FAIL path=%@ ok=%d dataSize=%d", absPath, ok ? 1 : 0, data?.count ?? 0)
+			}
 
 			DispatchQueue.main.async {
 				guard let data else {
