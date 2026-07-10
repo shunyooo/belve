@@ -320,6 +320,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				}
 				return nil
 			case "f" where !shift:
+				// Code editor (CodeMirror) が focus 中なら Cmd+F を握り潰さず素通しして
+				// CodeMirror 標準の検索パネル (basicSetup の searchKeymap) を出す。
+				// それ以外 (markdown preview 等) は belveFindInPreview で find bar を出す。
+				if Self.isEditorWebViewFocused() { return event }
 				NotificationCenter.default.post(name: .belveFindInPreview, object: nil)
 				return nil
 			case "," where !shift:
@@ -401,6 +405,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		var current: NSView? = responder
 		while let v = current {
 			if v.identifier?.rawValue == "BelveDiffWebView" { return true }
+			current = v.superview
+		}
+		return false
+	}
+
+	/// keyWindow の firstResponder が code editor の WKWebView (identifier が
+	/// `BelveEditorWebView:` prefix) かを判定。Cmd+F を CodeMirror 標準検索に
+	/// 渡すための分岐に使う。
+	static func isEditorWebViewFocused() -> Bool {
+		guard let responder = NSApp.keyWindow?.firstResponder as? NSView else { return false }
+		var current: NSView? = responder
+		while let v = current {
+			if v.identifier?.rawValue.hasPrefix("BelveEditorWebView") == true { return true }
 			current = v.superview
 		}
 		return false
