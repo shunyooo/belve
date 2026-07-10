@@ -89,6 +89,14 @@ struct CodeEditorView: NSViewRepresentable {
 		)
 	}
 
+	static func logEdit(_ msg: String) {
+		let line = "\(Date()) \(msg)\n"
+		guard let d = line.data(using: .utf8) else { return }
+		let u = URL(fileURLWithPath: "/tmp/belve-filewatch.log")
+		if let fh = try? FileHandle(forWritingTo: u) { fh.seekToEndOfFile(); fh.write(d); fh.closeFile() }
+		else { try? d.write(to: u) }
+	}
+
 	static func buildHTML() -> String? {
 		let execDir = Bundle.main.executableURL!.deletingLastPathComponent()
 		let bundlePath = execDir.appendingPathComponent("Belve_Belve.bundle/Contents/Resources/Resources")
@@ -230,12 +238,15 @@ struct CodeEditorView: NSViewRepresentable {
 			let fileState = (filename, content, line, column)
 			guard isReady else {
 				pendingFile = fileState
+				CodeEditorView.logEdit("openFile: not ready, queued path=\(filename) len=\(content.count)")
 				return
 			}
 			if let lastOpenedFile, lastOpenedFile == fileState {
+				CodeEditorView.logEdit("openFile: dedup skip path=\(filename) len=\(content.count)")
 				return
 			}
 			let isSameFile = lastOpenedFile?.0 == filename
+			CodeEditorView.logEdit("openFile: apply sameFile=\(isSameFile) path=\(filename) len \(lastOpenedFile?.1.count ?? -1)→\(content.count)")
 			lastOpenedFile = fileState
 			let escaped = content
 				.replacingOccurrences(of: "\\", with: "\\\\")

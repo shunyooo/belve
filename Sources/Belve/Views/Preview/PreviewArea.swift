@@ -973,23 +973,32 @@ struct PreviewArea: View {
 		// evPath は fsevent 由来の絶対パスなので provider.readFile に渡すと
 		// 相対パスベースの provider (DevContainer 等) で読めない。
 		let originalPath = current.path
-		NSLog("[Belve][filewatch] change detected evPath=%@ originalPath=%@", evPath, originalPath)
+		let oldLen = current.content.count
 		let provider = project.provider
 		DispatchQueue.global(qos: .utility).async {
 			guard let newContent = provider.readFile(originalPath) else {
-				NSLog("[Belve][filewatch] readFile returned nil for %@", originalPath)
+				logFileWatch("handleChange: readFile nil path=\(originalPath)")
 				return
 			}
 			DispatchQueue.main.async {
-				guard let currentFile = openFile, currentFile.path == originalPath, !isDirty else { return }
+				guard let currentFile = openFile, currentFile.path == originalPath else {
+					logFileWatch("handleChange: openFile changed under us path=\(originalPath)")
+					return
+				}
+				guard !isDirty else {
+					logFileWatch("handleChange: dropped, isDirty path=\(originalPath)")
+					return
+				}
 				if newContent != currentFile.content {
-					NSLog("[Belve][filewatch] updating preview for %@ (len %d→%d)", originalPath, currentFile.content.count, newContent.count)
+					logFileWatch("handleChange: UPDATED path=\(originalPath) len \(oldLen)→\(newContent.count)")
 					openFile = OpenFile(
 						path: originalPath,
 						content: newContent,
 						line: currentFile.line,
 						column: currentFile.column
 					)
+				} else {
+					logFileWatch("handleChange: content identical (readFile stale?) path=\(originalPath) len=\(newContent.count)")
 				}
 			}
 		}
