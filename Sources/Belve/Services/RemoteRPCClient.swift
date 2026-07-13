@@ -39,6 +39,12 @@ final class RemoteRPCClient: @unchecked Sendable {
 	private var connectionReady = false
 	/// Push-event handlers (file watch etc.). Multiple subscribers allowed.
 	private var pushHandlers: [(String, [String: Any]) -> Void] = []
+	/// 接続 (再) 確立時に呼ばれる handler。broker 側の per-connection state
+	/// (fsnotify watch 等) は接続と共に消えるため、購読側はこれを受けて
+	/// watch を登録し直す。初回接続でも発火する (再登録は冪等)。
+	private var reconnectHandlers: [() -> Void] = []
+	/// 初回接続を区別するためのフラグ (ログ用)。
+	private var hasConnectedOnce = false
 
 	init(host: String, routeProjShort: String, muxVia: String) {
 		self.host = host
@@ -66,6 +72,13 @@ final class RemoteRPCClient: @unchecked Sendable {
 	/// receives `(type, payload)`. Called on the RPC client's queue.
 	func subscribePush(_ handler: @escaping (String, [String: Any]) -> Void) {
 		stateLock.withLock { pushHandlers.append(handler) }
+	}
+
+	/// Subscribe to connection (re-)establishment. broker 側の per-connection
+	/// state (fsnotify watch 等) は TCP 切断で消えるので、これを受けて再登録する。
+	/// Called on the RPC client's queue.
+	func subscribeReconnect(_ handler: @escaping () -> Void) {
+		stateLock.withLock { reconnectHandlers.append(handler) }
 	}
 
 	/// Drop the connection. Next `send` will reconnect.
@@ -178,6 +191,18 @@ final class RemoteRPCClient: @unchecked Sendable {
 				self.connectionReady = true
 				if !resumed { resumed = true; cont.resume() }
 				self.startReading(conn)
+				// 再接続 (2 回目以降の確立) を購読者に通知。broker の
+				// per-connection watch を再登録させる。初回接続では発火しない
+				// (= 通常経路の watch 登録と重複しないように)。
+				let isReconnect = self.hasConnectedOnce
+				self.hasConnectedOnce = true
+				if isReconnect {
+					let handlers = self.stateLock.withLock { self.reconnectHandlers }
+					if !handlers.isEmpty {
+						NSLog("[Belve][rpc] reconnected host=%@ — notifying %d watch subscribers", self.host, handlers.count)
+						for h in handlers { h() }
+					}
+				}
 			case .failed(let err), .waiting(let err):
 				NSLog("[Belve][rpc] conn state=%@ host=%@ err=%@", "\(state)", self.host, err.localizedDescription)
 				if !resumed { resumed = true; cont.resume(throwing: err) }

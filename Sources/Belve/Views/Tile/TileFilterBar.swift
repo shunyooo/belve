@@ -12,6 +12,8 @@ struct TileFilterBar: View {
 		HStack(spacing: 12) {
 			statusFilterPicker
 			Divider().frame(height: 18)
+			pinnedProjectsToggle
+			Divider().frame(height: 18)
 			projectFilterButton
 			Divider().frame(height: 18)
 			sortPicker
@@ -175,6 +177,27 @@ struct TileFilterBar: View {
 			.disabled(filterState.columnCount >= 8)
 		}
 		.help(filterState.layoutMode == .grid ? "Grid columns (1-8)" : "Visible tiles per row (1-8)")
+	}
+
+	private var pinnedProjectsToggle: some View {
+		let active = filterState.pinnedProjectsOnly
+		return Button(action: { filterState.pinnedProjectsOnly.toggle() }) {
+			HStack(spacing: 4) {
+				Image(systemName: active ? "pin.fill" : "pin")
+					.font(.system(size: 10))
+				Text("Pinned")
+					.font(.system(size: 11, weight: active ? .semibold : .regular))
+			}
+			.foregroundStyle(active ? Theme.textPrimary : Theme.textSecondary)
+			.padding(.horizontal, 10)
+			.padding(.vertical, 4)
+			.background(
+				RoundedRectangle(cornerRadius: 4)
+					.fill(active ? Theme.surfaceActive : Theme.bg.opacity(0.6))
+			)
+		}
+		.buttonStyle(.plain)
+		.help("Show pinned projects only")
 	}
 
 	private var statusFilterPicker: some View {

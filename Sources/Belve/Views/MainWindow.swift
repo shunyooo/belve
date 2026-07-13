@@ -776,7 +776,7 @@ struct MainWindow: View {
 			let orderedPaneIds = state.orderedPaneIds()
 			for (idx, paneUUID) in orderedPaneIds.enumerated() {
 				let paneIdString = paneUUID.uuidString
-				if filter.shouldShow(paneId: paneIdString, projectId: project.id, status: status) {
+				if filter.shouldShow(paneId: paneIdString, projectId: project.id, status: status, isPinnedProject: project.isPinned) {
 					visible.append(PaneRef(
 						projectId: project.id,
 						projectOrder: projIdx,

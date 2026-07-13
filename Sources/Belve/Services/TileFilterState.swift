@@ -72,6 +72,11 @@ final class TileFilterState: ObservableObject {
 		didSet { if oldValue != statusFilter { save() } }
 	}
 
+	/// Pinned プロジェクトのみ表示する filter。デフォルト on。
+	@Published var pinnedProjectsOnly: Bool = true {
+		didSet { if oldValue != pinnedProjectsOnly { save() } }
+	}
+
 	/// 表示対象 project (空なら全 project)。
 	@Published var selectedProjectIds: Set<UUID> = [] {
 		didSet { if oldValue != selectedProjectIds { save() } }
@@ -80,6 +85,12 @@ final class TileFilterState: ObservableObject {
 	/// Pin 済 pane (filter 関係なく常に表示)。
 	@Published var pinnedPaneIds: Set<String> = [] {
 		didSet { if oldValue != pinnedPaneIds { save() } }
+	}
+
+	/// 非表示 pane。tile grid から除外され、下部トレイにチップとして出る。
+	/// チップクリックで復活。hide は pin より優先 (hide 時に pin は自動解除)。
+	@Published var hiddenPaneIds: Set<String> = [] {
+		didSet { if oldValue != hiddenPaneIds { save() } }
 	}
 
 	/// Tile 全体で単一の focus 対象 (project 横断)。永続化なし。
@@ -140,6 +151,8 @@ final class TileFilterState: ObservableObject {
 		var rowsPerScreen: Int?
 		var headerHeight: CGFloat?
 		var sortOrder: String?
+		var pinnedProjectsOnly: Bool?
+		var hiddenPaneIds: [String]?
 	}
 
 	private init() {
@@ -152,6 +165,7 @@ final class TileFilterState: ObservableObject {
 			guard let self, let paneId = notif.userInfo?["paneId"] as? String else { return }
 			if self.focusedPaneId == paneId { self.focusedPaneId = nil }
 			if self.pinnedPaneIds.contains(paneId) { self.pinnedPaneIds.remove(paneId) }
+			if self.hiddenPaneIds.contains(paneId) { self.hiddenPaneIds.remove(paneId) }
 		}
 	}
 
@@ -182,6 +196,12 @@ final class TileFilterState: ObservableObject {
 		if let raw = p.sortOrder, let s = SortOrder(rawValue: raw) {
 			sortOrder = s
 		}
+		if let b = p.pinnedProjectsOnly {
+			pinnedProjectsOnly = b
+		}
+		if let ids = p.hiddenPaneIds {
+			hiddenPaneIds = Set(ids)
+		}
 	}
 
 	private func save() {
@@ -193,7 +213,9 @@ final class TileFilterState: ObservableObject {
 			layoutMode: layoutMode.rawValue,
 			rowsPerScreen: rowsPerScreen,
 			headerHeight: headerHeight,
-			sortOrder: sortOrder.rawValue
+			sortOrder: sortOrder.rawValue,
+			pinnedProjectsOnly: pinnedProjectsOnly,
+			hiddenPaneIds: Array(hiddenPaneIds)
 		)
 		if let data = try? JSONEncoder().encode(p) {
 			try? data.write(to: Self.configURL)
@@ -254,9 +276,23 @@ final class TileFilterState: ObservableObject {
 		}
 	}
 
-	/// status と pin を考慮した表示判定。Pin 済なら常に通す。
-	func shouldShow(paneId: String, projectId: UUID, status: AgentStatus) -> Bool {
+	/// Pane を非表示にする。pin と focus は自動解除。
+	func hidePane(_ paneId: String) {
+		pinnedPaneIds.remove(paneId)
+		if focusedPaneId == paneId { focusedPaneId = nil }
+		hiddenPaneIds.insert(paneId)
+	}
+
+	/// 非表示 pane を復活させる。
+	func unhidePane(_ paneId: String) {
+		hiddenPaneIds.remove(paneId)
+	}
+
+	/// status と pin を考慮した表示判定。hidden が最優先、次に pane pin。
+	func shouldShow(paneId: String, projectId: UUID, status: AgentStatus, isPinnedProject: Bool = false) -> Bool {
+		if hiddenPaneIds.contains(paneId) { return false }
 		if pinnedPaneIds.contains(paneId) { return true }
+		if pinnedProjectsOnly && !isPinnedProject { return false }
 		if !selectedProjectIds.isEmpty && !selectedProjectIds.contains(projectId) { return false }
 		switch statusFilter {
 		case .all:

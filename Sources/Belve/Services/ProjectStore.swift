@@ -315,6 +315,12 @@ class ProjectStore: ObservableObject {
 				self?.scheduleFsRefresh(projectId: projectId)
 			}
 		}
+		// TCP 内部再接続で broker 側の watch (per-connection) が消えるので、
+		// 再接続のたびに root watch を登録し直す (再接続時のみ発火)。
+		client.subscribeReconnect { [weak client] in
+			guard let client else { return }
+			Task { _ = try? await client.send(op: "watch", params: ["path": rootPath]) }
+		}
 		Task { @MainActor in
 			_ = try? await client.send(op: "watch", params: ["path": rootPath])
 		}

@@ -867,6 +867,16 @@ struct PreviewArea: View {
 			fileWatchSubscribedClient = client
 			fileWatchRPCDir = nil
 			fileWatchRPCID = nil
+			// TCP 内部再接続で broker 側の watch (per-connection) が消えるので、
+			// 再接続通知を受けて dir watch を登録し直す。
+			client.subscribeReconnect {
+				DispatchQueue.main.async {
+					logFileWatch("rpc reconnected — re-registering file watch")
+					fileWatchRPCDir = nil
+					fileWatchRPCID = nil
+					startFileWatch()
+				}
+			}
 			client.subscribePush { type, msg in
 				if type == "fsevent" {
 					let line = "\(Date()) push type=\(type) kind=\(msg["kind"] ?? "?") path=\(msg["path"] ?? "?")\n"

@@ -29,8 +29,79 @@ struct TileView: View {
 			)
 			Theme.borderSubtle.frame(height: 1)
 			content
+			let hidden = hiddenPanes
+			if !hidden.isEmpty {
+				Theme.borderSubtle.frame(height: 1)
+				hiddenTray(hidden)
+			}
 		}
 		.background(Theme.bg)
+	}
+
+	/// 非表示 pane のチップトレイ (画面下部)。チップクリックで復活。
+	private func hiddenTray(_ panes: [PaneCellInfo]) -> some View {
+		ScrollView(.horizontal, showsIndicators: false) {
+			HStack(spacing: 6) {
+				HStack(spacing: 4) {
+					Image(systemName: "eye.slash")
+						.font(.system(size: 9))
+					Text("Hidden")
+						.font(.system(size: 10, weight: .semibold))
+				}
+				.foregroundStyle(Theme.textTertiary)
+
+				ForEach(panes, id: \.cellKey) { entry in
+					Button(action: { filterState.unhidePane(entry.paneId) }) {
+						HStack(spacing: 4) {
+							StatusIndicator(status: entry.status, sizeOverride: 8)
+							Text("\(entry.project.name) #\(entry.paneIndex + 1)")
+								.font(.system(size: 10))
+								.foregroundStyle(Theme.textSecondary)
+								.lineLimit(1)
+							Image(systemName: "arrow.up.left.square")
+								.font(.system(size: 8))
+								.foregroundStyle(Theme.textTertiary)
+						}
+						.padding(.horizontal, 8)
+						.padding(.vertical, 3)
+						.background(
+							RoundedRectangle(cornerRadius: 4)
+								.fill(Theme.surface)
+						)
+						.overlay(
+							RoundedRectangle(cornerRadius: 4)
+								.stroke(Theme.borderSubtle, lineWidth: 1)
+						)
+					}
+					.buttonStyle(.plain)
+					.help("Click to restore this pane")
+				}
+			}
+			.padding(.horizontal, 14)
+			.padding(.vertical, 6)
+		}
+		.background(Theme.surface.opacity(0.5))
+	}
+
+	/// 非表示中の pane 一覧 (トレイ表示用)。visiblePanes と同じ走査で
+	/// hiddenPaneIds に入ってるものだけ集める。
+	private var hiddenPanes: [PaneCellInfo] {
+		var result: [PaneCellInfo] = []
+		for (projectIdx, project) in projectStore.projects.enumerated() {
+			let state = stateManager.state(for: ProjectViewStore.shared.activeView(for: project.id).id)
+			let status = notificationStore.agentStatus[project.id]?.status ?? .idle
+			for (paneIdString, paneIndex) in collectLeafPanes(from: state.root) {
+				guard filterState.hiddenPaneIds.contains(paneIdString) else { continue }
+				result.append(PaneCellInfo(
+					project: project,
+					paneId: paneIdString,
+					paneIndex: paneIndex,
+					status: status,
+					projectOrder: projectIdx
+				))
+			}
+		}
+		return result
 	}
 
 	@ViewBuilder
@@ -141,7 +212,7 @@ struct TileView: View {
 			let state = stateManager.state(for: ProjectViewStore.shared.activeView(for: project.id).id)
 			let status = notificationStore.agentStatus[project.id]?.status ?? .idle
 			for (paneIdString, paneIndex) in collectLeafPanes(from: state.root) {
-				guard filterState.shouldShow(paneId: paneIdString, projectId: project.id, status: status) else {
+				guard filterState.shouldShow(paneId: paneIdString, projectId: project.id, status: status, isPinnedProject: project.isPinned) else {
 					continue
 				}
 				result.append(PaneCellInfo(
@@ -273,12 +344,23 @@ private struct TileCell: View {
 				.font(.system(size: subTextSize))
 				.foregroundStyle(Theme.textTertiary)
 			Spacer()
+			hideButton
 			pinButton
 			closeButton
 		}
 		.padding(.horizontal, 4)
 		.padding(.vertical, 3)
 		.background(Theme.surfaceActive.opacity(0.5))
+	}
+
+	private var hideButton: some View {
+		Button(action: { filterState.hidePane(paneId) }) {
+			Image(systemName: "eye.slash")
+				.font(.system(size: subTextSize))
+				.foregroundStyle(Theme.textTertiary)
+		}
+		.buttonStyle(.plain)
+		.help("Hide this pane (restore from the tray below)")
 	}
 
 	private var pinButton: some View {
