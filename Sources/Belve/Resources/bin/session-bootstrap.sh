@@ -29,6 +29,44 @@ if [ -n "$BELVE_PANE_ID" ]; then
     echo $$ > "$HOME/.belve/panes/$BELVE_PANE_ID.pid"
 fi
 
+# --- tmux holder (experiment branch: tmux-persist-experiment) -----------------
+# シェルを直接起動する代わりに tmux セッションの中で起動する。狙い:
+#  (1) belve-persist broker を再起動してもシェル/実行中プロセスが tmux server 側で
+#      生き残る (永続化を tmux に委譲)。
+#  (2) 外部 tmux クライアント (iOS SSH アプリ等) からも `tmux attach` で刺さり、
+#      PC ↔ モバイルで作業を引き継げる。
+# NOTE(phase1): tmux が無い host (最小 container 等) では従来どおりシェルを直接
+#   起動する。これは replay を belve-persist 側に残している間だけの暫定 guard。
+#   replay 撤去 (phase2) の前に static tmux binary を bundle 配布して全 host で
+#   tmux を保証し、この `command -v` guard は撤去する。
+if command -v tmux >/dev/null 2>&1 && [ -z "$TMUX" ] && [ -n "$BELVE_PANE_ID" ]; then
+    cat > "$HOME/.belve/belve-tmux.conf" <<'TMUXCONF'
+# Belve holder config — 透過的な永続化レイヤ。
+set -g default-terminal "tmux-256color"
+set -as terminal-features ",xterm-256color:RGB"  # truecolor 透過 (外側 TERM=xterm-256color)
+set -g allow-passthrough on                       # アプリ OSC (agent 通知/画像) 透過
+set -g set-clipboard on                           # OSC52 コピー
+set -g escape-time 0                              # TUI の ESC 遅延なし
+set -g focus-events on
+set -g history-limit 100000
+set -g mouse on
+set -g status off                                 # ステータスバー非表示 (Belve が UI を持つ)
+set -g destroy-unattached off                     # detach してもセッション維持
+set -g exit-empty off
+# prefix は C-Space。C-b は readline と衝突するので回避しつつ、既定キーバインドは
+# 残す。狙いは外部クライアント (mosh + tmux attach) が detach(prefix d) や
+# copy-mode/scrollback(prefix [) を使えること。Belve pane 側は C-Space をほぼ
+# 使わないので実害は小さい。
+set -g prefix C-Space
+unbind C-b
+bind C-Space send-prefix
+TMUXCONF
+    _belve_sess="belve-$(printf '%s' "$BELVE_PANE_ID" | tr './:@ ' '_____')"
+    # -A: 既存なら attach / 無ければ作成。作成時のみ pane command として $0 を
+    # 再実行し、$TMUX が立った状態で下の通常シェル起動に落ちる。
+    exec tmux -f "$HOME/.belve/belve-tmux.conf" new-session -A -s "$_belve_sess" "$0"
+fi
+
 SHELL_PATH="${SHELL:-/bin/bash}"
 SHELL_NAME="$(basename "$SHELL_PATH")"
 
