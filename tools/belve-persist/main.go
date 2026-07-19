@@ -834,6 +834,19 @@ func runSessionPTY(s *tcpSession, logf func(string, ...interface{})) {
 		// Session name を env に export。Hook script が session env file (=
 		// /tmp/belve-session-env/<name>.env) を fallback 読みするための key。
 		env = append(env, "BELVE_SESSION_NAME="+s.name)
+		// TERM: VM broker は非PTYの ssh 経由で nohup 起動されるため os.Environ() が
+		// TERM=dumb を継承しうる。この dumb が session (shell→tmux) に伝播すると tmux が
+		// "terminal does not support clear" で落ちる。frontend は常に xterm.js なので、
+		// 継承値を捨てて xterm-256color に権威的に固定する。container broker は docker
+		// exec -e で既に同値だが、ここで一元化して VM/container の経路差を解消する。
+		termFiltered := env[:0]
+		for _, e := range env {
+			if strings.HasPrefix(e, "TERM=") {
+				continue
+			}
+			termFiltered = append(termFiltered, e)
+		}
+		env = append(termFiltered, "TERM=xterm-256color")
 		cmd.Env = env
 		if err := cmd.Start(); err != nil {
 			logf("session %s: exec error: %v", s.name, err)
