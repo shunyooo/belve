@@ -34,3 +34,8 @@ sandbox/character-sprites/.backup-*/
 
 # Adjacent clones of other repos (e.g. dropped here for cross-referencing).
 ghostty/
+
+# Local-only files (secrets, agent state, session handoff notes) — never commit.
+.env
+.haltr/
+HANDOFF.md
