@@ -514,6 +514,11 @@ type tcpSession struct {
 	args      []string
 	extraEnv  []string // per-session env (BELVE_PANE_ID, BELVE_PROJECT_ID, ...)
 	alive     bool // false after child exits without respawn
+	// tmuxHolder: この host に tmux があり session-bootstrap がシェルを tmux の
+	// 中で起動している場合 true。永続化/replay を tmux に委譲するので broker 側は
+	// raw replay を貯めず・送らず (二重再生による "attach 時の延々スクロール" 回避)、
+	// 再 attach 時は tmux に 1 回だけ再描画させる。phase1.5 で tmux 保証後に撤去予定。
+	tmuxHolder bool
 	// Instrumentation: total bytes emitted to the session and total bytes
 	// discarded by the ring-buffer truncation. Helps answer "does the replay
 	// buffer actually fill up in practice?" without interfering with session
@@ -559,21 +564,25 @@ func (s *tcpSession) broadcast(data []byte) {
 	// alongside the `\r` rollback, leaving the terminal in a cursor state
 	// the replay couldn't reconstruct. Keep raw bytes; proper collapse needs
 	// a virtual-terminal implementation (vterm) that tracks cursor state.
-	s.replayBuf = append(s.replayBuf, data...)
-	if len(s.replayBuf) > tcpReplayMax {
-		excess := uint64(len(s.replayBuf) - tcpReplayMax)
-		s.bytesDiscarded += excess
-		s.truncations++
-		s.replayBuf = s.replayBuf[len(s.replayBuf)-tcpReplayMax:]
-	}
-	// Only log when we actually had to discard — steady-state buffer use
-	// (nothing dropped) isn't interesting. Throttle to 60 s so a busy
-	// session doesn't spam the broker log.
-	if s.bytesDiscarded > 0 && time.Since(s.lastStatLog) > 60*time.Second {
-		log.Printf("[replay] session=%q emitted=%d discarded=%d trunc=%d bufLen=%d pct_kept=%.1f%%",
-			s.name, s.bytesEmitted, s.bytesDiscarded, s.truncations, len(s.replayBuf),
-			100.0*float64(s.bytesEmitted-s.bytesDiscarded)/float64(s.bytesEmitted))
-		s.lastStatLog = time.Now()
+	// tmux holder では replay を tmux に委譲するので broker はバッファに貯めない
+	// (貯めて再生すると tmux の描画履歴を二重再生して延々スクロールになる)。
+	if !s.tmuxHolder {
+		s.replayBuf = append(s.replayBuf, data...)
+		if len(s.replayBuf) > tcpReplayMax {
+			excess := uint64(len(s.replayBuf) - tcpReplayMax)
+			s.bytesDiscarded += excess
+			s.truncations++
+			s.replayBuf = s.replayBuf[len(s.replayBuf)-tcpReplayMax:]
+		}
+		// Only log when we actually had to discard — steady-state buffer use
+		// (nothing dropped) isn't interesting. Throttle to 60 s so a busy
+		// session doesn't spam the broker log.
+		if s.bytesDiscarded > 0 && time.Since(s.lastStatLog) > 60*time.Second {
+			log.Printf("[replay] session=%q emitted=%d discarded=%d trunc=%d bufLen=%d pct_kept=%.1f%%",
+				s.name, s.bytesEmitted, s.bytesDiscarded, s.truncations, len(s.replayBuf),
+				100.0*float64(s.bytesEmitted-s.bytesDiscarded)/float64(s.bytesEmitted))
+			s.lastStatLog = time.Now()
+		}
 	}
 	for _, c := range s.clients {
 		writeMsg(c, msgData, data)
@@ -637,6 +646,17 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 
 	logf("broker started on %s", listenAddr)
 
+	// tmux holder 判定。tmux があればシェルは tmux の中で起動される (session-bootstrap
+	// の guard と一致)。その場合 broker の raw replay は tmux の描画履歴を二重再生して
+	// しまうので、replay を貯めず・送らず、再 attach 時に tmux へ再描画を促す。
+	// NOTE: phase1.5 で static tmux を全 host に配布して tmux を保証したら、この判定を
+	// 撤去して常時 holder 前提にし、replay path 自体を削除する (phase2)。
+	tmuxHolder := false
+	if _, err := exec.LookPath("tmux"); err == nil {
+		tmuxHolder = true
+	}
+	logf("tmuxHolder=%v (replay %s)", tmuxHolder, map[bool]string{true: "delegated to tmux", false: "buffered by broker"}[tmuxHolder])
+
 	// Note: 旧版は 30s 周期で 127.0.0.1:port に loopback dial する self-health
 	// check を持っていたが、CPU 高負荷 (claude + MCP) や GC pause で accept loop
 	// が瞬間的に詰まると簡単に偽陽性 → broker exit → 全 session 消滅していた
@@ -645,7 +665,7 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 	// half-bind を検出すべきは「実際に接続失敗を観測してる Mac 側」であり、
 	// そこから docker exec pkill で respawn させる。
 
-	getOrCreateSession := func(name string, initCols, initRows uint16, extraEnv []string) *tcpSession {
+	getOrCreateSession := func(name string, initCols, initRows uint16, extraEnv []string) (*tcpSession, bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		if s, ok := sessions[name]; ok && s.alive {
@@ -663,7 +683,7 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 				writeSessionEnvFile(name, extraEnv)
 				logf("updated extraEnv for stale session %s (env=%d)", name, len(extraEnv))
 			}
-			return s
+			return s, false
 		}
 		// Use client-provided size, fallback to broker defaults
 		c, r := initCols, initRows
@@ -675,17 +695,18 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 		}
 		// Create new session
 		s := &tcpSession{
-			name:     name,
-			command:  command,
-			args:     extraArgs,
-			cols:     c,
-			rows:     r,
-			extraEnv: extraEnv,
-			alive:    true,
+			name:       name,
+			command:    command,
+			args:       extraArgs,
+			cols:       c,
+			rows:       r,
+			extraEnv:   extraEnv,
+			alive:      true,
+			tmuxHolder: tmuxHolder,
 		}
 		sessions[name] = s
 		go runSessionPTY(s, logf)
-		return s
+		return s, true
 	}
 
 	for {
@@ -729,8 +750,31 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 			logf("client connected: session=%s cols=%d rows=%d env=%d from=%s",
 				name, initCols, initRows, len(extraEnv), c.RemoteAddr())
 
-			sess := getOrCreateSession(name, initCols, initRows, extraEnv)
-			sess.addClient(c, false)
+			sess, created := getOrCreateSession(name, initCols, initRows, extraEnv)
+			// tmux holder は replay を貯めていないので skipReplay の値は実質無関係。
+			// 非 holder では従来どおり replay を送る。
+			sess.addClient(c, sess.tmuxHolder)
+			if sess.tmuxHolder && !created {
+				// 既存 tmux holder への再 attach: raw replay を送らない代わりに、
+				// tmux に現在画面を 1 回だけ再描画させる。size を一瞬変えて戻して
+				// SIGWINCH を送ることで tmux client の full redraw を確実に誘発する。
+				sess.mu.Lock()
+				fd := sess.ptyFd
+				cPid := sess.childPid
+				cc, rr := sess.cols, sess.rows
+				sess.mu.Unlock()
+				if fd != 0 && cc > 0 && rr > 1 {
+					setPtySize(fd, cc, rr-1)
+					if cPid > 0 {
+						syscall.Kill(-cPid, syscall.SIGWINCH)
+					}
+					time.Sleep(30 * time.Millisecond)
+					setPtySize(fd, cc, rr)
+					if cPid > 0 {
+						syscall.Kill(-cPid, syscall.SIGWINCH)
+					}
+				}
+			}
 			defer func() {
 				sess.removeClient(c)
 				c.Close()
