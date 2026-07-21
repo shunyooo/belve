@@ -3,6 +3,7 @@ import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/s
 import { Decoration, EditorView, keymap, hoverTooltip } from "@codemirror/view";
 import { StreamLanguage, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { toggleComment } from "@codemirror/commands";
+import { openSearchPanel } from "@codemirror/search";
 import { oneDarkTheme } from "@codemirror/theme-one-dark";
 import { tags as t } from "@lezer/highlight";
 
@@ -571,6 +572,13 @@ window.editorOpenFile = function(content, filename, lineNumber = null, columnNum
 };
 
 // Update content in-place without destroying the editor (preserves scroll position)
+// Cmd+F (Swift 側で横取りして通知経由で届く) — CodeMirror の検索パネルを開く。
+window.editorOpenSearch = function() {
+	if (!editorView) return;
+	editorView.focus();
+	openSearchPanel(editorView);
+};
+
 window.editorUpdateContent = function(content) {
 	if (!editorView) return;
 	var scrollTop = editorView.scrollDOM.scrollTop;

@@ -16,6 +16,9 @@ const term = new Terminal({
 	allowProposedApi: true,
 	macOptionIsMeta: true,
 	scrollback: 10000,
+	// 前景/背景のコントラストが低い時 (diff の緑背景 × グレー文字等) に
+	// 前景色を自動調整して可読性を保つ。4.5 = WCAG AA 相当。
+	minimumContrastRatio: 4.5,
 	theme: {
 		background: '#1e1e2e',
 		foreground: '#cdd6f4',
