@@ -564,25 +564,29 @@ func (s *tcpSession) broadcast(data []byte) {
 	// alongside the `\r` rollback, leaving the terminal in a cursor state
 	// the replay couldn't reconstruct. Keep raw bytes; proper collapse needs
 	// a virtual-terminal implementation (vterm) that tracks cursor state.
-	// tmux holder では replay を tmux に委譲するので broker はバッファに貯めない
-	// (貯めて再生すると tmux の描画履歴を二重再生して延々スクロールになる)。
-	if !s.tmuxHolder {
-		s.replayBuf = append(s.replayBuf, data...)
-		if len(s.replayBuf) > tcpReplayMax {
-			excess := uint64(len(s.replayBuf) - tcpReplayMax)
-			s.bytesDiscarded += excess
-			s.truncations++
-			s.replayBuf = s.replayBuf[len(s.replayBuf)-tcpReplayMax:]
-		}
-		// Only log when we actually had to discard — steady-state buffer use
-		// (nothing dropped) isn't interesting. Throttle to 60 s so a busy
-		// session doesn't spam the broker log.
-		if s.bytesDiscarded > 0 && time.Since(s.lastStatLog) > 60*time.Second {
-			log.Printf("[replay] session=%q emitted=%d discarded=%d trunc=%d bufLen=%d pct_kept=%.1f%%",
-				s.name, s.bytesEmitted, s.bytesDiscarded, s.truncations, len(s.replayBuf),
-				100.0*float64(s.bytesEmitted-s.bytesDiscarded)/float64(s.bytesEmitted))
-			s.lastStatLog = time.Now()
-		}
+	// bounded replay: tmux holder では tmux が現在画面を保持するので replay は
+	// 直近ぶんだけに抑える (大きいと再接続時に tmux の描画履歴を大量再生して延々
+	// スクロールになる)。replay 再生は SIGWINCH を送らないのでアプリ再描画は誘発
+	// しない。非 holder (tmux 無し host) は従来どおり大きめに保持。
+	replayCap := tcpReplayMax
+	if s.tmuxHolder {
+		replayCap = 256 * 1024
+	}
+	s.replayBuf = append(s.replayBuf, data...)
+	if len(s.replayBuf) > replayCap {
+		excess := uint64(len(s.replayBuf) - replayCap)
+		s.bytesDiscarded += excess
+		s.truncations++
+		s.replayBuf = s.replayBuf[len(s.replayBuf)-replayCap:]
+	}
+	// Only log when we actually had to discard — steady-state buffer use
+	// (nothing dropped) isn't interesting. Throttle to 60 s so a busy
+	// session doesn't spam the broker log.
+	if s.bytesDiscarded > 0 && time.Since(s.lastStatLog) > 60*time.Second {
+		log.Printf("[replay] session=%q emitted=%d discarded=%d trunc=%d bufLen=%d pct_kept=%.1f%%",
+			s.name, s.bytesEmitted, s.bytesDiscarded, s.truncations, len(s.replayBuf),
+			100.0*float64(s.bytesEmitted-s.bytesDiscarded)/float64(s.bytesEmitted))
+		s.lastStatLog = time.Now()
 	}
 	for _, c := range s.clients {
 		writeMsg(c, msgData, data)
@@ -750,31 +754,8 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 			logf("client connected: session=%s cols=%d rows=%d env=%d from=%s",
 				name, initCols, initRows, len(extraEnv), c.RemoteAddr())
 
-			sess, created := getOrCreateSession(name, initCols, initRows, extraEnv)
-			// tmux holder は replay を貯めていないので skipReplay の値は実質無関係。
-			// 非 holder では従来どおり replay を送る。
-			sess.addClient(c, sess.tmuxHolder)
-			if sess.tmuxHolder && !created {
-				// 既存 tmux holder への再 attach: raw replay を送らない代わりに、
-				// tmux に現在画面を 1 回だけ再描画させる。size を一瞬変えて戻して
-				// SIGWINCH を送ることで tmux client の full redraw を確実に誘発する。
-				sess.mu.Lock()
-				fd := sess.ptyFd
-				cPid := sess.childPid
-				cc, rr := sess.cols, sess.rows
-				sess.mu.Unlock()
-				if fd != 0 && cc > 0 && rr > 1 {
-					setPtySize(fd, cc, rr-1)
-					if cPid > 0 {
-						syscall.Kill(-cPid, syscall.SIGWINCH)
-					}
-					time.Sleep(30 * time.Millisecond)
-					setPtySize(fd, cc, rr)
-					if cPid > 0 {
-						syscall.Kill(-cPid, syscall.SIGWINCH)
-					}
-				}
-			}
+			sess, _ := getOrCreateSession(name, initCols, initRows, extraEnv)
+			sess.addClient(c, false)
 			defer func() {
 				sess.removeClient(c)
 				c.Close()
@@ -1070,7 +1051,11 @@ func runMasterBackend(socketPath string, backend backendDialer, sessName, routeP
 	var mu sync.Mutex
 	var clients []net.Conn
 	var replayBuf []byte
-	const replayMax = 4 * 1024 * 1024
+	// bounded replay (experiment): tmux holder では tmux が現在画面を保持するので、
+	// Mac 側 daemon の replay は「直近ぶんだけ」に抑える。大きいと再接続時に tmux の
+	// 描画履歴を大量再生して "延々スクロール" になる (SIGWINCH は送らないのでアプリ
+	// 再描画は誘発しない)。256KB あれば直近フルリペイントを含み現在画面に収束する。
+	const replayMax = 256 * 1024
 
 	addClient := func(c net.Conn, skipReplay bool) {
 		mu.Lock()
