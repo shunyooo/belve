@@ -723,6 +723,13 @@ struct XTermTerminalView: NSViewRepresentable {
 		}
 
 		/// Extract belve-status OSC 9 sequences while preserving normal terminal output.
+		/// 未終端 OSC (prefix はあるが BEL 未着) を trailing として保持する上限。
+		/// belve-status メッセージは高々数百バイト。これを超えて BEL が来ないのは
+		/// 本物の status OSC ではない (cat したスクリプト内の文字列等) ので、
+		/// output に流して破棄する。上限なしだと以降の全 PTY 出力が trailing に
+		/// 溜まり続け、画面が止まりメモリが枯渇する (2026-07-15: 95GB まで成長)。
+		private static let maxStatusTrailing = 4096
+
 		private func extractBelveStatusMessages(from data: Data) -> (messages: [String], outputData: Data, trailingData: Data) {
 			let prefix = Array("\u{1b}]9;belve-status;".utf8)
 			let suffix: UInt8 = 0x07
@@ -757,7 +764,12 @@ struct XTermTerminalView: NSViewRepresentable {
 				}
 
 				if end == bytes.count {
-					return (messages, output, Data(bytes[cursor...]))
+					let trailing = Data(bytes[cursor...])
+					if trailing.count > Self.maxStatusTrailing {
+						output.append(trailing)
+						return (messages, output, Data())
+					}
+					return (messages, output, trailing)
 				}
 			}
 
