@@ -107,6 +107,9 @@ extension Notification.Name {
 	static let belveTerminalDisconnected = Notification.Name("belveTerminalDisconnected")
 	static let belveSplitVertical = Notification.Name("belveSplitVertical")
 	static let belveSplitHorizontal = Notification.Name("belveSplitHorizontal")
+	/// ペイン追加要求。userInfo["direction"] = "vertical" | "horizontal"。
+	/// MainWindow がチューザ (PaneCreationChooserView) を開くトリガー。
+	static let belveRequestAddPane = Notification.Name("belveRequestAddPane")
 	static let belveFocusProject = Notification.Name("belveFocusProject")
 	static let belveClosePane = Notification.Name("belveClosePane")
 	static let belveCommandPalette = Notification.Name("belveCommandPalette")

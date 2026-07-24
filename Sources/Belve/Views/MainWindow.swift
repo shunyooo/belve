@@ -16,6 +16,8 @@ struct MainWindow: View {
 	@State private var showSettings = false
 	@ObservedObject private var lspManager = LSPManager.shared
 	@State private var showSessionManager = false
+	@State private var showPaneChooser = false
+	@State private var pendingPaneDirection: SplitDirection = .vertical
 	@State private var isFileSearchPresented = false
 	@State private var fileSearchQuery = ""
 	@State private var fileSearchResults: [MainWindowFileSearchResult] = []
@@ -86,6 +88,33 @@ struct MainWindow: View {
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .belveShowSessionManager)) { _ in
 				showSessionManager.toggle()
+			}
+			.overlay {
+				if showPaneChooser, let project = projectStore.selectedProject {
+					Color.black.opacity(0.3)
+						.ignoresSafeArea()
+						.onTapGesture { showPaneChooser = false }
+					PaneCreationChooserView(
+						project: project,
+						projectNamesByShort: projectNamesByShort(),
+						defaultName: suggestedPaneName(for: project.id),
+						onCreateNew: { name in
+							showPaneChooser = false
+							createNewPane(name: name)
+						},
+						onAttach: { socketPath in
+							showPaneChooser = false
+							attachNewPane(socketPath: socketPath)
+						},
+						onDismiss: { showPaneChooser = false }
+					)
+				}
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .belveRequestAddPane)) { notif in
+				guard projectStore.selectedProject != nil else { return }
+				let dir = (notif.userInfo?["direction"] as? String) == "horizontal" ? SplitDirection.horizontal : .vertical
+				pendingPaneDirection = dir
+				showPaneChooser = true
 			}
 			.overlay {
 				if let pending = lspManager.pendingInstall {
@@ -1055,14 +1084,10 @@ struct MainWindow: View {
 		}
 
 		cmds.append(PaletteCommand(title: "Split Terminal Vertical", icon: "rectangle.split.1x2") {
-			if let id = projectStore.selectedProject?.id {
-				commandAreaState(for: id).splitActive(.vertical)
-			}
+			NotificationCenter.default.post(name: .belveRequestAddPane, object: nil, userInfo: ["direction": "vertical"])
 		})
 		cmds.append(PaletteCommand(title: "Split Terminal Horizontal", icon: "rectangle.split.2x1") {
-			if let id = projectStore.selectedProject?.id {
-				commandAreaState(for: id).splitActive(.horizontal)
-			}
+			NotificationCenter.default.post(name: .belveRequestAddPane, object: nil, userInfo: ["direction": "horizontal"])
 		})
 		cmds.append(PaletteCommand(title: "Toggle Sidebar", icon: "sidebar.left") {
 			withAnimation(.easeOut(duration: 0.15)) { layoutState.showSidebar.toggle() }
@@ -1213,6 +1238,44 @@ struct MainWindow: View {
 		// PaneHostRegistry を unregister して再 mount → 新 PTY spawn
 		PaneHostRegistry.shared.unregister(paneId: activePaneId.uuidString)
 		projectStore.reloadProject(project.id)
+	}
+
+	// MARK: - Pane creation chooser
+
+	/// projShort → プロジェクト名。チューザの「他のプロジェクト」行の表示に使う。
+	private func projectNamesByShort() -> [String: String] {
+		var map: [String: String] = [:]
+		for p in projectStore.projects {
+			map[String(p.id.uuidString.prefix(8))] = p.name
+		}
+		return map
+	}
+
+	/// 名前欄の初期候補。既存 pane 数 + 1 で連番を付ける (編集可能・空欄なら自動命名)。
+	private func suggestedPaneName(for projectId: UUID) -> String {
+		let count = commandAreaState(for: projectId).orderedPaneIds().count
+		return "pane-\(count + 1)"
+	}
+
+	/// チューザ「新規」確定。空名なら自動命名 (sessionName: nil)。
+	private func createNewPane(name: String) {
+		guard let project = projectStore.selectedProject else { return }
+		let trimmed = name.trimmingCharacters(in: .whitespaces)
+		commandAreaState(for: project.id).addPane(
+			direction: pendingPaneDirection,
+			sessionName: trimmed.isEmpty ? nil : trimmed
+		)
+		stateManager.scheduleSave()
+	}
+
+	/// チューザ「既存にアタッチ」確定。新 pane を該当 socket に接続して作る。
+	private func attachNewPane(socketPath: String) {
+		guard let project = projectStore.selectedProject else { return }
+		commandAreaState(for: project.id).addPane(
+			direction: pendingPaneDirection,
+			overrideSocket: socketPath
+		)
+		stateManager.scheduleSave()
 	}
 
 	// MARK: - Open file persistence

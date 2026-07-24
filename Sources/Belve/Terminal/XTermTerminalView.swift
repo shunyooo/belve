@@ -118,6 +118,8 @@ struct XTermTerminalView: NSViewRepresentable {
 	var paneId: String?
 	var paneIndex: Int = 0
 	var overrideSocket: String?
+	/// ユーザーが付けた新規セッション名。set 時は `belve-<projShort>-<name>` を使う。
+	var sessionNameOverride: String?
 	var viewWidth: CGFloat = 0
 	var viewHeight: CGFloat = 0
 	/// この project が現在 sidebar で選択中か。非選択時は auto-focus を抑制する
@@ -192,6 +194,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		context.coordinator.paneId = paneId
 		context.coordinator.paneIndex = paneIndex
 		context.coordinator.overrideSocket = overrideSocket
+		context.coordinator.sessionNameOverride = sessionNameOverride
 		context.coordinator.notificationStore = notificationStore
 		context.coordinator.agentSessionStore = agentSessionStore
 		context.coordinator.commandAreaState = commandAreaState
@@ -272,6 +275,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		var paneId: String?
 		var paneIndex: Int = 0
 		var overrideSocket: String?
+		var sessionNameOverride: String?
 		var ptyService: PTYService?
 		weak var notificationStore: NotificationStore?
 		weak var agentSessionStore: AgentSessionStore?
@@ -510,6 +514,9 @@ struct XTermTerminalView: NSViewRepresentable {
 					if let override = self.overrideSocket {
 						sockPath = override
 						sessionName = (override as NSString).lastPathComponent.replacingOccurrences(of: ".sock", with: "")
+					} else if let named = Self.sanitizedSessionToken(self.sessionNameOverride) {
+						sessionName = "belve-\(projShort)-\(named)"
+						sockPath = "/tmp/belve-shell/sessions/\(sessionName).sock"
 					} else {
 						let paneIdShort = String((paneId ?? UUID().uuidString).prefix(8))
 						sessionName = "belve-\(projShort)-\(paneIdShort)"
@@ -542,6 +549,17 @@ struct XTermTerminalView: NSViewRepresentable {
 					self?.commandAreaState?.activePaneId = paneUUID
 				}
 			}
+		}
+
+		/// ユーザー入力のセッション名を socket ファイル名 / tmux セッション名に
+		/// 使える token へ正規化する。許可外文字は `-` に置換、前後の `-` は除去。
+		/// 空 (または全て不正文字) の場合は nil を返し、呼び出し側は自動命名へ倒す。
+		static func sanitizedSessionToken(_ raw: String?) -> String? {
+			guard let raw else { return nil }
+			let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+			let mapped = String(raw.map { allowed.contains($0) ? $0 : "-" })
+			let trimmed = mapped.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+			return trimmed.isEmpty ? nil : trimmed
 		}
 
 		/// Resolve the path to the bundled `belve-persist-darwin-arm64` binary.
@@ -1178,11 +1196,12 @@ struct XTermTerminalView: NSViewRepresentable {
 		private func handleShortcut(key: String, shift: Bool) {
 			switch key {
 			case "d":
-				if shift {
-					commandAreaState?.splitActive(.horizontal)
-				} else {
-					commandAreaState?.splitActive(.vertical)
-				}
+				// 直接 split せず、ペイン追加チューザを開く (新規命名 / 既存 attach を選択)。
+				NotificationCenter.default.post(
+					name: .belveRequestAddPane,
+					object: nil,
+					userInfo: ["direction": shift ? "horizontal" : "vertical"]
+				)
 			case "w":
 				commandAreaState?.closeActivePane()
 			case "n":

@@ -14,6 +14,9 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 	var paneIndex: Int?
 	/// 別セッションに attach する時の socket path override。nil なら通常の自動生成。
 	var overrideSocket: String?
+	/// 新規ペイン作成時にユーザーが付けたセッション名。nil なら paneId 由来の
+	/// 自動命名 (`belve-<projShort>-<paneShort>`)。set 時は `belve-<projShort>-<name>`。
+	var sessionNameOverride: String?
 	@Published var children: [PaneNode]?
 	@Published var splitDirection: SplitDirection?
 	@Published var splitRatio: CGFloat = 0.5
@@ -29,7 +32,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 	// MARK: - Codable
 
 	enum CodingKeys: String, CodingKey {
-		case id, paneId, paneIndex, overrideSocket, children, splitDirection, splitRatio
+		case id, paneId, paneIndex, overrideSocket, sessionNameOverride, children, splitDirection, splitRatio
 	}
 
 	required init(from decoder: Decoder) throws {
@@ -38,6 +41,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 		let decodedPaneId = try c.decodeIfPresent(UUID.self, forKey: .paneId)
 		paneIndex = try c.decodeIfPresent(Int.self, forKey: .paneIndex)
 		overrideSocket = try c.decodeIfPresent(String.self, forKey: .overrideSocket)
+		sessionNameOverride = try c.decodeIfPresent(String.self, forKey: .sessionNameOverride)
 		children = try c.decodeIfPresent([PaneNode].self, forKey: .children)
 		splitDirection = try c.decodeIfPresent(SplitDirection.self, forKey: .splitDirection)
 		splitRatio = try c.decode(CGFloat.self, forKey: .splitRatio)
@@ -59,6 +63,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 		try c.encodeIfPresent(paneId, forKey: .paneId)
 		try c.encodeIfPresent(paneIndex, forKey: .paneIndex)
 		try c.encodeIfPresent(overrideSocket, forKey: .overrideSocket)
+		try c.encodeIfPresent(sessionNameOverride, forKey: .sessionNameOverride)
 		try c.encodeIfPresent(children, forKey: .children)
 		try c.encodeIfPresent(splitDirection, forKey: .splitDirection)
 		try c.encode(splitRatio, forKey: .splitRatio)
@@ -203,15 +208,6 @@ class CommandAreaState: ObservableObject {
 	/// Called when layout changes, so the manager can persist
 	var onLayoutChanged: (() -> Void)?
 
-	func splitActive(_ direction: SplitDirection) {
-		let targetPaneId = activePaneId ?? firstLeaf(root)?.paneId
-		guard let targetPaneId else { return }
-		if splitNode(targetPaneId, direction: direction, in: root) {
-			objectWillChange.send()
-			onLayoutChanged?()
-		}
-	}
-
 	/// 既存 paneId を leaf として取り込む (= cross-view DD で session を別 view に
 	/// 移動する用)。target view が単一 pane の時は分割、複数 pane の時は active
 	/// pane の隣に split 追加。pane index は source の値を引き継いで session 名
@@ -249,7 +245,7 @@ class CommandAreaState: ObservableObject {
 	}
 
 	/// 新 pane を spawn して、その新 pane の id を返す (Stage view の "+ New Agent" 用)。
-	/// 内部的には splitActive と同じ tree 操作だが、新 pane を activePaneId に set して返す。
+	/// 内部的には addPane と同じ spawn 操作で、新 pane を activePaneId に set して返す。
 	@discardableResult
 	func spawnNewPane(direction: SplitDirection = .vertical) -> UUID? {
 		let targetPaneId = activePaneId ?? firstLeaf(root)?.paneId
@@ -262,6 +258,26 @@ class CommandAreaState: ObservableObject {
 			return newPaneId
 		}
 		return nil
+	}
+
+	/// ペイン追加チューザから呼ぶ。新 pane を spawn し、
+	/// - `sessionName` を指定すれば新規セッション名として、
+	/// - `overrideSocket` を指定すれば既存セッションへの attach として
+	/// 新 leaf に焼き込む。両者 nil なら従来の自動命名。新 pane を active にして id を返す。
+	@discardableResult
+	func addPane(direction: SplitDirection = .vertical, sessionName: String? = nil, overrideSocket: String? = nil) -> UUID? {
+		let targetPaneId = activePaneId ?? firstLeaf(root)?.paneId
+		guard let targetPaneId else { return nil }
+		let newPaneId = UUID()
+		guard spawnNode(targetPaneId, newPaneId: newPaneId, direction: direction, in: root) else { return nil }
+		if let leaf = findLeaf(paneId: newPaneId, in: root) {
+			leaf.sessionNameOverride = sessionName
+			leaf.overrideSocket = overrideSocket
+		}
+		activePaneId = newPaneId
+		objectWillChange.send()
+		onLayoutChanged?()
+		return newPaneId
 	}
 
 	private func spawnNode(_ paneId: UUID, newPaneId: UUID, direction: SplitDirection, in node: PaneNode) -> Bool {
@@ -278,27 +294,6 @@ class CommandAreaState: ObservableObject {
 		}
 		for child in node.children ?? [] {
 			if spawnNode(paneId, newPaneId: newPaneId, direction: direction, in: child) {
-				return true
-			}
-		}
-		return false
-	}
-
-	private func splitNode(_ paneId: UUID, direction: SplitDirection, in node: PaneNode) -> Bool {
-		if node.paneId == paneId && node.isLeaf {
-			let existing = PaneNode(paneId: node.paneId, paneIndex: node.paneIndex)
-			let newPane = PaneNode(paneId: UUID(), paneIndex: nextPaneIndex)
-			nextPaneIndex += 1
-			node.paneId = nil
-			node.paneIndex = nil
-			node.splitDirection = direction
-			node.splitRatio = 0.5
-			node.children = [existing, newPane]
-			activePaneId = existing.paneId
-			return true
-		}
-		for child in node.children ?? [] {
-			if splitNode(paneId, direction: direction, in: child) {
 				return true
 			}
 		}
@@ -707,6 +702,7 @@ struct CommandArea: View {
 								paneId: pane.paneId.uuidString,
 								paneIndex: pane.paneIndex,
 								overrideSocket: state.findLeafByPaneId(pane.paneId, in: state.root)?.overrideSocket,
+								sessionNameOverride: state.findLeafByPaneId(pane.paneId, in: state.root)?.sessionNameOverride,
 								viewWidth: max(1, pane.rect.width),
 								viewHeight: max(1, pane.rect.height - paneHeaderHeight),
 								// 全 project が ZStack で同時 mount される構造上、

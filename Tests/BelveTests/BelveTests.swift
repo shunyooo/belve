@@ -12,7 +12,7 @@ final class BelveTests: XCTestCase {
 			return XCTFail("Expected first pane")
 		}
 		state.activePaneId = firstId
-		state.splitActive(.horizontal)
+		state.addPane(direction: .horizontal)
 
 		guard let secondId = leafIds(in: state.root).first(where: { $0 != firstId }) else {
 			return XCTFail("Expected second pane")
@@ -30,7 +30,7 @@ final class BelveTests: XCTestCase {
 			return XCTFail("Expected first pane")
 		}
 		state.activePaneId = firstId
-		state.splitActive(.horizontal)
+		state.addPane(direction: .horizontal)
 
 		guard let secondId = leafIds(in: state.root).first(where: { $0 != firstId }) else {
 			return XCTFail("Expected second pane")
@@ -48,7 +48,7 @@ final class BelveTests: XCTestCase {
 			return XCTFail("Expected first pane")
 		}
 		state.activePaneId = firstId
-		state.splitActive(.horizontal)
+		state.addPane(direction: .horizontal)
 
 		let before = leafIds(in: state.root)
 		guard let secondId = before.first(where: { $0 != firstId }) else {
