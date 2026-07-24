@@ -22,6 +22,13 @@ final class ProjectLayoutState: ObservableObject, Codable {
 	@Published var showChanges: Bool = false {
 		didSet { onChanged?() }
 	}
+	/// Preview 右カラムのモード: false = ツリー (全ファイルツリー)、
+	/// true = 変更 (このプロジェクトの変更ファイルを recency 順に並べた軽量一覧)。
+	/// full-panel の `showChanges` (Cmd+Shift+G) とは別物で、editor を隠さず
+	/// カラム内でトグルする。project 単位で永続化。
+	@Published var fileColumnShowsChanges: Bool = false {
+		didSet { onChanged?() }
+	}
 	/// Preview-area mode: `.editor` shows the file tree + code/markdown editor
 	/// (the default), `.browser` swaps that out for a lightweight WKWebView
 	/// for debugging forwarded ports and local dev servers.
@@ -86,6 +93,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 	enum CodingKeys: String, CodingKey {
 		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile, showChanges, previewMode, browserURL, browserOpen, browserThumbnail, browserFrame, browserViewport
 		case changesTreeWidth, diffFilterStaged, diffFilterUnstaged, diffFilterCommitted
+		case fileColumnShowsChanges
 	}
 
 	required init(from decoder: Decoder) throws {
@@ -96,6 +104,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		fileTreeWidth = try container.decodeIfPresent(CGFloat.self, forKey: .fileTreeWidth) ?? 200
 		lastOpenedFile = try container.decodeIfPresent(String.self, forKey: .lastOpenedFile)
 		showChanges = try container.decodeIfPresent(Bool.self, forKey: .showChanges) ?? false
+		fileColumnShowsChanges = try container.decodeIfPresent(Bool.self, forKey: .fileColumnShowsChanges) ?? false
 		previewMode = try container.decodeIfPresent(PreviewMode.self, forKey: .previewMode) ?? .editor
 		browserURL = try container.decodeIfPresent(String.self, forKey: .browserURL) ?? ""
 		browserOpen = try container.decodeIfPresent(Bool.self, forKey: .browserOpen) ?? false
@@ -116,6 +125,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		try container.encode(fileTreeWidth, forKey: .fileTreeWidth)
 		try container.encodeIfPresent(lastOpenedFile, forKey: .lastOpenedFile)
 		try container.encode(showChanges, forKey: .showChanges)
+		try container.encode(fileColumnShowsChanges, forKey: .fileColumnShowsChanges)
 		try container.encode(previewMode, forKey: .previewMode)
 		try container.encode(browserURL, forKey: .browserURL)
 		try container.encode(browserOpen, forKey: .browserOpen)

@@ -22,6 +22,8 @@ struct PreviewArea: View {
 	@Binding var openFile: OpenFile?
 	@EnvironmentObject var projectStore: ProjectStore
 	@StateObject private var fileTreeState = FileTreeState()
+	/// 右カラム「変更」モードのデータ源。ツリーと同じカラム内でトグルして使う。
+	@StateObject private var changedFilesStore = ChangedFilesStore()
 	@State private var isDirty = false
 	/// The on-disk content (updated on successful save). Used as the reference for
 	/// dirty-check without re-assigning openFile (which would re-init the editor).
@@ -145,10 +147,21 @@ struct PreviewArea: View {
 				NSLog("[Belve][restore] project=%@ tries to restore file=%@", project.name, savedPath)
 				loadFile(at: savedPath)
 			}
+			changedFilesStore.refresh(for: project)
+		}
+		.onChange(of: project.id) {
+			changedFilesStore.refresh(for: project)
+		}
+		.onChange(of: layoutState.fileColumnShowsChanges) {
+			// 変更モードに切替えた瞬間に最新の変更ファイルを取り直す。
+			if layoutState.fileColumnShowsChanges {
+				changedFilesStore.refresh(for: project)
+			}
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileSave)) { _ in
 			saveCurrentFile()
 			projectStore.refreshGitStatus()
+			changedFilesStore.refresh(for: project)
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveShowChanges)) { notif in
 			if let projectId = notif.userInfo?["projectId"] as? UUID {
@@ -205,16 +218,33 @@ struct PreviewArea: View {
 				.frame(width: DividerMetrics.absoluteHitWidth)
 			}
 
-			FileTreeView(
-				project: project,
-				rootPath: rootPath,
-				onFileSelect: { path in
-					loadFile(at: path)
-				},
-				state: fileTreeState,
-				gitFileStatus: projectStore.gitFileStatus,
-				currentFilePath: openFile?.path ?? layoutState.lastOpenedFile
-			)
+			VStack(spacing: 0) {
+				FileColumnModeToggle(showsChanges: $layoutState.fileColumnShowsChanges)
+
+				Theme.borderSubtle
+					.frame(height: 1)
+
+				if layoutState.fileColumnShowsChanges {
+					ChangedFilesColumn(
+						store: changedFilesStore,
+						currentFilePath: openFile?.path ?? layoutState.lastOpenedFile,
+						onSelect: { path in
+							loadFile(at: path)
+						}
+					)
+				} else {
+					FileTreeView(
+						project: project,
+						rootPath: rootPath,
+						onFileSelect: { path in
+							loadFile(at: path)
+						},
+						state: fileTreeState,
+						gitFileStatus: projectStore.gitFileStatus,
+						currentFilePath: openFile?.path ?? layoutState.lastOpenedFile
+					)
+				}
+			}
 			.frame(width: layoutState.fileTreeWidth)
 
 			if onLeft {
