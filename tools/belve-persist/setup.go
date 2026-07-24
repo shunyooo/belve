@@ -161,7 +161,6 @@ func (sm *setupManager) ensureSetup(req setupReq) (setupState, string) {
 type setupReq struct {
 	ProjectID     string
 	Host          string
-	IsDevContainer bool
 	WorkspacePath string // remote path (= ~/src/foo)
 	ProjShort     string // UUID 先頭 8 文字
 	BinDir        string // Mac 側 binary 置き場 (Belve.app/Contents/Resources/bin)
@@ -331,13 +330,9 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// runBelveSetup: ssh host で belve-setup を起動。flag は project の種類で分岐。
+// runBelveSetup: ssh host で belve-setup を起動 (plain SSH → VM-local broker)。
 func runBelveSetup(req setupReq) error {
 	cmd := "$HOME/.belve/bin/belve-setup"
-	if req.IsDevContainer {
-		cmd += fmt.Sprintf(" --devcontainer --workspace %s --project-short %s",
-			shellEscape(req.WorkspacePath), shellEscape(req.ProjShort))
-	}
 	args := append([]string{}, sshOpts(req.Host)...)
 	args = append(args, req.Host, cmd)
 	c := exec.Command("ssh", args...)
@@ -346,19 +341,4 @@ func runBelveSetup(req setupReq) error {
 		return fmt.Errorf("%v: %s", err, out)
 	}
 	return nil
-}
-
-func shellEscape(s string) string {
-	// 簡易 shell escape。spaces / quotes / special chars 含むパスを想定し、
-	// シングルクォートで囲んで内部の ' を '\\'' に置換。
-	out := []byte("'")
-	for _, c := range []byte(s) {
-		if c == '\'' {
-			out = append(out, []byte("'\\''")...)
-		} else {
-			out = append(out, c)
-		}
-	}
-	out = append(out, '\'')
-	return string(out)
 }

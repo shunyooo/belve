@@ -124,8 +124,8 @@ func runControlServer(listenAddr string) {
 		}
 		go func(c net.Conn) {
 			cs := &connState{
-				conn:    c,
-				enc:     json.NewEncoder(c),
+				conn:     c,
+				enc:      json.NewEncoder(c),
 				watches:  map[string]*fsnotify.Watcher{},
 				lspProcs: map[string]*lspProcess{},
 			}

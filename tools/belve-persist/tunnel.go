@@ -61,9 +61,10 @@ func initTunnelManager() {
 // 変更があるたびに bump して、旧 entry が誤って再利用されるのを防ぐ。
 //
 // 2: mux 化に伴って remotePort が 19200 → 19201 に変わったため、v1 の entry を
-//    そのまま使うと「Mac local 19222 → VM 19200 (旧 router)」の forward を
-//    「19201 (mux-router) 行き」と誤認して broker port に yamux 接続してしまう
-//    事故が起きた (2026-06-24)。schema バンプで旧 state を discard する。
+//
+//	そのまま使うと「Mac local 19222 → VM 19200 (旧 router)」の forward を
+//	「19201 (mux-router) 行き」と誤認して broker port に yamux 接続してしまう
+//	事故が起きた (2026-06-24)。schema バンプで旧 state を discard する。
 const persistedTunnelStateVersion = 2
 
 // persistedTunnelState: tunnelStateFile に書き出す JSON shape。

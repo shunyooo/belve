@@ -21,13 +21,13 @@ import (
 const hostFailureCacheDuration = 60 * time.Second
 
 type hostHealthState struct {
-	failedAt    time.Time // zero = healthy
-	lastError   string
+	failedAt  time.Time // zero = healthy
+	lastError string
 }
 
 type hostHealthMonitor struct {
-	mu     sync.Mutex
-	hosts  map[string]*hostHealthState
+	mu    sync.Mutex
+	hosts map[string]*hostHealthState
 }
 
 var globalHostHealth = &hostHealthMonitor{hosts: map[string]*hostHealthState{}}
@@ -104,5 +104,5 @@ func (m *hostHealthMonitor) reset(host string) {
 		"-O", "exit",
 		host,
 	)
-	_ = cmd.Run()  // 失敗無視 (ControlMaster 居ないと exit 1 だが正常)
+	_ = cmd.Run() // 失敗無視 (ControlMaster 居ないと exit 1 だが正常)
 }

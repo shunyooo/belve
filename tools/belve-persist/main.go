@@ -80,10 +80,9 @@ func watchParent() {
 }
 
 const (
-	msgData      byte = 0
-	msgResize    byte = 1
-	msgSession   byte = 2 // payload: session name (UTF-8)
-	msgNoReplay  byte = 3 // client → daemon: skip replay (serialize restore available)
+	msgData    byte = 0
+	msgResize  byte = 1
+	msgSession byte = 2 // payload: session name (UTF-8)
 )
 
 func main() {
@@ -280,9 +279,9 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 	var currentPtyFile *os.File
 	var currentPtyFd uintptr
 
-	addClient := func(c net.Conn, skipReplay bool) {
+	addClient := func(c net.Conn) {
 		mu.Lock()
-		if !skipReplay && len(replayBuf) > 0 {
+		if len(replayBuf) > 0 {
 			writeReplayChunks(c, replayBuf)
 			// Replay 内の DECSET 1002/1006 等が xterm.js でマウストラッキングを
 			// ON にしたまま残ると、TUI app 終了後に「マウス移動で座標が echo」
@@ -322,8 +321,7 @@ func runMaster(socketPath, command string, args []string, cols, rows uint16) {
 			if err != nil {
 				break
 			}
-			skipReplay := checkNoReplay(conn)
-			addClient(conn, skipReplay)
+			addClient(conn)
 			go func(c net.Conn) {
 				defer func() {
 					removeClient(c)
@@ -502,18 +500,18 @@ func logExitDiagnostics(socketPath string, pid int, err error, exitCode int, exi
 // --- TCP broker (container side) ---
 
 type tcpSession struct {
-	name      string
-	mu        sync.Mutex
-	ptyFile   *os.File
-	ptyFd     uintptr
-	childPid  int
-	clients   []net.Conn
-	replayBuf []byte
+	name       string
+	mu         sync.Mutex
+	ptyFile    *os.File
+	ptyFd      uintptr
+	childPid   int
+	clients    []net.Conn
+	replayBuf  []byte
 	cols, rows uint16
-	command   string
-	args      []string
-	extraEnv  []string // per-session env (BELVE_PANE_ID, BELVE_PROJECT_ID, ...)
-	alive     bool // false after child exits without respawn
+	command    string
+	args       []string
+	extraEnv   []string // per-session env (BELVE_PANE_ID, BELVE_PROJECT_ID, ...)
+	alive      bool     // false after child exits without respawn
 	// tmuxHolder: この host に tmux があり session-bootstrap がシェルを tmux の
 	// 中で起動している場合 true。永続化/replay を tmux に委譲するので broker 側は
 	// raw replay を貯めず・送らず (二重再生による "attach 時の延々スクロール" 回避)、
@@ -523,10 +521,10 @@ type tcpSession struct {
 	// discarded by the ring-buffer truncation. Helps answer "does the replay
 	// buffer actually fill up in practice?" without interfering with session
 	// behaviour.
-	bytesEmitted  uint64
+	bytesEmitted   uint64
 	bytesDiscarded uint64
-	lastStatLog   time.Time
-	truncations   uint64
+	lastStatLog    time.Time
+	truncations    uint64
 }
 
 // 4 MiB per session. Measured: at 64 KiB, claude code's rich output kept only
@@ -535,10 +533,9 @@ type tcpSession struct {
 // of live sessions on the host (~10 → 40 MiB).
 const tcpReplayMax = 4 * 1024 * 1024
 
-
-func (s *tcpSession) addClient(c net.Conn, skipReplay bool) {
+func (s *tcpSession) addClient(c net.Conn) {
 	s.mu.Lock()
-	if !skipReplay && len(s.replayBuf) > 0 {
+	if len(s.replayBuf) > 0 {
 		writeReplayChunks(c, s.replayBuf)
 	}
 	s.clients = append(s.clients, c)
@@ -755,7 +752,7 @@ func runTCPBroker(listenAddr, command string, extraArgs []string, cols, rows uin
 				name, initCols, initRows, len(extraEnv), c.RemoteAddr())
 
 			sess, _ := getOrCreateSession(name, initCols, initRows, extraEnv)
-			sess.addClient(c, false)
+			sess.addClient(c)
 			defer func() {
 				sess.removeClient(c)
 				c.Close()
@@ -1057,9 +1054,9 @@ func runMasterBackend(socketPath string, backend backendDialer, sessName, routeP
 	// 再描画は誘発しない)。256KB あれば直近フルリペイントを含み現在画面に収束する。
 	const replayMax = 256 * 1024
 
-	addClient := func(c net.Conn, skipReplay bool) {
+	addClient := func(c net.Conn) {
 		mu.Lock()
-		if !skipReplay && len(replayBuf) > 0 {
+		if len(replayBuf) > 0 {
 			writeReplayChunks(c, replayBuf)
 			// Replay 内の DECSET 1002/1006 等が xterm.js でマウストラッキングを
 			// ON にしたまま残ると、TUI app 終了後に「マウス移動で座標が echo」
@@ -1108,8 +1105,7 @@ func runMasterBackend(socketPath string, backend backendDialer, sessName, routeP
 			if err != nil {
 				break
 			}
-			skipReplay := checkNoReplay(conn)
-			addClient(conn, skipReplay)
+			addClient(conn)
 			go func(c net.Conn) {
 				defer func() {
 					removeClient(c)
@@ -1313,10 +1309,6 @@ func tryAttach(socketPath string) bool {
 	}
 	defer conn.Close()
 
-	if os.Getenv("BELVE_SKIP_REPLAY") == "1" {
-		writeMsg(conn, msgNoReplay, nil)
-	}
-
 	fd := int(os.Stdin.Fd())
 	oldState, rawErr := setRawTerminal(fd)
 	if rawErr == nil {
@@ -1406,10 +1398,11 @@ func belveStatusData(message string) []byte {
 
 // terminalModeReset: DEC private mode のうち TUI app が有効化しっぱなしで死ぬと
 // 困る代表的なものを disable する escape sequence 列を返す。
-// - mouse tracking: ON のままだとマウス移動で `CSI < B;X;Y M` が PTY に送られ、
-//   non-TUI な bash が echo して画面崩壊する
-// - bracketed paste: ON のまま貼り付けると "[200~ ~[201~" がそのまま表示される
-// - alt screen: ON のままだと bash の scrollback が見えない
+//   - mouse tracking: ON のままだとマウス移動で `CSI < B;X;Y M` が PTY に送られ、
+//     non-TUI な bash が echo して画面崩壊する
+//   - bracketed paste: ON のまま貼り付けると "[200~ ~[201~" がそのまま表示される
+//   - alt screen: ON のままだと bash の scrollback が見えない
+//
 // 新規 unix-socket client 接続時 (replay 直後) と reconnect 通知時に流す。
 func terminalModeReset() []byte {
 	return []byte(
@@ -1489,23 +1482,6 @@ func readMsg(r io.Reader) (byte, []byte, error) {
 		}
 	}
 	return header[0], payload, nil
-}
-
-// checkNoReplay reads the first message from a new client with a short timeout.
-// If the client sends msgNoReplay, returns true (replay should be skipped).
-// Otherwise returns false (replay as normal). Non-msgNoReplay messages are
-// pushed back by writing them to the client's read buffer — but since net.Conn
-// doesn't support unread, we instead just return false and let the normal
-// read loop handle it. The 50ms timeout ensures old clients that don't send
-// this message aren't blocked.
-func checkNoReplay(c net.Conn) bool {
-	c.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-	t, _, err := readMsg(c)
-	c.SetReadDeadline(time.Time{})
-	if err != nil {
-		return false
-	}
-	return t == msgNoReplay
 }
 
 // killOldDaemons finds and kills old belve-persist daemon processes (and their

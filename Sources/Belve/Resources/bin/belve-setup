@@ -1,32 +1,11 @@
 #!/bin/bash
-# belve-setup: idempotent remote host setup
-# Usage: belve-setup [--devcontainer] [--workspace PATH] [--project-short ID] [--rebuild]
+# belve-setup: idempotent remote host setup (plain SSH → VM-local broker)
+# Usage: belve-setup
 #
-# --rebuild: stop/remove existing container before devcontainer up (forces rebuild)
-#
-# DevContainer flow:
-#   - First connect (no .env): run `devcontainer up`, deploy scripts into container, start broker
-#   - Subsequent connects: skip `devcontainer up` (cached .env), but still ensure broker is running
-#     (container may have been restarted since last belve-setup run)
-# Plain SSH flow:
-#   - Always ensure broker is running on VM loopback:19222
+# Ensures the VM router (127.0.0.1:19201) and the VM-local broker
+# (127.0.0.1:19223 PTY / 19225 control) are running.
 
 set -euo pipefail
-
-DEVCONTAINER=0
-WORKSPACE=""
-PROJ_SHORT=""
-REBUILD=0
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --devcontainer) DEVCONTAINER=1; shift ;;
-        --workspace) WORKSPACE="$2"; shift 2 ;;
-        --project-short) PROJ_SHORT="$2"; shift 2 ;;
-        --rebuild) REBUILD=1; shift ;;
-        *) shift ;;
-    esac
-done
 
 # Ensure directories
 mkdir -p "$HOME/.belve/bin" "$HOME/.belve/sessions" "$HOME/.belve/zdotdir"
@@ -35,10 +14,9 @@ mkdir -p "$HOME/.belve/bin" "$HOME/.belve/sessions" "$HOME/.belve/zdotdir"
 chmod +x "$HOME/.belve/bin/"* 2>/dev/null || true
 chmod +x "$HOME/.belve/session-bootstrap.sh" 2>/dev/null || true
 
-# VM router (Phase B): single TCP entry on 127.0.0.1:19200 that proxies Mac
-# connections to either container brokers (CIP:19222/19224) or the VM-local
-# broker (127.0.0.1:19223/19225). Mac forwards only this one port per VM,
-# regardless of project count.
+# VM router: single TCP entry on 127.0.0.1:19201 that yamux-demuxes all Mac
+# connections and proxies each stream to the VM-local broker. Mac forwards
+# only this one port per VM.
 # Per-resource init を直列化するための共通ヘルパ。複数 belve-setup が
 # 同時に走った時 (= 複数ペインが並行で remote 接続を開いた瞬間) に、kill+respawn
 # のレースで `bind: address already in use` カスケードが起きるのを防ぐ。
@@ -97,12 +75,9 @@ _ensure_vm_router() {
     done
 }
 
-# Plain SSH: ensure VM-local broker is listening. Note: ports moved 19222 →
-# 19223 (PTY) and 19224 → 19225 (control) so the router can take 19222...
-# wait, router is on 19200. So broker still uses 19222/19224 — only when the
-# router is in front of it should we move. For now keep 19222/19224 for
-# backward compat; router resolveTarget() falls back to those when projShort
-# is empty.
+# Plain SSH: ensure the VM-local broker is listening (PTY 19223 / control 19225)。
+# router がこの broker を front する。router resolveTarget() は全接続を
+# 127.0.0.1:19223/19225 に向ける。
 ensure_vm_broker() {
     # Router fronts everything. Spawn it first (router has its own lock)。
     ensure_vm_router
@@ -144,229 +119,4 @@ _ensure_vm_broker() {
     done
 }
 
-# DevContainer: ensure broker is running inside the container. Syncs scripts/binary first
-# (in case container was rebuilt by us but not since this belve-persist was updated).
-ensure_container_broker() {
-    local cid="$1"
-    local rws="$2"
-    local cip="$3"
-    # Per-container lock。複数 belve-setup が同じ container に並行入りすると
-    # md5 mismatch を全員が検知 → 全員 kill+spawn → 19222 bind 競合になるので、
-    # cid 単位 (短縮 ID) で直列化する。別 container 同士は並行可。
-    with_lock "$HOME/.belve/.container-${cid:0:12}.lock" _ensure_container_broker "$cid" "$rws" "$cip"
-}
-
-_ensure_container_broker() {
-    local cid="$1"
-    local rws="$2"
-    local cip="$3"
-
-    docker exec "$cid" mkdir -p /root/.belve/bin /root/.belve/sessions /root/.belve/zdotdir /root/.belve/panes 2>&1 || \
-        echo "[belve-setup] ERROR: mkdir in container failed" >&2
-    for pair in "belve:bin/belve" "claude:bin/claude" "codex:bin/codex" "codex-hooks-install:bin/codex-hooks-install" "session-bootstrap.sh:session-bootstrap.sh"; do
-        local src_name="${pair%%:*}"
-        local dst_path="${pair##*:}"
-        local src="$HOME/.belve/bin/$src_name"
-        [ "$src_name" = "session-bootstrap.sh" ] && src="$HOME/.belve/$src_name"
-        [ -f "$src" ] || { echo "[belve-setup] WARN: source missing: $src" >&2; continue; }
-        if ! docker cp "$src" "$cid:/root/.belve/$dst_path" 2>&1; then
-            echo "[belve-setup] ERROR: docker cp failed for $src_name" >&2
-        fi
-    done
-
-    # belve-persist: md5 を比較し、不一致なら新 binary をコピー + 既存 broker
-    # を kill して respawn。 `-trimpath -buildvcs=false` で deterministic build
-    # を担保しているので、source 不変なら md5 不変 → spurious kill は起きない。
-    # mismatch 時は session 落ちるが、broker code 自体が変わってる場合なので
-    # 意図通り (古い broker のまま動かす方が嘘の挙動になる)。
-    local local_hash=""
-    local remote_hash=""
-    local_hash=$(md5sum "$HOME/.belve/bin/belve-persist" 2>/dev/null | awk '{print $1}' || true)
-    remote_hash=$(docker exec "$cid" md5sum /root/.belve/bin/belve-persist 2>/dev/null | awk '{print $1}' || true)
-    local mismatch=0
-    if [ -n "$local_hash" ] && [ "$local_hash" != "$remote_hash" ]; then
-        mismatch=1
-        if ! docker cp "$HOME/.belve/bin/belve-persist" "$cid:/root/.belve/bin/belve-persist" 2>&1; then
-            echo "[belve-setup] ERROR: docker cp belve-persist failed" >&2
-        fi
-    fi
-    docker exec "$cid" chmod +x /root/.belve/bin/* /root/.belve/session-bootstrap.sh 2>/dev/null || true
-
-    # broker の「健全性」を listen socket 存在ではなく「TCP 接続できるか」で判定
-    # (= 構造改善 E)。process alive でも half-bind 状態 (= bind 失敗で 19222
-    # listener 無いのに process 残ってる事象、container で観測) では reconnect
-    # ループになるので、connect テストで本当に accept する状態を確認する。
-    local broker_healthy=0
-    if docker exec "$cid" bash -c "exec 3<>/dev/tcp/127.0.0.1/19222" 2>/dev/null; then
-        broker_healthy=1
-    fi
-    # md5 一致 + 接続できる状態なら何もしない (= fast path)。
-    if [ "$broker_healthy" = "1" ] && [ "$mismatch" = "0" ]; then
-        return 0
-    fi
-    # それ以外 (md5 mismatch / half-bind / 全く居ない) は全て pkill して spawn し直す。
-    docker exec "$cid" pkill -9 -f 'belve-persist.*tcplisten 0.0.0.0:19222' 2>/dev/null || true
-    sleep 0.3
-    docker exec -d \
-        -e BELVE_SESSION=1 \
-        -e TERM=xterm-256color \
-        -w "$rws" \
-        "$cid" sh -c '/root/.belve/bin/belve-persist -tcplisten 0.0.0.0:19222 -controllisten 0.0.0.0:19224 -command /root/.belve/session-bootstrap.sh 2>>/root/.belve/broker.log' 2>&1 || \
-        echo "[belve-setup] ERROR: failed to start container broker" >&2
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        bash -c "echo > /dev/tcp/$cip/19222" 2>/dev/null && return 0
-        sleep 0.2
-    done
-    echo "[belve-setup] WARN: container broker did not become ready within ~2s" >&2
-}
-
-if [ "$DEVCONTAINER" != "1" ]; then
-    ensure_vm_broker
-    exit 0
-fi
-
-# --- DevContainer branch ---
-# DevContainer projects も VM router 経由になるので、最初に router 起動を保証する。
-# (container broker は従来通り container 内で動かす)
-ensure_vm_router
-
-[ -n "$WORKSPACE" ] || { echo "[belve-setup] ERROR: --workspace required for --devcontainer" >&2; exit 1; }
-
-# Resolve ~ in workspace path
-[[ "${WORKSPACE:0:2}" == "~/" ]] && WORKSPACE="$HOME/${WORKSPACE:2}"
-
-mkdir -p "$HOME/.belve/projects"
-cd "$WORKSPACE" || exit 1
-
-# On --rebuild: stop and remove existing container to force fresh build
-if [ "$REBUILD" = "1" ] && [ -n "$PROJ_SHORT" ]; then
-    ENV_FILE="$HOME/.belve/projects/${PROJ_SHORT}.env"
-    if [ -f "$ENV_FILE" ]; then
-        . "$ENV_FILE"
-        if [ -n "${CID:-}" ]; then
-            echo "==> Stopping existing container ${CID:0:12}"
-            docker stop "$CID" 2>&1 || true
-            echo "==> Removing existing container ${CID:0:12}"
-            docker rm -f "$CID" 2>&1 || true
-        fi
-        rm -f "$ENV_FILE"
-    fi
-fi
-
-ENV_FILE="$HOME/.belve/projects/${PROJ_SHORT}.env"
-
-# If .env exists and container still running, just ensure broker is up (fast path).
-if [ -f "$ENV_FILE" ]; then
-    . "$ENV_FILE"
-    if [ -n "${CID:-}" ] && docker inspect -f '{{.State.Running}}' "$CID" 2>/dev/null | grep -q true; then
-        # Refresh CIP in case it changed (container restart may reassign IP)
-        NEW_CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | head -1)
-        if [ -n "$NEW_CIP" ] && [ "$NEW_CIP" != "${CIP:-}" ]; then
-            printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$NEW_CIP" > "$ENV_FILE"
-            CIP="$NEW_CIP"
-        fi
-        echo "==> Reusing existing container ${CID:0:12}"
-        echo "==> Ensuring container broker is running"
-        ensure_container_broker "$CID" "$RWS" "$CIP"
-        echo "==> Container ready"
-        exit 0
-    fi
-    # Container exists but stopped (e.g. VM reboot, OOM) — try docker start
-    if [ -n "${CID:-}" ] && docker inspect -f '{{.State.Status}}' "$CID" 2>/dev/null | grep -qE 'exited|created'; then
-        echo "==> Container ${CID:0:12} is stopped, starting..."
-        if docker start "$CID" 2>&1; then
-            # Wait briefly for container to be fully up
-            sleep 2
-            NEW_CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" 2>/dev/null | head -1)
-            if [ -n "$NEW_CIP" ]; then
-                printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$NEW_CIP" > "$ENV_FILE"
-                CIP="$NEW_CIP"
-                echo "==> Container restarted (ip=${CIP})"
-                echo "==> Ensuring container broker is running"
-                ensure_container_broker "$CID" "$RWS" "$CIP"
-                echo "==> Container ready"
-                exit 0
-            fi
-        fi
-        echo "==> docker start failed, falling through to full bootstrap"
-    fi
-    # Container gone; fall through to full bootstrap
-    rm -f "$ENV_FILE"
-fi
-
-# Full bootstrap: devcontainer up + deploy + start broker.
-echo "==> Building / pulling container image (devcontainer up)"
-TMPOUT=$(mktemp)
-TMPERR=$(mktemp)
-
-# Write filter to temp file (avoids shell quoting hell)
-FILTER=$(mktemp)
-cat > "$FILTER" <<'PYFILTER'
-import json, re, sys
-
-def clean_line(s):
-    s = s.split("\r")[-1]
-    s = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", s)
-    return s.rstrip()
-
-def should_skip(text):
-    t = text.strip()
-    if not t: return True
-    # Strip only JSON scaffolding and credential-helper noise.
-    # Keep everything else (Docker build steps, "Running ...", etc.) so the user
-    # can see devcontainer-up progress as it happens.
-    if t.startswith("[httpOci]"): return True
-    if "credential" in t.lower() and ("helper" in t.lower() or "docker-credential" in t.lower()):
-        return True
-    if t[:1] in ("{", "[", "}", "]"):
-        return True
-    if t.startswith('"'):
-        return True
-    return False
-
-for line in sys.stdin:
-    line = line.rstrip("\n")
-    if not line: continue
-    try:
-        d = json.loads(line)
-    except Exception:
-        continue
-    text = d.get("text", "")
-    if not text: continue
-    for sub in text.split("\n"):
-        sub = clean_line(sub)
-        if should_skip(sub): continue
-        sys.stdout.write(sub + "\n")
-        sys.stdout.flush()
-PYFILTER
-
-devcontainer up --workspace-folder . --log-format json 2>"$TMPERR" | tee "$TMPOUT" | python3 -u "$FILTER" || true
-rm -f "$FILTER"
-
-DC_EXIT=${PIPESTATUS[0]}
-if [ "$DC_EXIT" -ne 0 ]; then
-    echo "[belve-setup] ERROR: devcontainer up exit=$DC_EXIT" >&2
-    tail -20 "$TMPERR" >&2
-    rm -f "$TMPERR" "$TMPOUT"
-    exit 1
-fi
-
-INFO=$(tail -1 "$TMPOUT")
-rm -f "$TMPERR" "$TMPOUT"
-
-CID=$(printf '%s' "$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("containerId",""))' 2>/dev/null)
-RWS=$(printf '%s' "$INFO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("remoteWorkspaceFolder",""))' 2>/dev/null)
-if [ -z "$CID" ]; then
-    echo "[belve-setup] ERROR: could not parse containerId from devcontainer output:" >&2
-    echo "$INFO" | head -c 500 >&2
-    exit 1
-fi
-
-CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | head -1)
-echo "==> Container started (id=${CID:0:12} ip=${CIP})"
-printf 'CID=%s\nRWS=%s\nCIP=%s\n' "$CID" "$RWS" "$CIP" > "$ENV_FILE"
-
-echo "==> Deploying belve binaries to container"
-echo "==> Starting broker in container"
-ensure_container_broker "$CID" "$RWS" "$CIP"
-echo "==> Container ready"
+ensure_vm_broker
