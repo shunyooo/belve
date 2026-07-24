@@ -3,15 +3,15 @@ import Foundation
 // MARK: - Protocol
 
 /// Abstraction for workspace operations — all file, git, search, and command
-/// execution goes through this. Concrete implementations handle local, SSH,
-/// and DevContainer differences.
+/// execution goes through this. Concrete implementations handle local and SSH
+/// differences.
 protocol WorkspaceProvider {
 	// MARK: Properties
 	var sshHost: String? { get }
 	var effectivePath: String { get }
 	var homeDirectory: String { get }
 	var isRemote: Bool { get }
-	/// Display label for the connection (e.g. "SSH: host", "DevContainer")
+	/// Display label for the connection (e.g. "SSH: host")
 	var displayLabel: String { get }
 
 	// MARK: Shell execution
@@ -141,9 +141,8 @@ private func executeLocal(_ command: String) -> CommandResult? {
 	return CommandResult(output: output, status: process.terminationStatus)
 }
 
-/// 同時 `ssh host cmd` 実行数を絞るための semaphore。No-fallback 化後でも
-/// resolveContainerInfo / findDevContainerDirs 等の直接 caller が残るため
-/// 万一 SSH 大量起動が起きても sshd の MaxSessions を食い尽くさない上限。
+/// 同時 `ssh host cmd` 実行数を絞るための semaphore。万一 SSH 大量起動が
+/// 起きても sshd の MaxSessions を食い尽くさないための上限。
 private let executeSSHSemaphore = DispatchSemaphore(value: 3)
 
 /// SSH 1 コマンドあたりのハード timeout。SSH コマンドが (broker 詰まり / docker
@@ -199,12 +198,6 @@ private func executeSSH(host: String, _ command: String) -> CommandResult? {
 	let data = pipe.fileHandleForReading.readDataToEndOfFile()
 	let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .newlines) ?? ""
 	return CommandResult(output: output, status: process.terminationStatus)
-}
-
-private func executeDevContainer(host: String, workspacePath: String, _ command: String) -> CommandResult? {
-	let escapedCmd = command.replacingOccurrences(of: "'", with: "'\\''")
-	let wrappedCmd = "cd \(workspacePath) && devcontainer exec --workspace-folder . sh -c '\(escapedCmd)'"
-	return executeSSH(host: host, wrappedCmd)
 }
 
 private func regexQuote(_ text: String) -> String {
@@ -853,200 +846,6 @@ struct SSHProvider: WorkspaceProvider, RemoteProjectScoped {
 	}
 }
 
-// MARK: - DevContainerProvider
-
-struct DevContainerProvider: WorkspaceProvider, RemoteProjectScoped {
-	let host: String
-	let workspace: String
-	/// 該当プロジェクト ID。`RemoteRPCRegistry` のキーに使う (RPC が利用可能
-	/// なら ls/git ops を control 経由に切り替える)。
-	let projectId: UUID
-	var projectIdForRPC: UUID { projectId }
-
-	var sshHost: String? { host }
-	var effectivePath: String { "." }
-	var homeDirectory: String { "." }
-	var isRemote: Bool { true }
-	var displayLabel: String { "DevContainer" }
-
-	func run(_ command: String) -> String? {
-		guard let result = executeDevContainer(host: host, workspacePath: workspace, command), result.status == 0 else { return nil }
-		return result.output
-	}
-
-	func listDirectory(_ path: String) -> [FileItem] { listDirectoryRemote(path) }
-
-	// DevContainerProvider は **RPC ONLY**。No silent fallback (= SSHProvider と同じ理由)。
-
-	func fileExists(_ path: String) -> Bool {
-		rpcResult(op: "stat", params: ["path": path]) != nil
-	}
-
-	func readFile(_ path: String) -> String? {
-		rpcResult(op: "read", params: ["path": path])?["content"] as? String
-	}
-
-	func writeFile(_ path: String, content: String) -> Bool {
-		let b64 = Data(content.utf8).base64EncodedString()
-		return rpcOK(op: "write", params: ["path": path, "data": b64, "encoding": "base64"])
-	}
-
-	func deleteItem(_ path: String) -> (success: Bool, trashedURL: URL?) {
-		(rpcOK(op: "delete", params: ["path": path]), nil)
-	}
-
-	func moveItem(from: String, to: String) -> Bool {
-		rpcOK(op: "rename", params: ["path": from, "path2": to])
-	}
-
-	func createFile(_ path: String) -> Bool {
-		rpcOK(op: "write", params: ["path": path, "data": "", "encoding": "utf8"])
-	}
-
-	func modificationDate(_ path: String) -> Date? {
-		guard let result = rpcResult(op: "stat", params: ["path": path]),
-		      let mtime = result["mtime"] as? Double
-		else { return nil }
-		return Date(timeIntervalSince1970: mtime)
-	}
-
-	func downloadFile(remotePath: String, to localURL: URL) -> Bool {
-		// Get container ID and RWS (container workspace path) from env file
-		guard let info = resolveContainerInfo(host: host, workspace: workspace) else {
-			NSLog("[Belve] downloadFile: cannot resolve container info")
-			return false
-		}
-		let cid = info.cid
-		// docker cp container:path to host tmp, then scp to local
-		let tmpRemote = "/tmp/belve-download-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(8))"
-		let containerPath: String
-		if remotePath.hasPrefix("/") {
-			containerPath = remotePath
-		} else {
-			// Resolve relative path against container's RWS (not host workspace)
-			containerPath = (info.rws as NSString).appendingPathComponent(remotePath)
-		}
-		// SSH: docker cp + cat → pipe to local file
-		let process = Process()
-		let pipe = Pipe()
-		process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-		let cp = sshControlPath(for: host)
-		process.arguments = [
-			"-o", "ControlMaster=auto", "-o", "ControlPath=\(cp)", "-o", "ControlPersist=600",
-			"-o", "StrictHostKeyChecking=accept-new",
-			host,
-			"docker cp \(cid):\(shellQuote(containerPath)) \(tmpRemote) && cat \(tmpRemote) && rm -f \(tmpRemote)"
-		]
-		process.standardOutput = pipe
-		process.standardError = FileHandle.nullDevice
-		do {
-			try process.run()
-		} catch {
-			NSLog("[Belve] downloadFile devcontainer failed: \(error)")
-			return false
-		}
-		let data = pipe.fileHandleForReading.readDataToEndOfFile()
-		process.waitUntilExit()
-		guard process.terminationStatus == 0, !data.isEmpty else {
-			NSLog("[Belve] downloadFile devcontainer exit=%d dataSize=%d", process.terminationStatus, data.count)
-			return false
-		}
-		do {
-			try? FileManager.default.removeItem(at: localURL)
-			try data.write(to: localURL)
-			return true
-		} catch {
-			NSLog("[Belve] downloadFile write failed: \(error)")
-			return false
-		}
-	}
-
-	func uploadFile(localURL: URL, to remotePath: String) -> Bool {
-		guard let info = resolveContainerInfo(host: host, workspace: workspace) else {
-			NSLog("[Belve] uploadFile: cannot resolve container info")
-			return false
-		}
-		let cid = info.cid
-		let tmpRemote = "/tmp/belve-upload-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(8))"
-		let containerPath: String
-		if remotePath.hasPrefix("/") {
-			containerPath = remotePath
-		} else {
-			containerPath = (info.rws as NSString).appendingPathComponent(remotePath)
-		}
-
-		// Step 1: scp local file → VM /tmp
-		let scp = Process()
-		scp.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
-		let cp = sshControlPath(for: host)
-		scp.arguments = [
-			"-o", "ControlMaster=auto", "-o", "ControlPath=\(cp)", "-o", "ControlPersist=600",
-			"-o", "StrictHostKeyChecking=accept-new", "-q", "-r",
-			localURL.path, "\(host):\(tmpRemote)"
-		]
-		scp.standardError = FileHandle.nullDevice
-		do {
-			try scp.run()
-			scp.waitUntilExit()
-			guard scp.terminationStatus == 0 else {
-				NSLog("[Belve] uploadFile devcontainer scp failed: exit=\(scp.terminationStatus)")
-				return false
-			}
-		} catch {
-			NSLog("[Belve] uploadFile devcontainer scp failed: \(error)")
-			return false
-		}
-
-		// Step 2: ssh to VM, docker cp → container, rm tmp
-		let ssh = Process()
-		ssh.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-		ssh.arguments = [
-			"-o", "ControlMaster=auto", "-o", "ControlPath=\(cp)", "-o", "ControlPersist=600",
-			"-o", "StrictHostKeyChecking=accept-new",
-			host,
-			"docker cp \(tmpRemote) \(cid):\(shellQuote(containerPath)); rm -rf \(tmpRemote)"
-		]
-		ssh.standardError = FileHandle.nullDevice
-		ssh.standardOutput = FileHandle.nullDevice
-		do {
-			try ssh.run()
-			ssh.waitUntilExit()
-			return ssh.terminationStatus == 0
-		} catch {
-			NSLog("[Belve] uploadFile devcontainer docker cp failed: \(error)")
-			return false
-		}
-	}
-
-	func launcherEnvironment(projectId: String, paneId: String, paneIndex: Int) -> [String: String] {
-		[
-			"BELVE_SSH_HOST": host,
-			"BELVE_WORKDIR": workspace,
-			"BELVE_DEVCONTAINER": "1",
-			"BELVE_PROJECT_ID": projectId,
-			"BELVE_PANE_ID": paneId,
-			"BELVE_PANE_INDEX": String(paneIndex),
-		]
-	}
-}
-
-struct ContainerInfo {
-	let cid: String
-	let rws: String
-}
-
-/// Resolve container ID and RWS from project env files on the SSH host.
-/// Matches by the last path component of the workspace (e.g. "clay-app-report").
-private func resolveContainerInfo(host: String, workspace: String) -> ContainerInfo? {
-	let dirName = (workspace as NSString).lastPathComponent
-	let cmd = "for f in ~/.belve/projects/*.env; do . \"$f\"; case \"$RWS\" in */\(dirName)) echo \"$CID $RWS\"; break;; esac; done"
-	let result = executeSSH(host: host, cmd)
-	guard let r = result, r.status == 0, !r.output.isEmpty else { return nil }
-	let parts = r.output.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: " ")
-	guard parts.count >= 2 else { return nil }
-	return ContainerInfo(cid: parts[0], rws: parts.dropFirst().joined(separator: " "))
-}
-
 // MARK: - Shared Remote Helpers
 
 extension Array where Element == FileItem {
@@ -1064,12 +863,6 @@ extension Array where Element == FileItem {
 extension SSHProvider {
 	// RPC ONLY。RPC 未確立 / 失敗時は空 (= FileTree が空表示) — silent fallback で
 	// `ssh host ls` 大量発射して MaxSessions 食うのを防ぐ。
-	fileprivate func listDirectoryRemote(_ path: String) -> [FileItem] {
-		(listDirectoryViaRPC(projectId: projectId, path: path) ?? []).sortedLikeVSCode()
-	}
-}
-
-extension DevContainerProvider {
 	fileprivate func listDirectoryRemote(_ path: String) -> [FileItem] {
 		(listDirectoryViaRPC(projectId: projectId, path: path) ?? []).sortedLikeVSCode()
 	}
@@ -1134,24 +927,4 @@ private func gitLogViaRPC(projectId: UUID, path: String, maxCount: Int) -> (comm
 	}
 	let unpushedFrom = result["unpushedFrom"] as? String ?? ""
 	return (commits, unpushedFrom)
-}
-
-extension SSHProvider {
-	/// For each given absolute path, test whether `<path>/.devcontainer/devcontainer.json`
-	/// exists. Single SSH round-trip regardless of the number of paths.
-	/// **Note**: 直接 SSH (RPC 経路なし)。FolderBrowser での新規 project 追加時など
-	/// RPC 確立前から呼ばれるので RPC 化できない。executeSSH 側に 10s timeout が
-	/// 入ってるので長時間 hang はしない。
-	func findDevContainerDirs(in paths: [String]) -> Set<String> {
-		guard !paths.isEmpty else { return [] }
-		let quoted = paths.map { shellQuote("\($0)/.devcontainer/devcontainer.json") }.joined(separator: " ")
-		let script = "for f in \(quoted); do [ -f \"$f\" ] && echo \"$f\"; done"
-		guard let output = run(script), !output.isEmpty else { return [] }
-		let suffix = "/.devcontainer/devcontainer.json"
-		let results = output.split(separator: "\n").compactMap { line -> String? in
-			let s = String(line)
-			return s.hasSuffix(suffix) ? String(s.dropLast(suffix.count)) : nil
-		}
-		return Set(results)
-	}
 }

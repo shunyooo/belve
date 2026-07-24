@@ -193,7 +193,6 @@ final class MasterClient: @unchecked Sendable {
 	func ensureSetup(
 		projectId: UUID,
 		host: String,
-		isDevContainer: Bool,
 		workspacePath: String,
 		projShort: String,
 		binDir: String
@@ -201,7 +200,6 @@ final class MasterClient: @unchecked Sendable {
 		let res = try await send(op: "ensureSetup", params: [
 			"projectId": projectId.uuidString,
 			"host": host,
-			"isDevContainer": isDevContainer,
 			"workspacePath": workspacePath,
 			"projShort": projShort,
 			"binDir": binDir,
@@ -266,11 +264,9 @@ final class MasterClient: @unchecked Sendable {
 
 	/// Mac 上の `localPath` (画像等) を SSH ControlMaster 経由で remote に
 	/// コピーし、remote 側のパス (`/tmp/belve-clipboard/<basename>`) を返す。
-	/// DevContainer の場合は VM 経由で `docker exec -i` でコンテナ内に書く。
-	func transferImage(host: String, isDevContainer: Bool, projShort: String, localPath: String) async throws -> String {
+	func transferImage(host: String, projShort: String, localPath: String) async throws -> String {
 		let res = try await send(op: "transferImage", params: [
 			"host": host,
-			"isDevContainer": isDevContainer,
 			"projShort": projShort,
 			"localPath": localPath,
 		])
@@ -278,33 +274,6 @@ final class MasterClient: @unchecked Sendable {
 			throw MasterError.malformedResponse("remotePath missing from transferImage")
 		}
 		return path
-	}
-
-	/// DevContainer の rebuild を master に依頼する。長時間 op (~30-120s)。
-	/// 進捗は別途 `subscribePush("rebuildProgress") { payload in ... }` で受ける
-	/// (= payload contains `projectId`, `phase`, `line`)。本メソッドは最終結果
-	/// (success/failure) を await で返す。
-	@discardableResult
-	func rebuildSetup(
-		projectId: UUID,
-		host: String,
-		workspacePath: String,
-		projShort: String,
-		binDir: String,
-		forceRebuild: Bool = true
-	) async throws -> Bool {
-		let res = try await send(op: "rebuildSetup", params: [
-			"projectId": projectId.uuidString,
-			"host": host,
-			"workspacePath": workspacePath,
-			"projShort": projShort,
-			"binDir": binDir,
-			"forceRebuild": forceRebuild,
-		])
-		if !res.ok {
-			throw MasterError.rebuildFailed(res.error ?? "unknown")
-		}
-		return true
 	}
 
 	// MARK: - Send
@@ -503,12 +472,11 @@ final class MasterClient: @unchecked Sendable {
 		}
 	}
 
-	/// Push event subscribers, keyed by event type ("rebuildProgress" 等)。
+	/// Push event subscribers, keyed by event type。
 	/// Multiple closures per type allowed; callbacks fire on the IPC queue.
 	private var pushHandlers: [String: [(([String: Any]) -> Void)]] = [:]
 
 	/// Subscribe to a master push event (= response with no `id`, has `type`).
-	/// 例: rebuildSetup の進捗 stream を `subscribePush("rebuildProgress") { ... }` で受ける。
 	func subscribePush(type: String, handler: @escaping ([String: Any]) -> Void) {
 		stateLock.withLock {
 			pushHandlers[type, default: []].append(handler)
@@ -644,7 +612,6 @@ enum MasterError: LocalizedError {
 	case malformedResponse(String)
 	case timeout
 	case setupFailed(String)
-	case rebuildFailed(String)
 
 	var errorDescription: String? {
 		switch self {
@@ -657,7 +624,6 @@ enum MasterError: LocalizedError {
 		case .malformedResponse(let m): return "malformed master response: \(m)"
 		case .timeout: return "master request timed out"
 		case .setupFailed(let m): return "project setup failed: \(m)"
-		case .rebuildFailed(let m): return "rebuild failed: \(m)"
 		}
 	}
 }

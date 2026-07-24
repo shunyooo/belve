@@ -69,9 +69,6 @@ struct BottomBar: View {
 		case .ssh(let host, _):
 			let short = host.components(separatedBy: ".").first ?? host
 			return ("network", short, Theme.accent)
-		case .devContainer(let host, _):
-			let short = host.components(separatedBy: ".").first ?? host
-			return ("shippingbox", "\(short) / DevContainer", Theme.accent)
 		}
 	}
 

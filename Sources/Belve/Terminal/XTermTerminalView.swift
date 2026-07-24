@@ -286,7 +286,6 @@ struct XTermTerminalView: NSViewRepresentable {
 		private var isWaitingForInitialOutput = false
 		var isTerminalReady = false
 		private var isShowingTransientStatus = false
-		private var hasRestoredSerializedState = false
 		/// xterm 起動 (ready) 時点で auto-focus を保留しておくフラグ。
 		/// 「first PTY output 到着 = 接続確立」のタイミングまで focus を遅延し、
 		/// 接続前のペインに focus が奪われて入力が消える事象を防ぐ。
@@ -304,16 +303,6 @@ struct XTermTerminalView: NSViewRepresentable {
 				// が奪われる問題を解消。
 				isTerminalReady = true
 				pendingAutoFocus = true
-				// Serialized state があれば restore (リロード復元)
-				if let pid = paneId, let savedState = PaneHostRegistry.shared.consumeSerializedState(for: pid) {
-					let escaped = savedState
-						.replacingOccurrences(of: "\\", with: "\\\\")
-						.replacingOccurrences(of: "`", with: "\\`")
-						.replacingOccurrences(of: "$", with: "\\$")
-					webView?.evaluateJavaScript("window.terminalRestore(`\(escaped)`)")
-					hasRestoredSerializedState = true
-					NSLog("[Belve] Restored serialized state for pane %@ (%d chars)", String(pid.prefix(8)), savedState.count)
-				}
 				// 初期 font size を AppConfig から反映 + 以降の変更を購読。
 				let initialSize = AppConfig.shared.terminalFontSize
 				webView?.evaluateJavaScript("window.terminalSetFontSize(\(initialSize))", completionHandler: nil)
@@ -444,9 +433,6 @@ struct XTermTerminalView: NSViewRepresentable {
 			env["BELVE_SESSION"] = "1"
 			env["BELVE_COLS"] = "\(cols)"
 			env["BELVE_ROWS"] = "\(rows)"
-			if hasRestoredSerializedState {
-				env["BELVE_SKIP_REPLAY"] = "1"
-			}
 			// belve-persist が parent (= Belve.app) の死活監視に使う。Belve 終了で
 			// orphan 化した belve-persist client / daemon が自動 exit する。
 			// container broker や mac-master は self-spawn なので env を継承しない。
@@ -470,7 +456,6 @@ struct XTermTerminalView: NSViewRepresentable {
 			// right container/VM broker. 1 forward per VM, regardless of project.
 			if project.isRemote, let host = project.sshHost {
 				let pid = project.id
-				let isDev = project.isDevContainer
 				let workspacePath = project.path ?? ""
 				let projShort = String(project.id.uuidString.prefix(8))
 				let binDirOpt: String? = {
@@ -488,7 +473,6 @@ struct XTermTerminalView: NSViewRepresentable {
 							try await MasterClient.shared.ensureSetup(
 								projectId: pid,
 								host: host,
-								isDevContainer: isDev,
 								workspacePath: workspacePath,
 								projShort: projShort,
 								binDir: binDir
@@ -937,13 +921,11 @@ struct XTermTerminalView: NSViewRepresentable {
 		/// Task で投げて完了したら remote path を入力。失敗時はエラー path を入れない
 		/// (silent fallback 禁止 — ユーザーには NSLog で原因が見える)。
 		private func sendImageToRemote(localPath: String, host: String, project: Project) {
-			let isDC = project.isDevContainer
 			let projShort = String(project.id.uuidString.prefix(8))
 			Task { [weak self] in
 				do {
 					let remotePath = try await MasterClient.shared.transferImage(
 						host: host,
-						isDevContainer: isDC,
 						projShort: projShort,
 						localPath: localPath
 					)

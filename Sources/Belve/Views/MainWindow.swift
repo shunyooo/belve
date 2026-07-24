@@ -28,7 +28,6 @@ struct MainWindow: View {
 	@StateObject private var stateManager = CommandAreaStateManager()
 	@StateObject private var layoutState = WorkspaceLayoutStateManager()
 	@State private var browserPath: String = ""
-	@State private var devContainerFlowHost: String? = nil
 	@State private var focusZone: FocusZone = .pane
 	/// discovered セッション poll が in-flight か。SSH `run` は最大 10s block し得るので
 	/// 5s tick が重なった時に多重発火しないための guard。
@@ -44,9 +43,7 @@ struct MainWindow: View {
 	enum PaletteMode {
 		case commands
 		case sshHosts
-		case sshHostsForDevContainer
 		case folderBrowser
-		case remoteDevContainerBrowser
 	}
 
 	var body: some View {
@@ -562,21 +559,6 @@ struct MainWindow: View {
 				))
 				.allowsHitTesting(isEditorVisible)
 			}
-
-			if isSelected && projectStore.showDevContainerBanner && !project.isDevContainer {
-				DevContainerBanner(
-					onReopen: {
-						projectStore.showDevContainerBanner = false
-						projectStore.openDevContainer()
-					},
-					onDismiss: {
-						projectStore.showDevContainerBanner = false
-					}
-				)
-				.padding(.bottom, 16)
-				.padding(.trailing, 16)
-				.transition(.move(edge: .bottom).combined(with: .opacity))
-			}
 		}
 		.opacity(isSelected ? 1 : 0)
 		.allowsHitTesting(isSelected)
@@ -643,22 +625,6 @@ struct MainWindow: View {
 						projectStore.setProjectFolder(path)
 					}
 					.padding(.top, 80)
-				case .remoteDevContainerBrowser:
-					if let host = devContainerFlowHost {
-						FolderBrowserView(
-							isPresented: $commandPaletteState.isPresented,
-							initialPath: browserPath,
-							// folder browser is not bound to a project — pass a fresh
-							// UUID so the RPC lookup always misses and we fall back
-							// to executeSSH cleanly.
-							provider: SSHProvider(host: host, path: nil, projectId: UUID()),
-							highlightDevContainers: true
-						) { path in
-							projectStore.openRemoteDevContainerOnCurrent(host: host, workspacePath: path)
-							devContainerFlowHost = nil
-						}
-						.padding(.top, 80)
-					}
 				default:
 					CommandPaletteView(
 						isPresented: $commandPaletteState.isPresented,
@@ -1052,9 +1018,7 @@ struct MainWindow: View {
 			return buildMainCommands()
 		case .sshHosts:
 			return buildSSHHostCommands()
-		case .sshHostsForDevContainer:
-			return buildSSHHostCommandsForDevContainer()
-		case .folderBrowser, .remoteDevContainerBrowser:
+		case .folderBrowser:
 			return []
 		}
 	}
@@ -1077,24 +1041,7 @@ struct MainWindow: View {
 			commandPaletteState.isPresented = true
 		})
 
-		cmds.append(PaletteCommand(title: "Open Remote DevContainer", icon: "shippingbox", keepOpen: true) {
-			paletteMode = .sshHostsForDevContainer
-		})
-
 		if let project = projectStore.selectedProject, project.sshHost != nil {
-			if project.isDevContainer {
-				cmds.append(PaletteCommand(title: "Reopen without Container (SSH)", icon: "arrow.uturn.backward") {
-					projectStore.closeDevContainer()
-				})
-				cmds.append(PaletteCommand(title: "Rebuild DevContainer", icon: "arrow.triangle.2.circlepath") {
-					projectStore.rebuildDevContainer()
-				})
-			} else if projectStore.showDevContainerBanner {
-				// Only show "Reopen in Container" when .devcontainer/devcontainer.json exists
-				cmds.append(PaletteCommand(title: "Reopen in Container", icon: "shippingbox") {
-					projectStore.openDevContainer()
-				})
-			}
 			cmds.append(PaletteCommand(title: "Disconnect SSH (Local)", icon: "wifi.slash") {
 				projectStore.disconnectSSH()
 			})
@@ -1152,16 +1099,6 @@ struct MainWindow: View {
 		SSHConfigParser.parse().map { host in
 			PaletteCommand(title: host.name, icon: "network") {
 				projectStore.connectSSH(host: host.name)
-			}
-		}
-	}
-
-	private func buildSSHHostCommandsForDevContainer() -> [PaletteCommand] {
-		SSHConfigParser.parse().map { host in
-			PaletteCommand(title: host.name, icon: "network", keepOpen: true) {
-				devContainerFlowHost = host.name
-				browserPath = "~"
-				paletteMode = .remoteDevContainerBrowser
 			}
 		}
 	}
@@ -1547,7 +1484,7 @@ private struct MainWindowFileSearchRow: View {
 
 struct TopBar: View {
 	let projectName: String
-	let connectionInfo: String?  // e.g. "SSH: host", "DevContainer: host", nil for local
+	let connectionInfo: String?  // e.g. "SSH: host", nil for local
 	var gitBranch: String?
 	let showSidebar: Bool
 	let onToggleSidebar: () -> Void
@@ -1638,13 +1575,11 @@ struct ConnectionBadge: View {
 	let text: String
 
 	private var icon: String {
-		if text.hasPrefix("DevContainer") { return "shippingbox" }
 		if text.hasPrefix("SSH") { return "network" }
 		return "desktopcomputer"
 	}
 
 	private var color: Color {
-		if text.hasPrefix("DevContainer") { return Theme.yellow }
 		if text.hasPrefix("SSH") { return Theme.accent }
 		return Theme.green
 	}

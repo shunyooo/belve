@@ -3,16 +3,11 @@ import SwiftUI
 struct FolderBrowserView: View {
 	@Binding var isPresented: Bool
 	let provider: any WorkspaceProvider
-	/// When true, each loaded directory is scanned (remote SSH only) for
-	/// `.devcontainer/devcontainer.json` children so the UI can badge them.
-	var highlightDevContainers: Bool = false
 	let onSelect: (String) -> Void
 
 	@State private var currentPath: String
 	@State private var typedSuffix: String = ""
 	@State private var items: [FileItem] = []
-	@State private var devContainerDirs: Set<String> = []
-	@State private var currentPathHasDevContainer: Bool = false
 	@State private var selectedIndex: Int = 0
 	@State private var keyMonitor: Any? = nil
 	@FocusState private var isFocused: Bool
@@ -21,13 +16,11 @@ struct FolderBrowserView: View {
 		isPresented: Binding<Bool>,
 		initialPath: String,
 		provider: any WorkspaceProvider,
-		highlightDevContainers: Bool = false,
 		onSelect: @escaping (String) -> Void
 	) {
 		self._isPresented = isPresented
 		self._currentPath = State(initialValue: initialPath)
 		self.provider = provider
-		self.highlightDevContainers = highlightDevContainers
 		self.onSelect = onSelect
 	}
 
@@ -95,27 +88,8 @@ struct FolderBrowserView: View {
 				.foregroundStyle(Theme.textPrimary)
 				.focused($isFocused)
 				.onSubmit {
-					if highlightDevContainers && !currentPathHasDevContainer {
-						NSSound.beep()
-						return
-					}
 					isPresented = false
 					onSelect(currentPath)
-				}
-				if highlightDevContainers {
-					HStack(spacing: 3) {
-						Image(systemName: "shippingbox.fill")
-							.font(.system(size: 9))
-						Text(currentPathHasDevContainer ? "devcontainer" : "no devcontainer")
-							.font(.system(size: 10, weight: .medium))
-					}
-					.foregroundStyle(currentPathHasDevContainer ? Theme.accent : Theme.textTertiary)
-					.padding(.horizontal, 5)
-					.padding(.vertical, 1.5)
-					.background(
-						RoundedRectangle(cornerRadius: 3)
-							.fill((currentPathHasDevContainer ? Theme.accent : Theme.textTertiary).opacity(0.15))
-					)
 				}
 			}
 			.padding(.horizontal, 12)
@@ -141,8 +115,7 @@ struct FolderBrowserView: View {
 							FolderBrowserRow(
 								name: item.name,
 								icon: item.isDirectory ? "folder" : "doc",
-								isSelected: index == selectedIndex,
-								hasDevContainer: devContainerDirs.contains(item.path)
+								isSelected: index == selectedIndex
 							)
 							.id(item.id)
 							.onTapGesture {
@@ -229,12 +202,6 @@ struct FolderBrowserView: View {
 				}
 				return event
 			case 36:   // return — always confirms the currently-open path.
-				if highlightDevContainers && !currentPathHasDevContainer {
-					// Only devcontainer dirs can be confirmed in this mode. Give feedback
-					// and keep the browser open so the user can navigate elsewhere.
-					NSSound.beep()
-					return nil
-				}
 				isPresented = false
 				onSelect(currentPath)
 				return nil
@@ -264,34 +231,10 @@ struct FolderBrowserView: View {
 	private func loadDirectory() {
 		let pathAtStart = currentPath
 		DispatchQueue.global().async {
-			// Remote DevContainer browser は project に bind されてない (= RPC client
-			// 無し) なので、SSHProvider.listDirectory (RPC ONLY) は空を返す。
-			// 直接 SSH 経由の listing を使う。
-			let dirs: [FileItem]
-			if highlightDevContainers, let sshProvider = provider as? SSHProvider {
-				dirs = sshProvider.listDirectoryViaSSH(pathAtStart).filter { $0.isDirectory }
-			} else {
-				dirs = provider.listDirectory(pathAtStart).filter { $0.isDirectory }
-			}
-
-			// Second pass for DevContainer mode: batch-check which subdirs contain
-			// .devcontainer/devcontainer.json, plus whether the current directory itself does.
-			var dcMatches: Set<String> = []
-			var currentHasDC = false
-			if highlightDevContainers, let sshProvider = provider as? SSHProvider {
-				dcMatches = sshProvider.findDevContainerDirs(in: dirs.map { $0.path })
-				// `fileExists` は RPC ONLY なので folder browser context (=
-				// RPC client 無し) では false 固定になる → 「no devcontainer」
-				// 誤表示。findDevContainerDirs (= 直 SSH) で current path 自体も
-				// チェックする。
-				currentHasDC = !sshProvider.findDevContainerDirs(in: [pathAtStart]).isEmpty
-			}
-
+			let dirs = provider.listDirectory(pathAtStart).filter { $0.isDirectory }
 			DispatchQueue.main.async {
 				guard pathAtStart == currentPath else { return }  // user navigated away mid-load
 				items = dirs
-				devContainerDirs = dcMatches
-				currentPathHasDevContainer = currentHasDC
 			}
 		}
 	}
@@ -316,7 +259,6 @@ struct FolderBrowserRow: View {
 	let name: String
 	let icon: String
 	let isSelected: Bool
-	var hasDevContainer: Bool = false
 	@State private var isHovering = false
 
 	var body: some View {
@@ -329,21 +271,6 @@ struct FolderBrowserRow: View {
 				.font(.system(size: 13))
 				.foregroundStyle(Theme.textPrimary)
 			Spacer()
-			if hasDevContainer {
-				HStack(spacing: 3) {
-					Image(systemName: "shippingbox.fill")
-						.font(.system(size: 9))
-					Text("devcontainer")
-						.font(.system(size: 10, weight: .medium))
-				}
-				.foregroundStyle(Theme.accent)
-				.padding(.horizontal, 5)
-				.padding(.vertical, 1.5)
-				.background(
-					RoundedRectangle(cornerRadius: 3)
-						.fill(Theme.accent.opacity(0.15))
-				)
-			}
 		}
 		.padding(.horizontal, 12)
 		.padding(.vertical, 6)

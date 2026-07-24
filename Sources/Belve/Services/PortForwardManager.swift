@@ -40,7 +40,7 @@ final class PortForwardManager: ObservableObject {
 	private var scanTimer: Timer?
 	/// projectId → last scan snapshot (remote ports seen as listening)
 	private var lastSeenRemotePorts: [UUID: Set<Int>] = [:]
-	/// (host, projShort, isDevContainer) for active scans
+	/// (host, projShort) for active scans
 	private var scanContexts: [UUID: ScanContext] = [:]
 	/// Active project (= ユーザーが現在見てる project)。scan は active 1 個ぶん
 	/// だけ実行する (= 全 12 project scan で SSH master が詰まる問題への対処、
@@ -52,7 +52,6 @@ final class PortForwardManager: ObservableObject {
 	private struct ScanContext {
 		let host: String
 		let projShort: String
-		let isDevContainer: Bool
 	}
 
 	/// Well-known ports auto-detect must never surface. Adds SSH, belve's
@@ -82,24 +81,10 @@ final class PortForwardManager: ObservableObject {
 	/// Called when a project is selected / reloaded, and when the forward list
 	/// changes. Idempotent: forwards already established are left alone.
 	///
-	/// For DevContainer projects the remote host is resolved at sync time from
-	/// the container `.env` on the VM (CIP=…) so forwards hit the container
-	/// directly rather than the VM's 127.0.0.1 (where nothing is listening
-	/// unless the user published the port via docker).
+	/// Forwards target the VM host's `remoteHost` (127.0.0.1).
 	func sync(project: Project, host: String, remoteHost: String) {
 		Task { [weak self] in
-			let effectiveRemoteHost: String
-			if project.isDevContainer {
-				let projShort = String(project.id.uuidString.prefix(8))
-				if let cip = await Self.fetchContainerIP(host: host, projShort: projShort) {
-					effectiveRemoteHost = cip
-				} else {
-					effectiveRemoteHost = remoteHost
-				}
-			} else {
-				effectiveRemoteHost = remoteHost
-			}
-			await self?.syncAsync(project: project, host: host, remoteHost: effectiveRemoteHost)
+			await self?.syncAsync(project: project, host: host, remoteHost: remoteHost)
 		}
 	}
 
@@ -115,11 +100,10 @@ final class PortForwardManager: ObservableObject {
 	/// Register a project for remote listening-port scanning. Called when the
 	/// project is selected (or connection info becomes known). Unregister via
 	/// `teardown` above.
-	func registerForScanning(projectId: UUID, host: String, isDevContainer: Bool) {
+	func registerForScanning(projectId: UUID, host: String) {
 		scanContexts[projectId] = ScanContext(
 			host: host,
-			projShort: String(projectId.uuidString.prefix(8)),
-			isDevContainer: isDevContainer
+			projShort: String(projectId.uuidString.prefix(8))
 		)
 	}
 
@@ -299,10 +283,9 @@ final class PortForwardManager: ObservableObject {
 
 	private func scanOne(projectId: UUID, ctx: ScanContext) async {
 		let current = await Self.scanRemotePorts(ctx: ctx)
-		NSLog("[Belve][scan] project=%@ host=%@ devContainer=%@ found=%@",
+		NSLog("[Belve][scan] project=%@ host=%@ found=%@",
 			String(projectId.uuidString.prefix(8)),
 			ctx.host,
-			ctx.isDevContainer ? "Y" : "N",
 			current.sorted().map(String.init).joined(separator: ","))
 		let isFirstScan = lastSeenRemotePorts[projectId] == nil
 		let previous = lastSeenRemotePorts[projectId] ?? []
@@ -343,21 +326,10 @@ final class PortForwardManager: ObservableObject {
 	}
 
 	private static func scanRemotePorts(ctx: ScanContext) async -> Set<Int> {
-		// Return the raw /proc/net/tcp{,6} content and parse on the Mac side —
-		// avoids the shell-quoting minefield of embedding awk into an
-		// `ssh host docker exec CID sh -c '...'` chain. /proc/net/tcp is
-		// available on every Linux regardless of which userland tools (ss,
-		// netstat) are installed in the container image.
-		let cmd: String
-		if ctx.isDevContainer {
-			cmd = """
-			CID=$(grep -m1 '^CID=' ~/.belve/projects/\(ctx.projShort).env 2>/dev/null | cut -d= -f2 | tr -d '\\n')
-			if [ -z "$CID" ]; then exit 0; fi
-			docker exec "$CID" cat /proc/net/tcp /proc/net/tcp6 2>/dev/null
-			"""
-		} else {
-			cmd = "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null"
-		}
+		// Return the raw /proc/net/tcp{,6} content and parse on the Mac side.
+		// /proc/net/tcp is available on every Linux regardless of which userland
+		// tools (ss, netstat) are installed.
+		let cmd = "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null"
 		let output = await runSSHWithOutput(host: ctx.host, command: cmd)
 		return Self.parseListeningPorts(from: output)
 	}
@@ -514,64 +486,6 @@ final class PortForwardManager: ObservableObject {
 			host: host,
 			args: ["-O", "cancel", "-L", "\(local):\(rh):\(rp)"]
 		)
-	}
-
-	/// Read the container IP from `~/.belve/projects/<short>.env` on the VM.
-	/// The file is written by `belve-setup` at DevContainer start and contains
-	/// a `CIP=<ipv4>` line. Returns nil if the file is missing or malformed —
-	/// caller falls back to 127.0.0.1.
-	/// Look up the container IP for a DevContainer project. Reads `CIP=...` from
-	/// `~/.belve/projects/<projShort>.env` over SSH (uses the existing
-	/// ControlMaster, no fresh handshake). `internal` so SSHTunnelManager /
-	/// ProjectStore can reuse without duplicating the SSH call.
-	static func fetchContainerIP(host: String, projShort: String) async -> String? {
-		await withCheckedContinuation { continuation in
-			DispatchQueue.global(qos: .utility).async {
-				let proc = Process()
-				proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-				proc.arguments = [
-					"-o", "ControlPath=\(controlPath(for: host))",
-					host,
-					"grep -m1 '^CIP=' ~/.belve/projects/\(projShort).env 2>/dev/null | cut -d= -f2 | tr -d '\\n'"
-				]
-				let outPipe = Pipe()
-				proc.standardOutput = outPipe
-				proc.standardError = FileHandle.nullDevice
-				do {
-					try proc.run()
-				} catch {
-					continuation.resume(returning: nil)
-					return
-				}
-				let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
-				let timedOut = NSLock()
-				var didTimeout = false
-				timer.schedule(deadline: .now() + 8.0)
-				timer.setEventHandler {
-					timedOut.withLock { didTimeout = true }
-					proc.terminate()
-					DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-						if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
-					}
-				}
-				timer.activate()
-				proc.waitUntilExit()
-				timer.cancel()
-				if timedOut.withLock({ didTimeout }) {
-					NSLog("[Belve] PortForwardManager fetchContainerIP timed out (host=%@)", host)
-					continuation.resume(returning: nil)
-					return
-				}
-				let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-				let str = String(data: data, encoding: .utf8)?
-					.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-				if proc.terminationStatus == 0, !str.isEmpty {
-					continuation.resume(returning: str)
-				} else {
-					continuation.resume(returning: nil)
-				}
-			}
-		}
 	}
 
 	private static func runSSH(host: String, args: [String]) async -> Bool {

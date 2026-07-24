@@ -3,7 +3,6 @@ import Foundation
 enum Workspace: Codable, Hashable {
 	case local(path: String?)
 	case ssh(host: String, path: String?)
-	case devContainer(host: String, workspace: String)
 }
 
 struct PortForward: Codable, Hashable, Identifiable {
@@ -89,29 +88,23 @@ struct Project: Identifiable, Codable, Hashable {
 
 	var sshHost: String? {
 		switch workspace {
-		case .ssh(let host, _), .devContainer(let host, _): return host
+		case .ssh(let host, _): return host
 		case .local: return nil
 		}
 	}
 
-	/// The path associated with this workspace (folder path for local/SSH, workspace for DevContainer)
+	/// The path associated with this workspace (folder path for local/SSH)
 	var path: String? {
 		switch workspace {
 		case .local(let p): return p
 		case .ssh(_, let p): return p
-		case .devContainer(_, let ws): return ws
 		}
-	}
-
-	var isDevContainer: Bool {
-		if case .devContainer = workspace { return true }
-		return false
 	}
 
 	var isRemote: Bool {
 		switch workspace {
 		case .local: return false
-		case .ssh, .devContainer: return true
+		case .ssh: return true
 		}
 	}
 
@@ -120,7 +113,6 @@ struct Project: Identifiable, Codable, Hashable {
 		switch workspace {
 		case .local(let p): return p ?? NSHomeDirectory()
 		case .ssh(_, let p): return p ?? "~"
-		case .devContainer: return "."
 		}
 	}
 
@@ -137,8 +129,6 @@ struct Project: Identifiable, Codable, Hashable {
 		case .ssh(let host, let path):
 			// projectId は RemoteRPCRegistry でクライアントを引くために必要。
 			return SSHProvider(host: host, path: path, projectId: id)
-		case .devContainer(let host, let ws):
-			return DevContainerProvider(host: host, workspace: ws, projectId: id)
 		}
 	}
 }
