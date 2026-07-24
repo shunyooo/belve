@@ -26,6 +26,13 @@ struct MainWindow: View {
 	@State private var fileSearchKeyMonitor: Any?
 	@State private var paletteMode: PaletteMode = .commands
 	@StateObject private var stateManager = CommandAreaStateManager()
+	/// project 未選択時に sidebar へ渡す空の CommandAreaState。stateManager には
+	/// 登録しない (= pane-layouts.json に永続化しない) 使い捨てのプレースホルダ。
+	/// 以前は `commandAreaState(for: selectedProject?.id ?? UUID())` としていたが、
+	/// 未選択時に body 評価のたび fresh UUID を生成 → viewStore.ensureMainView が
+	/// @Published を mutate → 再レンダー誘発の 20Hz ループ + pane-layouts.json 無限増
+	/// を招いていた (2026-07-25)。
+	@StateObject private var noSelectionCommandState = CommandAreaState()
 	@StateObject private var layoutState = WorkspaceLayoutStateManager()
 	@State private var browserPath: String = ""
 	@State private var focusZone: FocusZone = .pane
@@ -445,7 +452,7 @@ struct MainWindow: View {
 				onRenameGroup: { old, new in projectStore.renameGroup(from: old, to: new) },
 				uniqueGroupName: { projectStore.uniqueGroupName() },
 				onMoveProjectToSection: { id, key in projectStore.moveProjectToSection(id, sectionKey: key) },
-				activeCommandState: commandAreaState(for: projectStore.selectedProject?.id ?? UUID()),
+				activeCommandState: projectStore.selectedProject.map { commandAreaState(for: $0.id) } ?? noSelectionCommandState,
 				stateManager: stateManager,
 				paneIdsForProject: { projectId in
 					Set(commandAreaState(for: projectId).orderedPaneIds().map { $0.uuidString.lowercased() })

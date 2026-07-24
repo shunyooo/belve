@@ -47,6 +47,20 @@ WINID=$(swift -e 'import CoreGraphics; let l=CGWindowListCopyWindowInfo(.optionO
 screencapture -l$WINID -x /tmp/belve-ui.png
 ```
 
+## 実機動作確認で発見・修正した重大バグ（2026-07-25 追記）
+
+サンドボックスで build/test/`.app` 起動確認中に、**アイドル時 ~20Hz の再描画ループ + 永続ファイル無限肥大**を発見し修正した。
+
+- **症状**: 無操作でも `FileTreeView.body` が全 project で ~20Hz 再評価され続け、毎回 `CommandAreaStateManager.save()` が肥大 dict（~9500件/1.8MB）をメインスレッドで全 JSON エンコード（`sample` で主スレッド時間の 2014/2304 が `save()`）。CLAUDE.md が警告する入力ラグ型のバグ。
+- **根本原因**: `MainWindow.swift` の `activeCommandState: commandAreaState(for: projectStore.selectedProject?.id ?? UUID())`。project 未選択時に `?? UUID()` が body 評価のたび fresh UUID を捏造 → `viewStore.activeView(for:)` → `ensureMainView` が `@Published viewsByProject` を body 中に mutate → 再レンダー誘発 → 新 UUID …の自己駆動ループ。副作用で pane-layouts.json / views.json / workspace-layout.json にファントム view が毎レンダー蓄積。CLAUDE.md 禁止の「優しい fallback」（未選択を偽 id で握りつぶす）そのもの。
+- **修正**: 未選択時は id を捏造せず、`CommandAreaStateManager` に登録しない=永続化されない安定プレースホルダ `noSelectionCommandState`（@StateObject）を渡す。
+- **検証**: 修正後 `.app` を起動 → `[drop] overlay` ログ 0件（ループ消滅）、pane-layouts entry 増加ほぼ停止、テスト 29/29 green。
+- **蓄積ゴミの掃除**: 実 project 15件に対応するキーだけ残して pane-layouts.json（1.8MB→4KB）/ views.json / workspace-layout.json / open-files.json を pruning（各 `*.2026-07-25-precleanup.bak` バックアップ保存済み。全15 project のレイアウト欠損ゼロを確認）。
+
+### 未解決の軽微な残渣（要 follow-up）
+
+- **create-on-read アンチパターン**: `ProjectViewStore.activeView(for:)` と `CommandAreaStateManager.state(for:)` は**未知 id でも新規生成＋永続化**する。上記の暴走ループは消えたが、起動ごとに一過性のプレースホルダ project（`ProjectStore.loadProjects` の `Project(name:"Project 1")` 系、fresh UUID）を参照する経路が残っており、**起動ごとに phantom が +1** 蓄積する（file は ~4KB 維持で暴走はしない）。根本対処は「id が projectStore 未登録なら resurrect しない」= create-on-read を lookup-only にする方向で、§8.1 の workspace/SessionKey 紐付けと合わせて設計するのが素直。
+
 ## 残タスク（未実装）
 
 - **§8.1 workspace 主単位化（次の大きな塊）**: `Project ⊃ Workspace(1..N) ⊃ {main agent pane + 補助ペイン + editor}`。多 workspace 対応、`ProjectView.id==projectId` スタブ解消、レイアウト永続化（pane-layouts.json / workspace-layout.json）の SessionKey 紐付け。方向は §8 に確定済み。着手前に「(x) 補助ペインは別 tmux だがサイドバー非表示 / (y) 1 workspace=1 tmux で補助は window/split」の設計判断が必要。
