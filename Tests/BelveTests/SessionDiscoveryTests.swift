@@ -29,8 +29,10 @@ final class SessionDiscoveryTests: XCTestCase {
 		}
 	}
 
-	// (a) 複数セッションの list-sessions 出力 + prefix フィルタ。
-	func testParsesMultipleSessionsAndFiltersByPrefix() {
+	// (a) mixed: 複数セッション出力で agent 検出分だけ返る + prefix フィルタが効く。
+	//     bare shell 系 (belve-bbb / belve-ccc) と非 prefix (other/manual) は除外され、
+	//     agent (claude/codex) の belve-* だけが .working で返る。
+	func testReturnsOnlyAgentSessionsAndFiltersByPrefix() {
 		let runner = FakeRunner()
 		runner.sessionsOutput = """
 		belve-aaa11111
@@ -38,19 +40,22 @@ final class SessionDiscoveryTests: XCTestCase {
 
 		other-session
 		  belve-ccc33333
+		belve-ddd44444
 		manual-tmux
 		"""
-		// prefix 一致分は全て bare shell (idle) にしておく。
 		runner.panesOutput = [
-			"belve-aaa11111": "zsh",
-			"belve-bbb22222": "bash",
-			"belve-ccc33333": "fish",
+			"belve-aaa11111": "zsh\nclaude",  // agent 検出 → 返る
+			"belve-bbb22222": "bash",         // bare shell → 除外
+			"belve-ccc33333": "fish",         // bare shell → 除外
+			"belve-ddd44444": "codex",        // agent 検出 → 返る
+			"other-session": "claude",        // prefix 不一致 → 対象外
+			"manual-tmux": "claude",          // prefix 不一致 → 対象外
 		]
 		let service = SessionDiscoveryService(runCommand: runner.run)
 		let discovered = service.discover(projectId: projectA)
 
-		XCTAssertEqual(discovered.map { $0.sessionKey }, ["belve-aaa11111", "belve-bbb22222", "belve-ccc33333"])
-		XCTAssertTrue(discovered.allSatisfy { $0.coarseStatus == .idle })
+		XCTAssertEqual(discovered.map { $0.sessionKey }, ["belve-aaa11111", "belve-ddd44444"])
+		XCTAssertTrue(discovered.allSatisfy { $0.coarseStatus == .working })
 	}
 
 	// (a') tmux 未起動 (runner nil) / 空出力は空配列。
@@ -63,21 +68,34 @@ final class SessionDiscoveryTests: XCTestCase {
 		XCTAssertTrue(SessionDiscoveryService(runCommand: runner.run).discover(projectId: projectA).isEmpty)
 	}
 
-	// (b) pane が claude/node → .working、bare shell → .idle。
-	func testCoarseStatusFromPaneCommand() {
+	// (b) agent 検出セッションは .working で返る (claude / codex)。
+	func testAgentSessionsAreIncludedAsWorking() {
 		let runner = FakeRunner()
-		runner.sessionsOutput = "belve-work\nbelve-node\nbelve-idle"
+		runner.sessionsOutput = "belve-claude\nbelve-codex"
 		runner.panesOutput = [
-			"belve-work": "zsh\nclaude",   // いずれかの pane が claude → working
-			"belve-node": "node",          // node も working
-			"belve-idle": "zsh",           // bare shell → idle
+			"belve-claude": "zsh\nclaude",  // いずれかの pane が claude
+			"belve-codex": "codex",         // codex
 		]
 		let service = SessionDiscoveryService(runCommand: runner.run)
 		let byKey = Dictionary(uniqueKeysWithValues: service.discover(projectId: projectA).map { ($0.sessionKey, $0.coarseStatus) })
 
-		XCTAssertEqual(byKey["belve-work"], .working)
-		XCTAssertEqual(byKey["belve-node"], .working)
-		XCTAssertEqual(byKey["belve-idle"], .idle)
+		XCTAssertEqual(byKey["belve-claude"], .working)
+		XCTAssertEqual(byKey["belve-codex"], .working)
+	}
+
+	// (b') bare shell / node のみのセッションは surface しない (返らない)。
+	//      node は汎用ランタイム名なので agentCommands に含めない → 除外。
+	func testBareShellAndNodeSessionsAreExcluded() {
+		let runner = FakeRunner()
+		runner.sessionsOutput = "belve-bash\nbelve-zsh\nbelve-login\nbelve-node"
+		runner.panesOutput = [
+			"belve-bash": "bash",   // bare shell → 除外
+			"belve-zsh": "zsh",     // bare shell → 除外
+			"belve-login": "-zsh",  // ログインシェル → 除外
+			"belve-node": "node",   // node は agent ではない → 除外
+		]
+		let service = SessionDiscoveryService(runCommand: runner.run)
+		XCTAssertTrue(service.discover(projectId: projectA).isEmpty)
 	}
 
 	// (c) mergeDiscovered は未知の SessionKey を discovered として挿入する。

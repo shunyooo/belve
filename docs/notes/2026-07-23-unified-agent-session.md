@@ -104,3 +104,30 @@ enum AgentStatus { idle, sessionStart, working, blocked, done, sessionEnd, runni
 5. discovered セッションの状態導出（`tmux ls`＋プロセス/出力観測）
 6. container 経路・VT snapshot 一掃
 7. 統合ビルド＋Plan/Rules レビュー＋実機スクショ検証
+
+## 8. 追記（2026-07-25）: workspace 主単位化 と session 昇格ゲート
+
+背骨（識別子一本化・状態所有・container 削除）完了後の設計議論で確定した原則。
+§2 の「ProjectView を AgentSession に畳む」は**撤回**し、以下を採用する。
+
+### 8.1 workspace を主単位に（統合ではなく包含）
+- 人が「1つの作業」と感じる単位は **agent 単体でも pane 単体でもなく workspace**
+  （＝メイン agent ペイン ＋ 0..N 補助ペイン ＋ エディタ/プレビュー状態）。
+- 関係は **包含**： `Project ⊃ Workspace(1..N) ⊃ { main pane→AgentSession(SessionKey) にバインド ＋ 補助ペイン ＋ editor }`。
+- 理由: 補助ペイン（例「agent が認証を要求→別ペインで shell 認証」）を自然に表現できる。
+  workspace を agent に畳むと 1 agent=1 pane に縛られ**表現力が狭まる**ため統合しない。
+- `ProjectView`/`ProjectViewStore` は **workspace 層として存置・正式化**（`view.id==projectId`
+  スタブと多 workspace 未実装を将来詰める）。`AgentSession` は workspace のメインペインで
+  走る agent の**状態**を担う（別実体・SessionKey で参照）。
+
+### 8.2 session 昇格ゲート＝「agent ツールが使われたこと」（元設計の原則を discovery にも適用）
+- **tmux/pane が存在するだけでは session ではない。素の端末は端末のまま。**
+- **agent ツール（Claude Code / Codex / …）が検出された時に初めて AgentSession として surface**。
+  - Claude: `belve` hook の `session_start`（OSC）＝確実。← 元から実装済み（コアは正しい）。
+  - 非 Belve / 非 Claude agent（OSC 無し）: **プロセス検出**（`claude`/`codex`/… の小リスト・拡張可）。
+- これは新概念ではなく **元の OSC 経路（Claude 専用の agent-gated 表示）を discovery にも揃え、
+  マルチ agent に拡張**するもの。Unit 6 の discovery が「`belve-*` tmux 全列挙」になっていた
+  のは誤りで、agent 検出ゲートに是正する（補助 shell の idle セッション漏れを解消）。
+- 補助ペインは workspace 内の子であり **session ではない**（サイドバー一覧に出さない）。
+- 履歴の限界: 「昔 agent が走ったが今 shell」を新規 discovery だけでは判定不能 → live で観測中
+  だったものは agent 終了後も done/idle で残す、最初から bare shell のものは surface しない、で許容。

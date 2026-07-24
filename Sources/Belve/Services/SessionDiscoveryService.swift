@@ -5,24 +5,47 @@ import Foundation
 /// の入力。SessionKey = tmux セッション名。
 typealias DiscoveredSession = (sessionKey: String, coarseStatus: AgentStatus)
 
-/// Belve が起動していない (= OSC hook を張っていない) tmux エージェントセッションを
-/// `tmux ls` 発見＋ pane プロセス観測で導出するサービス。
+/// Belve が起動していない (= OSC hook を張っていない) tmux セッションのうち、
+/// **agent ツールが検出されたもの** を `tmux ls` 発見＋ pane プロセス観測で導出するサービス。
 ///
 /// 新ワークフロー (生 SSH → tmux → claude) では Belve の OSC hook が無く OSC event が
 /// 出ない。よって状態はプロセス観測から **導出** する。これは「主経路 (OSC) 失敗 →
 /// 旧経路」の fallback ではなく、**独立ソースからの導出**である
 /// (`docs/notes/2026-07-23-unified-agent-session.md` §3 "discovered セッション")。
 ///
-/// **重要な制限 (blocked は導出不可)**: OSC hook が無いと、claude が入力待ち
+/// **昇格ゲート (§8.2)**: tmux セッション/pane が存在するだけでは session ではない。
+/// 素の端末は端末のまま。`agentCommands` のいずれかが pane の foreground プロセスとして
+/// 走っている時に初めて `AgentSession` として surface する。これは Claude 専用だった OSC
+/// 経路 (belve hook は Claude が走った時だけ発火) の agent-gated 表示を discovery にも揃え、
+/// マルチ agent に拡張したもの。補助 shell だけの idle セッションは **一切返さない**。
+///
+/// **重要な制限 (blocked は導出不可)**: OSC hook が無いと、agent が入力待ち
 /// (blocked / waiting-for-input) かどうかは信頼できる形で判定できない。pane の
-/// foreground プロセスは blocked でも `claude` のままであり、blocked を偽装しない。
-/// よって discovered セッションが取り得る status は **`.working` / `.idle` /
-/// `.sessionEnd` のみ** (blocked は OSC 経路を持つ `.launched` セッションだけが持てる)。
+/// foreground プロセスは blocked でも agent コマンド名のままであり、blocked を偽装しない。
+/// よって discovered セッションが surface された時点の status は **常に `.working`**
+/// (agent が現在走っている)。その後 agent が終了して pane が shell に戻ると discover() の
+/// 結果から落ち、`mergeDiscovered` が `.sessionEnd` にする (blocked は OSC 経路を持つ
+/// `.launched` セッションだけが持てる)。
+///
+/// **検出方式の限界 (要実機検証)**: 検出は pane の foreground `#{pane_current_command}`
+/// の **コマンド名** による。ある環境が Claude/Codex を `node`/`python` 等のラッパー配下で
+/// 起動していて foreground のコマンド名が `agentCommands` に含まれない場合、その名前を
+/// `agentCommands` に追加する (あるいは pane pid を辿って argv を検査する follow-up を実装する)
+/// まで検出漏れする。このサンドボックスでは実 tmux/VM を用意できないため、実機 (tmux/VM) での
+/// 検証が別途必要。
 ///
 /// DI: command runner を closure で注入する (provider への hard 依存を持たない)。
 /// production では `project.provider.run` を配線し、unit test では canned string を返す
 /// closure を渡す。parsing は与えられた runner に対して純粋であり、完全に unit-testable。
 final class SessionDiscoveryService {
+	/// 昇格ゲートに使う agent CLI コマンド名の集合。
+	/// pane の `#{pane_current_command}` と完全一致で照合する。
+	/// **拡張ポイント**: 新しい agent CLI が現れたらここに名前を足すだけで surface 対象になる。
+	/// 注意: `node` / `python` のような汎用ランタイム名は入れない (任意の Node/Python プロセスに
+	/// マッチして誤検出するため)。ラッパー配下で名前が化ける環境は上記 class doc の
+	/// 「検出方式の限界」を参照。
+	static let agentCommands: Set<String> = ["claude", "codex"]
+
 	/// shell コマンドを実行し stdout を返す (非 0 終了 / tmux 未起動などは nil)。
 	/// production では `project.provider.run`、test では canned closure。
 	var runCommand: (String) -> String?
@@ -31,14 +54,17 @@ final class SessionDiscoveryService {
 		self.runCommand = runCommand
 	}
 
-	/// tmux セッションを列挙し、`filterPrefix` に一致するものを discovered セッションとして
-	/// 返す。各セッションの pane foreground プロセスを観測して粗い status を導出する。
+	/// tmux セッションを列挙し、`filterPrefix` に一致し **かつ agent ツールが検出されたもの**
+	/// だけを discovered セッションとして返す。各セッションの pane foreground プロセスを観測し、
+	/// `agentCommands` のいずれかが走っていなければそのセッションは **返さない**。
 	///
 	/// - Parameters:
 	///   - projectId: 呼び出し側が発見結果を紐付ける project (`mergeDiscovered` に渡す)。
 	///     parse 自体には使わないが、呼び出しの文脈を明示するため受け取る。
 	///   - filterPrefix: このプレフィックスで始まるセッション名だけを対象にする。
-	/// - Returns: 発見できなければ空配列 (tmux 未起動 = runner が nil を返すケースを含む)。
+	/// - Returns: 発見できなければ空配列 (tmux 未起動 = runner が nil を返すケース、および
+	///   prefix 一致セッションが全て bare shell で agent 未検出のケースを含む)。返される各
+	///   エントリの coarseStatus は常に `.working`。
 	func discover(projectId: UUID, filterPrefix: String = "belve-") -> [DiscoveredSession] {
 		guard let raw = runCommand("tmux list-sessions -F '#{session_name}'") else {
 			// runner が nil = tmux 未起動 / セッション無し。明示的に「セッション無し」を返す
@@ -50,26 +76,27 @@ final class SessionDiscoveryService {
 			.map { $0.trimmingCharacters(in: .whitespaces) }
 			.filter { !$0.isEmpty && $0.hasPrefix(filterPrefix) }
 
-		return names.map { name in
-			(sessionKey: name, coarseStatus: coarseStatus(forSession: name))
+		return names.compactMap { name in
+			// agent が検出されたセッションだけ surface (§8.2 昇格ゲート)。
+			guard hasAgent(inSession: name) else { return nil }
+			return (sessionKey: name, coarseStatus: .working)
 		}
 	}
 
-	/// 指定セッションの pane foreground プロセスを列挙し、粗い status を導出する。
-	/// pane のいずれかが `claude` / `node` を走らせていれば `.working`、それ以外 (bare shell)
-	/// は `.idle`。blocked は導出しない (上記 class doc の制限を参照)。
-	private func coarseStatus(forSession name: String) -> AgentStatus {
+	/// 指定セッションの pane foreground プロセスを列挙し、いずれかが `agentCommands` に
+	/// 含まれるか判定する。agent が走っていれば true (= surface 対象・`.working`)、
+	/// bare shell だけなら false (= surface しない)。
+	private func hasAgent(inSession name: String) -> Bool {
 		let quoted = Self.shellQuote(name)
 		guard let raw = runCommand("tmux list-panes -t \(quoted) -F '#{pane_current_command}'") else {
-			// pane 情報が取れない (セッションが直後に消えた等) → bare とみなす。
-			return .idle
+			// pane 情報が取れない (セッションが直後に消えた等) → agent 未検出扱い。
+			return false
 		}
 		let commands = raw
 			.split(whereSeparator: { $0.isNewline })
 			.map { $0.trimmingCharacters(in: .whitespaces) }
 			.filter { !$0.isEmpty }
-		let isWorking = commands.contains { $0 == "claude" || $0 == "node" }
-		return isWorking ? .working : .idle
+		return commands.contains { Self.agentCommands.contains($0) }
 	}
 
 	/// single-quote で安全に囲む (セッション名は任意文字を含み得るので shell injection を防ぐ)。
