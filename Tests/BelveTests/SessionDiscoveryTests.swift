@@ -1,0 +1,154 @@
+import XCTest
+@testable import Belve
+
+final class SessionDiscoveryTests: XCTestCase {
+	private let projectA = UUID()
+
+	/// 注入 closure runner。`tmux list-sessions` と各 `tmux list-panes -t <name>` に
+	/// canned string を返す。呼ばれたコマンドを記録して parse を検証する。
+	private final class FakeRunner {
+		/// list-sessions の出力 (nil = tmux 未起動)。
+		var sessionsOutput: String?
+		/// セッション名 → list-panes 出力。
+		var panesOutput: [String: String] = [:]
+		private(set) var commands: [String] = []
+
+		func run(_ command: String) -> String? {
+			commands.append(command)
+			if command.hasPrefix("tmux list-sessions") {
+				return sessionsOutput
+			}
+			if command.hasPrefix("tmux list-panes") {
+				// `-t '<name>'` から name を抽出 (single-quote で囲まれている)。
+				for (name, output) in panesOutput {
+					if command.contains("'\(name)'") { return output }
+				}
+				return nil
+			}
+			return nil
+		}
+	}
+
+	// (a) 複数セッションの list-sessions 出力 + prefix フィルタ。
+	func testParsesMultipleSessionsAndFiltersByPrefix() {
+		let runner = FakeRunner()
+		runner.sessionsOutput = """
+		belve-aaa11111
+		belve-bbb22222
+
+		other-session
+		  belve-ccc33333
+		manual-tmux
+		"""
+		// prefix 一致分は全て bare shell (idle) にしておく。
+		runner.panesOutput = [
+			"belve-aaa11111": "zsh",
+			"belve-bbb22222": "bash",
+			"belve-ccc33333": "fish",
+		]
+		let service = SessionDiscoveryService(runCommand: runner.run)
+		let discovered = service.discover(projectId: projectA)
+
+		XCTAssertEqual(discovered.map { $0.sessionKey }, ["belve-aaa11111", "belve-bbb22222", "belve-ccc33333"])
+		XCTAssertTrue(discovered.allSatisfy { $0.coarseStatus == .idle })
+	}
+
+	// (a') tmux 未起動 (runner nil) / 空出力は空配列。
+	func testNilOrEmptyOutputYieldsEmpty() {
+		let runner = FakeRunner()
+		runner.sessionsOutput = nil
+		XCTAssertTrue(SessionDiscoveryService(runCommand: runner.run).discover(projectId: projectA).isEmpty)
+
+		runner.sessionsOutput = "\n  \n"
+		XCTAssertTrue(SessionDiscoveryService(runCommand: runner.run).discover(projectId: projectA).isEmpty)
+	}
+
+	// (b) pane が claude/node → .working、bare shell → .idle。
+	func testCoarseStatusFromPaneCommand() {
+		let runner = FakeRunner()
+		runner.sessionsOutput = "belve-work\nbelve-node\nbelve-idle"
+		runner.panesOutput = [
+			"belve-work": "zsh\nclaude",   // いずれかの pane が claude → working
+			"belve-node": "node",          // node も working
+			"belve-idle": "zsh",           // bare shell → idle
+		]
+		let service = SessionDiscoveryService(runCommand: runner.run)
+		let byKey = Dictionary(uniqueKeysWithValues: service.discover(projectId: projectA).map { ($0.sessionKey, $0.coarseStatus) })
+
+		XCTAssertEqual(byKey["belve-work"], .working)
+		XCTAssertEqual(byKey["belve-node"], .working)
+		XCTAssertEqual(byKey["belve-idle"], .idle)
+	}
+
+	// (c) mergeDiscovered は未知の SessionKey を discovered として挿入する。
+	func testMergeInsertsNewDiscoveredSessions() {
+		let store = AgentSessionStore()
+		store.mergeDiscovered([
+			(sessionKey: "belve-x", coarseStatus: .working),
+			(sessionKey: "belve-y", coarseStatus: .idle),
+		], projectId: projectA)
+
+		let x = store.session(for: "belve-x")
+		let y = store.session(for: "belve-y")
+		XCTAssertEqual(x?.origin, .discovered)
+		XCTAssertEqual(x?.state.status, .working)
+		XCTAssertEqual(x?.projectId, projectA)
+		XCTAssertEqual(y?.origin, .discovered)
+		XCTAssertEqual(y?.state.status, .idle)
+		XCTAssertEqual(store.sessions(forProject: projectA).count, 2)
+	}
+
+	// (d) mergeDiscovered は .launched セッションの state を上書きしない (OSC が権威)。
+	func testMergeDoesNotOverwriteLaunchedSession() {
+		let store = AgentSessionStore()
+		// OSC 経路で .launched セッションを blocked にしておく。
+		store.updateState(sessionKey: "belve-osc", projectId: projectA, hookStatus: "session_start", message: "s")
+		store.updateState(sessionKey: "belve-osc", projectId: projectA, hookStatus: "waiting", message: "need input")
+		XCTAssertEqual(store.session(for: "belve-osc")?.state.status, .blocked)
+		XCTAssertEqual(store.session(for: "belve-osc")?.origin, .launched)
+
+		// discovery が同じ SessionKey を working として報告しても上書きしない。
+		store.mergeDiscovered([(sessionKey: "belve-osc", coarseStatus: .working)], projectId: projectA)
+		XCTAssertEqual(store.session(for: "belve-osc")?.state.status, .blocked)
+		XCTAssertEqual(store.session(for: "belve-osc")?.origin, .launched)
+	}
+
+	// (d') 既存 .discovered は粗い status を更新する (discovery が所有し続ける)。
+	func testMergeUpdatesExistingDiscoveredStatus() {
+		let store = AgentSessionStore()
+		store.mergeDiscovered([(sessionKey: "belve-d", coarseStatus: .idle)], projectId: projectA)
+		XCTAssertEqual(store.session(for: "belve-d")?.state.status, .idle)
+
+		store.mergeDiscovered([(sessionKey: "belve-d", coarseStatus: .working)], projectId: projectA)
+		XCTAssertEqual(store.session(for: "belve-d")?.state.status, .working)
+		XCTAssertEqual(store.session(for: "belve-d")?.origin, .discovered)
+	}
+
+	// (e) 後続 discover() で消えた discovered セッションは .sessionEnd に落ちる。
+	func testMergeMarksAbsentDiscoveredAsSessionEnd() {
+		let store = AgentSessionStore()
+		store.mergeDiscovered([
+			(sessionKey: "belve-gone", coarseStatus: .working),
+			(sessionKey: "belve-stay", coarseStatus: .working),
+		], projectId: projectA)
+
+		// 次の poll で belve-gone が消える。
+		store.mergeDiscovered([(sessionKey: "belve-stay", coarseStatus: .working)], projectId: projectA)
+
+		XCTAssertEqual(store.session(for: "belve-gone")?.state.status, .sessionEnd)
+		XCTAssertEqual(store.session(for: "belve-stay")?.state.status, .working)
+	}
+
+	// (e') 消えた .launched セッションは absence では touch されない (OSC/edge が所有)。
+	func testMergeDoesNotEndAbsentLaunchedSession() {
+		let store = AgentSessionStore()
+		store.updateState(sessionKey: "belve-launched", projectId: projectA, hookStatus: "session_start", message: "s")
+		store.updateState(sessionKey: "belve-launched", projectId: projectA, hookStatus: "running", message: "go")
+		XCTAssertEqual(store.session(for: "belve-launched")?.state.status, .working)
+
+		// discovery が別セッションだけ報告 (launched は list に居ない) → launched は working のまま。
+		store.mergeDiscovered([(sessionKey: "belve-other", coarseStatus: .idle)], projectId: projectA)
+		XCTAssertEqual(store.session(for: "belve-launched")?.state.status, .working)
+		XCTAssertEqual(store.session(for: "belve-launched")?.origin, .launched)
+	}
+}

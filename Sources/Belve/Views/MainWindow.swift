@@ -30,6 +30,9 @@ struct MainWindow: View {
 	@State private var browserPath: String = ""
 	@State private var devContainerFlowHost: String? = nil
 	@State private var focusZone: FocusZone = .pane
+	/// discovered セッション poll が in-flight か。SSH `run` は最大 10s block し得るので
+	/// 5s tick が重なった時に多重発火しないための guard。
+	@State private var isDiscovering = false
 	@Namespace private var focusNamespace
 
 	enum FocusZone {
@@ -329,7 +332,32 @@ struct MainWindow: View {
 				.onReceive(NotificationCenter.default.publisher(for: .belveNavigateForward)) { _ in
 					navigateHistory(direction: 1)
 				}
+				// discovered セッションの light poll (選択中 project のみ、~5s)。Timer 購読は
+				// view lifecycle に紐付く (view 消滅で自動 cancel)。`run` は background queue で
+				// 実行し main を block しない。merge は main で適用する。
+				.onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
+					runSessionDiscovery()
+				}
 		)
+	}
+
+	/// 選択中 project の tmux セッションを発見し、`AgentSessionStore` に merge する。
+	/// SSH `run` が block し得るので background queue で実行し、merge だけ main で行う。
+	/// `isDiscovering` guard で tick 重なり時の多重発火を防ぐ。
+	private func runSessionDiscovery() {
+		guard !isDiscovering else { return }
+		guard let project = projectStore.selectedProject else { return }
+		isDiscovering = true
+		let provider = project.provider
+		let projectId = project.id
+		DispatchQueue.global(qos: .utility).async {
+			let service = SessionDiscoveryService(runCommand: { provider.run($0) })
+			let discovered = service.discover(projectId: projectId)
+			DispatchQueue.main.async {
+				agentSessionStore.mergeDiscovered(discovered, projectId: projectId)
+				isDiscovering = false
+			}
+		}
 	}
 
 	private var baseContent: some View {

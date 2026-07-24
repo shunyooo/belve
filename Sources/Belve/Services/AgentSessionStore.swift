@@ -276,6 +276,82 @@ final class AgentSessionStore: ObservableObject {
 		}
 	}
 
+	// MARK: - Discovered session merge (discovery source entry point)
+
+	/// discovered セッション (`SessionDiscoveryService.discover` の結果) を取り込む。
+	/// OSC 経路を持たない生 tmux セッションを sidebar に浮上させるための独立ソース供給点で
+	/// あり、OSC 経路 (`updateState`) の fallback ではない。
+	///
+	/// PRECEDENCE (OSC が権威):
+	/// 1. 未知の SessionKey → `origin: .discovered` で新規挿入 (粗い status)。
+	/// 2. 既存 `.launched` (OSC 追跡中) → **state を上書きしない**。OSC が権威なので touch しない。
+	/// 3. 既存 `.discovered` → 粗い status / updatedAt を更新 (discovery が所有し続ける)。
+	/// 4. この project の既存 `.discovered` で今回の discovered 一覧に **居ない** もの
+	///    → tmux が消えたとみなし `.sessionEnd` に落とす。これは silent fallback ではなく
+	///    **明示的な状態遷移** (契約の no-fallback 原則)。`.launched` は absence では touch
+	///    しない (OSC / edge がライフサイクルを所有)。
+	func mergeDiscovered(_ discovered: [DiscoveredSession], projectId: UUID) {
+		let discoveredKeys = Set(discovered.map { $0.sessionKey })
+		var statusChanged = false
+		var mutated = false
+
+		// (1)-(3): 発見された各セッションを取り込む。
+		for entry in discovered {
+			if let idx = sessions.firstIndex(where: { $0.id == entry.sessionKey }) {
+				// (2) OSC 追跡中の .launched は権威。state を一切上書きしない。
+				if sessions[idx].origin == .launched { continue }
+				// (3) discovery 所有の既存セッション → 粗い status を更新。
+				if sessions[idx].state.status != entry.coarseStatus {
+					sessions[idx].state.status = entry.coarseStatus
+					statusChanged = true
+				}
+				sessions[idx].updatedAt = Date()
+				mutated = true
+			} else {
+				// (1) 未知 → discovered として新規挿入。
+				let session = AgentSession(
+					id: entry.sessionKey,
+					projectId: projectId,
+					name: "",
+					state: AgentState(status: entry.coarseStatus),
+					origin: .discovered
+				)
+				sessions.insert(session, at: 0)
+				if sessions.count > 50 {
+					sessions = Array(sessions.prefix(50))
+				}
+				statusChanged = true
+				mutated = true
+			}
+		}
+
+		// (4) この project の discovery 所有セッションで、今回発見されなかったもの →
+		// tmux 消滅とみなし sessionEnd に落とす (既に sessionEnd / archive は除外)。
+		for idx in sessions.indices {
+			guard sessions[idx].projectId == projectId,
+			      sessions[idx].origin == .discovered,
+			      !sessions[idx].isArchived,
+			      sessions[idx].state.status != .sessionEnd,
+			      !discoveredKeys.contains(sessions[idx].id)
+			else { continue }
+			sessions[idx].state.status = .sessionEnd
+			sessions[idx].state.currentTool = nil
+			sessions[idx].updatedAt = Date()
+			statusChanged = true
+			mutated = true
+		}
+
+		guard mutated else { return }
+		save()
+		// status 変化 (insert / status 更新 / sessionEnd) は可視性が変わる → 即時 publish。
+		// updatedAt bump だけの churn は coalesce。
+		if statusChanged {
+			publishNow()
+		} else {
+			publishCoalesced()
+		}
+	}
+
 	/// SessionKey で既存セッションを in-place 更新。存在しなければ no-op
 	/// (作成は sessionStart のみ)。updatedAt を bump し debounced save。
 	/// status が変化したら即時 publish、非 status churn (message/tool/activity のみ) は
