@@ -769,28 +769,6 @@ struct ProjectListView: View {
 		}
 	}
 
-	private func newViewButton(project: Project) -> some View {
-		Button(action: {
-			let new = viewStore.createView(for: project.id)
-			selectedProject = project
-			NSLog("[Belve] Created new view '%@' for project %@", new.name, project.name)
-		}) {
-			HStack(spacing: 6) {
-				Image(systemName: "plus")
-					.font(.system(size: 8, weight: .semibold))
-					.foregroundStyle(Theme.textTertiary)
-				Text("New View")
-					.font(.system(size: 10))
-					.foregroundStyle(Theme.textTertiary)
-				Spacer()
-			}
-			.padding(.horizontal, 6)
-			.padding(.vertical, 2)
-			.contentShape(Rectangle())
-		}
-		.buttonStyle(.plain)
-	}
-
 	private func showSessionContextMenu(session: AgentSession, paneId: String?, at screenPoint: NSPoint) {
 		let paneId = paneId ?? ""
 		let hasPane = !paneId.isEmpty

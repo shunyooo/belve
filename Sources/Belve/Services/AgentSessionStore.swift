@@ -359,6 +359,12 @@ final class AgentSessionStore: ObservableObject {
 	private func mutate(_ sessionKey: String, _ update: (inout AgentSession) -> Void) {
 		guard let idx = sessions.firstIndex(where: { $0.id == sessionKey }) else { return }
 		let oldStatus = sessions[idx].state.status
+		// OSC hook event を 1 つでも受けたら OSC がライフサイクルの権威。discovery 由来の
+		// セッションを .launched に昇格し、discovery の absence-sweep (mergeDiscovered (4))
+		// が OSC-active なセッションを取り違えて sessionEnd に落とすのを防ぐ。
+		if sessions[idx].origin == .discovered {
+			sessions[idx].origin = .launched
+		}
 		update(&sessions[idx])
 		sessions[idx].updatedAt = Date()
 		save()

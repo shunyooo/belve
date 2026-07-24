@@ -154,4 +154,27 @@ final class AgentSessionStoreTests: XCTestCase {
 		store.updateState(sessionKey: "belve-blocked", projectId: projectA, hookStatus: "waiting", message: "need input")
 		XCTAssertEqual(store.rollupStatus(forProject: projectA), .blocked)
 	}
+
+	// (j) A .discovered session that receives ANY OSC updateState (here the transport's
+	// warm-up flush delivering only a trailing .working, never a session_start) is
+	// promoted to origin == .launched, and is therefore NOT ended by a later
+	// mergeDiscovered sweep that transiently omits it.
+	func testOSCUpdatePromotesDiscoveredOriginToLaunched() {
+		let store = AgentSessionStore()
+
+		// discovery first surfaces the raw tmux session (origin == .discovered).
+		store.mergeDiscovered([(sessionKey: "belve-A", coarseStatus: .idle)], projectId: projectA)
+		XCTAssertEqual(store.session(for: "belve-A")?.origin, .discovered)
+
+		// OSC's first observed event is a .working (no session_start) — goes through mutate.
+		store.updateState(sessionKey: "belve-A", projectId: projectA, hookStatus: "running", message: "go")
+		XCTAssertEqual(store.session(for: "belve-A")?.state.status, .working)
+		XCTAssertEqual(store.session(for: "belve-A")?.origin, .launched)
+
+		// A subsequent discovery poll that transiently misses belve-A must NOT end it,
+		// because it is now OSC-authoritative (.launched), not .discovered.
+		store.mergeDiscovered([], projectId: projectA)
+		XCTAssertEqual(store.session(for: "belve-A")?.state.status, .working)
+		XCTAssertNotEqual(store.session(for: "belve-A")?.state.status, .sessionEnd)
+	}
 }
