@@ -73,9 +73,8 @@ final class AgentStatusBarPanel: NSPanel {
 	private let host: NSHostingController<AgentStatusBarView>
 
 	init() {
-		let notifStore = (NSApp.delegate as? AppDelegate)?.notificationStore ?? NotificationStore()
 		self.host = NSHostingController(
-			rootView: AgentStatusBarView(notificationStore: notifStore)
+			rootView: AgentStatusBarView()
 		)
 		let screenWidth = NSScreen.main?.frame.width ?? 1920
 		let initialFrame = NSRect(x: 0, y: 0, width: screenWidth, height: 200)

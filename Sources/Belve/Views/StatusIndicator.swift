@@ -53,10 +53,10 @@ struct StatusIndicator: View {
 
 	private var color: Color {
 		switch status {
-		case .running: return Theme.accent
+		case .working: return Theme.accent
 		case .runningSubagent: return Theme.purple
-		case .waiting: return Theme.yellow
-		case .completed, .sessionEnd: return Theme.green
+		case .blocked: return Theme.yellow
+		case .done, .sessionEnd: return Theme.green
 		case .sessionStart, .idle: return Theme.textTertiary
 		}
 	}
@@ -172,10 +172,10 @@ private struct PulseIndicator: View {
 	@State private var pulsePhase: CGFloat = 0
 
 	var body: some View {
-		let isActive = status == .running || status == .runningSubagent || status == .waiting
-		let opacityFill = status == .completed || status == .sessionEnd ? 1.0 : (isActive ? 1.0 : 0.3)
-		let pulseScale: CGFloat = status == .running || status == .runningSubagent ? 1.4 : (status == .waiting ? 1.15 : 1.0)
-		let pulsePeriod: Double = status == .runningSubagent ? 1.6 : (status == .running ? 1.2 : 2.0)
+		let isActive = status == .working || status == .runningSubagent || status == .blocked
+		let opacityFill = status == .done || status == .sessionEnd ? 1.0 : (isActive ? 1.0 : 0.3)
+		let pulseScale: CGFloat = status == .working || status == .runningSubagent ? 1.4 : (status == .blocked ? 1.15 : 1.0)
+		let pulsePeriod: Double = status == .runningSubagent ? 1.6 : (status == .working ? 1.2 : 2.0)
 
 		Circle()
 			.fill(color.opacity(opacityFill))
@@ -247,17 +247,17 @@ private struct PNGSpriteIndicator: View {
 
 	var body: some View {
 		switch status {
-		case .running:
+		case .working:
 			cycle(runFrames, interval: runInterval, bob: enableBob)
 		case .runningSubagent:
 			cycle(subagentFrames ?? runFrames, interval: subagentInterval, bob: enableBob)
-		case .waiting:
+		case .blocked:
 			if waitingFloat, let frames = waitingFrames, !frames.isEmpty {
 				floatStatic(frames[0])
 			} else {
 				cycle(waitingFrames ?? [restFrame], interval: waitingInterval, bob: false)
 			}
-		case .completed, .sessionEnd:
+		case .done, .sessionEnd:
 			cycle(completedFrames ?? [restFrame], interval: completedInterval, bob: false)
 		case .sessionStart, .idle:
 			if let frames = idleFrames, !frames.isEmpty {
@@ -404,13 +404,13 @@ private struct PixelSpriteIndicator: View {
 
 	var body: some View {
 		switch status {
-		case .running:
+		case .working:
 			running()
 		case .runningSubagent:
 			restingBob(interval: 0.7)
-		case .waiting:
+		case .blocked:
 			restingBob(interval: 0.6)
-		case .completed, .sessionEnd:
+		case .done, .sessionEnd:
 			SpriteCanvas(frame: data.restFrame, color: color, palette: data.palette)
 		case .sessionStart, .idle:
 			SpriteCanvas(frame: data.restFrame, color: color.opacity(0.4), palette: data.palette)
@@ -585,11 +585,11 @@ private struct TextSpinnerIndicator: View {
 
 	var body: some View {
 		switch status {
-		case .running:
+		case .working:
 			animated(interval: interval)
 		case .runningSubagent:
 			animated(interval: interval * 2)
-		case .waiting, .completed, .sessionEnd:
+		case .blocked, .done, .sessionEnd:
 			Text(restFrame)
 				.font(.system(size: 10, weight: .medium, design: .monospaced))
 				.foregroundStyle(color)
@@ -628,10 +628,10 @@ struct StatusIndicatorMatrix: View {
 	private let states: [(AgentStatus, String)] = [
 		(.idle, "Idle"),
 		(.sessionStart, "Start"),
-		(.running, "Running"),
+		(.working, "Running"),
 		(.runningSubagent, "Subagent"),
-		(.waiting, "Waiting"),
-		(.completed, "Done"),
+		(.blocked, "Waiting"),
+		(.done, "Done"),
 	]
 
 	var body: some View {
@@ -693,13 +693,5 @@ struct StatusIndicatorMatrix: View {
 			RoundedRectangle(cornerRadius: 6)
 				.stroke(Theme.borderSubtle, lineWidth: 1)
 		)
-	}
-}
-
-/// 旧 API: 互換用に残す (= 既存呼び元が壊れないように)。新しい matrix UI 移行後は不要。
-struct StatusIndicatorGallery: View {
-	let style: SpinnerStyle
-	var body: some View {
-		StatusIndicatorMatrix()
 	}
 }

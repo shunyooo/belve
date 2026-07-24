@@ -2,7 +2,6 @@ import SwiftUI
 
 struct AgentStatusBarView: View {
 	@ObservedObject var store = AgentCompanionStore.shared
-	@ObservedObject var notificationStore: NotificationStore
 	@State private var isExpanded = false
 	@State private var previousStatuses: [String: AgentStatus] = [:]
 	@State private var previousTools: [String: String] = [:]
@@ -19,14 +18,14 @@ struct AgentStatusBarView: View {
 		let companions: [AgentCompanion]
 		var bestStatus: AgentStatus {
 			// 優先度: waiting > running > completed > idle
-			let priority: [AgentStatus: Int] = [.waiting: 4, .running: 3, .runningSubagent: 3, .completed: 2, .sessionStart: 1, .idle: 0, .sessionEnd: 0]
+			let priority: [AgentStatus: Int] = [.blocked: 4, .working: 3, .runningSubagent: 3, .done: 2, .sessionStart: 1, .idle: 0, .sessionEnd: 0]
 			return companions.max(by: { (priority[$0.status] ?? 0) < (priority[$1.status] ?? 0) })?.status ?? .idle
 		}
 		var hasBackground: Bool {
 			companions.contains { $0.currentTool?.hasPrefix("Background") == true }
 		}
 		var bestCompanion: AgentCompanion? {
-			let priority: [AgentStatus: Int] = [.waiting: 4, .running: 3, .runningSubagent: 3, .completed: 2, .sessionStart: 1, .idle: 0, .sessionEnd: 0]
+			let priority: [AgentStatus: Int] = [.blocked: 4, .working: 3, .runningSubagent: 3, .done: 2, .sessionStart: 1, .idle: 0, .sessionEnd: 0]
 			return companions.max(by: { (priority[$0.status] ?? 0) < (priority[$1.status] ?? 0) })
 		}
 	}
@@ -107,9 +106,9 @@ struct AgentStatusBarView: View {
 
 	private func groupDot(_ group: ProjectGroup) -> some View {
 		let anyFlashing = group.companions.contains { flashingPanes.contains($0.paneId) }
-		let isWaiting = group.bestStatus == .waiting
+		let isWaiting = group.bestStatus == .blocked
 		let message = group.companions.lazy.compactMap { transitionMessages[$0.paneId] }.first
-		let activeCount = group.companions.filter { $0.status == .running || $0.status == .runningSubagent || $0.status == .waiting }.count
+		let activeCount = group.companions.filter { $0.status == .working || $0.status == .runningSubagent || $0.status == .blocked }.count
 
 		return HStack(spacing: 4) {
 			ZStack {
@@ -178,7 +177,7 @@ struct AgentStatusBarView: View {
 		VStack(alignment: .leading, spacing: 0) {
 			ForEach(groups) { group in
 				if let companion = group.bestCompanion {
-					let activeCount = group.companions.filter { $0.status == .running || $0.status == .runningSubagent || $0.status == .waiting }.count
+					let activeCount = group.companions.filter { $0.status == .working || $0.status == .runningSubagent || $0.status == .blocked }.count
 					expandedRow(companion, activeCount: activeCount)
 				}
 				if group.id != groups.last?.id {
@@ -253,7 +252,7 @@ struct AgentStatusBarView: View {
 					}
 					.font(.system(size: 9))
 					.foregroundStyle(Theme.accent)
-				} else if companion.status == .waiting {
+				} else if companion.status == .blocked {
 					Text(companion.messages.last?.text ?? "Waiting for input")
 						.font(.system(size: 9))
 						.foregroundStyle(Theme.yellow)
@@ -336,9 +335,9 @@ struct AgentStatusBarView: View {
 		if group.hasBackground { return Theme.accent.opacity(0.5) }
 		switch group.bestStatus {
 		case .idle, .sessionStart: return Theme.textTertiary
-		case .running, .runningSubagent: return Theme.accent
-		case .waiting: return Theme.yellow
-		case .completed: return Theme.green
+		case .working, .runningSubagent: return Theme.accent
+		case .blocked: return Theme.yellow
+		case .done: return Theme.green
 		case .sessionEnd: return Theme.textTertiary
 		}
 	}
@@ -346,9 +345,9 @@ struct AgentStatusBarView: View {
 	private func groupTextColor(_ group: ProjectGroup) -> Color {
 		if group.hasBackground { return Theme.accent.opacity(0.6) }
 		switch group.bestStatus {
-		case .running, .runningSubagent: return Theme.accent
-		case .waiting: return Theme.yellow
-		case .completed: return Theme.green
+		case .working, .runningSubagent: return Theme.accent
+		case .blocked: return Theme.yellow
+		case .done: return Theme.green
 		default: return Theme.textTertiary
 		}
 	}
@@ -359,9 +358,9 @@ struct AgentStatusBarView: View {
 		}
 		switch companion.status {
 		case .idle, .sessionStart: return Theme.textTertiary
-		case .running, .runningSubagent: return Theme.accent
-		case .waiting: return Theme.yellow
-		case .completed: return Theme.green
+		case .working, .runningSubagent: return Theme.accent
+		case .blocked: return Theme.yellow
+		case .done: return Theme.green
 		case .sessionEnd: return Theme.textTertiary
 		}
 	}
@@ -371,9 +370,9 @@ struct AgentStatusBarView: View {
 			return Theme.accent.opacity(0.6)
 		}
 		switch companion.status {
-		case .running, .runningSubagent: return Theme.accent
-		case .waiting: return Theme.yellow
-		case .completed: return Theme.green
+		case .working, .runningSubagent: return Theme.accent
+		case .blocked: return Theme.yellow
+		case .done: return Theme.green
 		default: return Theme.textTertiary
 		}
 	}
@@ -382,10 +381,10 @@ struct AgentStatusBarView: View {
 		if companion.currentTool?.hasPrefix("Background") == true { return "Background" }
 		switch companion.status {
 		case .idle, .sessionStart: return "Idle"
-		case .running: return "Running"
+		case .working: return "Running"
 		case .runningSubagent: return "Agent"
-		case .waiting: return "Waiting"
-		case .completed: return "Done"
+		case .blocked: return "Waiting"
+		case .done: return "Done"
 		case .sessionEnd: return "Ended"
 		}
 	}
@@ -395,19 +394,19 @@ struct AgentStatusBarView: View {
 			return "⏳ " + (companion.messages.last?.text ?? "Background")
 		}
 		switch companion.status {
-		case .running:
+		case .working:
 			if let tool = companion.currentTool {
 				return "▶ " + tool
 			}
 			return "▶ Running"
-		case .waiting:
+		case .blocked:
 			let msg = companion.messages.last?.text ?? companion.userPrompt
 			if !msg.isEmpty {
 				let short = msg.prefix(40)
 				return "⏸ " + short + (msg.count > 40 ? "…" : "")
 			}
 			return "⏸ Waiting"
-		case .completed:
+		case .done:
 			if let last = companion.messages.last?.text, !last.isEmpty {
 				let short = last.prefix(40)
 				return "✓ " + short + (last.count > 40 ? "…" : "")

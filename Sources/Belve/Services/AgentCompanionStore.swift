@@ -3,8 +3,9 @@ import Combine
 import SwiftUI
 
 /// Belve のセッションごとに常駐させる「キャラクター・コンパニオン」の状態管理。
-/// 1 AgentSession = 1 AgentCompanion (= 画面上の floating panel)。
-/// NotificationStore.sessions を観測し、active 化で自動生成、終了で自動 dismiss。
+/// 1 pane (= floating avatar) = 1 AgentCompanion。`AgentSessionStore.sessionsPublisher`
+/// を観測し、active session に bind された pane ごとに companion を生成、終了・archive で
+/// 自動 dismiss する。identity は `AgentSessionStore` が唯一のソース。
 ///
 /// Phase 1 MVP:
 ///   - 自動 lifecycle (active 化で出現、completed で消える)
@@ -17,7 +18,7 @@ import SwiftUI
 final class AgentCompanionStore: ObservableObject {
 	static let shared = AgentCompanionStore()
 
-	/// `paneId` をキーに companion を追跡。NotificationStore.sessions と
+	/// canonical (大文字) paneId をキーに companion を追跡。session に bind された pane と
 	/// 対応するが、companion 自身は AgentSession の subset (= 表示用 snapshot)。
 	@Published private(set) var companions: [String: AgentCompanion] = [:]
 
@@ -45,7 +46,7 @@ final class AgentCompanionStore: ObservableObject {
 	func enableCompanion(for paneId: String) {
 		manuallyEnabled.insert(paneId)
 		manuallyDismissed.remove(paneId)
-		if let store = notificationStore {
+		if let store = agentSessionStore {
 			reconcile(sessions: store.sessions)
 		}
 	}
@@ -106,7 +107,7 @@ final class AgentCompanionStore: ObservableObject {
 		avatarStyles[paneId] = next
 		UserDefaults.standard.set(next.rawValue, forKey: "Belve.companionAvatar.\(paneId)")
 		// Force reconcile to pick up new style
-		if let store = notificationStore {
+		if let store = agentSessionStore {
 			reconcile(sessions: store.sessions)
 		}
 	}
@@ -119,6 +120,7 @@ final class AgentCompanionStore: ObservableObject {
 
 	private var cancellables = Set<AnyCancellable>()
 	private weak var notificationStore: NotificationStore?
+	private weak var agentSessionStore: AgentSessionStore?
 	private weak var projectStore: ProjectStore?
 	/// paneId → avatar style。UserDefaults に永続化 + ユーザー選択上書き対応。
 	private var avatarStyles: [String: SpinnerStyle] = [:]
@@ -136,13 +138,21 @@ final class AgentCompanionStore: ObservableObject {
 
 	private init() {}
 
-	/// AppDelegate.didFinishLaunching から呼ぶ。NotificationStore の sessions を
-	/// 観測して companion lifecycle を駆動する。
-	func attach(notificationStore: NotificationStore, projectStore: ProjectStore) {
+	/// AppDelegate.didFinishLaunching から呼ぶ。`AgentSessionStore` の session ストリームを
+	/// 観測して companion lifecycle を駆動する。`notificationStore` は reload warm-up 判定
+	/// (replay 由来 event を bubble に積まない) 専用で、identity/状態のソースではない。
+	func attach(
+		notificationStore: NotificationStore,
+		agentSessionStore: AgentSessionStore,
+		projectStore: ProjectStore
+	) {
 		self.notificationStore = notificationStore
+		self.agentSessionStore = agentSessionStore
 		self.projectStore = projectStore
-		notificationStore.$sessions
-			.throttle(for: .milliseconds(200), scheduler: DispatchQueue.main, latest: true)
+		// upstream (AgentSessionStore) が status 即時 / churn 200ms debounce で coalesce
+		// 済みなので、ここでは追加の throttle を掛けない。
+		agentSessionStore.sessionsPublisher
+			.receive(on: DispatchQueue.main)
 			.sink { [weak self] sessions in
 				self?.reconcile(sessions: sessions)
 			}
@@ -150,23 +160,37 @@ final class AgentCompanionStore: ObservableObject {
 	}
 
 	/// Sessions のスナップショットから companions を再構成。
-	/// active な session は companion を持ち、active でない session は除外。
+	/// active session に bind された pane ごとに companion を生成 / 更新し、それ以外は削除。
+	/// paneId は `AgentSessionStore.panes(forSession:)` (小文字保持) を canonical (大文字)
+	/// に正規化して webview identifier / avatar キーと揃える。
 	private func reconcile(sessions: [AgentSession]) {
-		let activeSessions = sessions.filter { isActive($0) }
-		let activePaneIds = Set(activeSessions.compactMap(\.paneId))
+		guard let agentSessionStore else { return }
 
-		// 既存 companion のうち、対応 session が active でなくなったら削除
-		for paneId in companions.keys where !activePaneIds.contains(paneId) {
+		// active session に bind された canonical paneId → その session。
+		var desired: [String: AgentSession] = [:]
+		for session in sessions where isActive(session) {
+			for rawPane in agentSessionStore.panes(forSession: session.id) {
+				guard let paneId = UUID(uuidString: rawPane)?.uuidString else { continue }
+				desired[paneId] = session
+			}
+		}
+		let desiredPaneIds = Set(desired.keys)
+
+		// 既存 companion のうち、対応 pane が active session に無くなったら削除。
+		// isArchived / sessionEnd / idle の session は isActive=false → desired から
+		// 抜けるので、ここで確実に avatar が消える (sidebar dismiss = archive の反映)。
+		// done は active のまま残り、完了バブルを表示し続ける。
+		for paneId in companions.keys where !desiredPaneIds.contains(paneId) {
 			companions.removeValue(forKey: paneId)
 			selectedPaneIds.remove(paneId)
 			manuallyDismissed.remove(paneId)
 			messageHistory.removeValue(forKey: paneId)
 			lastMessageText.removeValue(forKey: paneId)
+			lastSeenPrompt.removeValue(forKey: paneId)
 		}
 
-		// active session に対応する companion が無ければ追加 / 既存は更新
-		for session in activeSessions {
-			guard let paneId = session.paneId else { continue }
+		// active pane に対応する companion が無ければ追加 / 既存は更新。
+		for (paneId, session) in desired {
 			let project = projectStore?.projects.first(where: { $0.id == session.projectId })
 			guard let project else { continue }
 			// Pinned project → 自動追加。非 pinned → 明示的に有効化されたもののみ。
@@ -189,7 +213,7 @@ final class AgentCompanionStore: ObservableObject {
 			let projectName = project.name
 
 			// ユーザーが新しい prompt を submit したら bubble をリセット
-			let currentPrompt = session.lastUserPrompt ?? ""
+			let currentPrompt = session.state.lastUserPrompt ?? ""
 			if !currentPrompt.isEmpty && currentPrompt != lastSeenPrompt[paneId] {
 				lastSeenPrompt[paneId] = currentPrompt
 				messageHistory.removeValue(forKey: paneId)
@@ -198,6 +222,7 @@ final class AgentCompanionStore: ObservableObject {
 
 			// Bubble-worthy message: transcript 由来 agent 発話 / result / waiting 等。
 			// Replay warm-up 中は skip。Dedup は consecutive only (= lastMessageText)。
+			// warm-up 判定は transport/通知の関心なので NotificationStore に残す。
 			let inReplay = notificationStore?.isInReloadWarmup(for: paneId) ?? false
 			let bubbleText = bubbleWorthyText(for: session)
 			NSLog("[Belve][companion] pane=%@ inReplay=%d bubbleText=%@ lastMsg=%@ msgCount=%d",
@@ -221,9 +246,9 @@ final class AgentCompanionStore: ObservableObject {
 				paneId: paneId,
 				projectId: session.projectId,
 				projectName: projectName,
-				status: session.status,
+				status: session.state.status,
 				avatarStyle: style,
-				userPrompt: session.lastUserPrompt ?? session.label ?? "",
+				userPrompt: session.state.lastUserPrompt ?? session.name,
 				messages: messageHistory[paneId] ?? [],
 				currentTool: currentToolText(for: session)
 			)
@@ -233,12 +258,13 @@ final class AgentCompanionStore: ObservableObject {
 		AgentStatusBarWindowManager.shared.updateStatusBar(hasCompanions: !companions.isEmpty)
 	}
 
-	/// Sidebar の session row と同じ表示条件。archived / sessionEnd / idle は非表示。
-	/// completed / waiting / running / sessionStart は表示 (= sidebar と揃える)。
+	/// companion を出さない (dismiss する) 終端状態。session が sessionEnd / idle に落ちるか
+	/// archived になった時点で avatar を消す。done は「完了バブル」を表示するため **active
+	/// のまま** 維持し、session が真に終了 (sessionEnd/idle) するまで残す。
 	private static let inactiveStatuses: Set<AgentStatus> = [.sessionEnd, .idle]
 
 	private func isActive(_ session: AgentSession) -> Bool {
-		!session.isArchived && !Self.inactiveStatuses.contains(session.status)
+		!session.isArchived && !Self.inactiveStatuses.contains(session.state.status)
 	}
 
 	/// Bubble として追加すべきテキスト。Agent の行動・発話を可視化する:
@@ -248,13 +274,14 @@ final class AgentCompanionStore: ObservableObject {
 	/// - result summary (= 何をやったか)
 	/// User prompt は header 固定表示なので bubble には出さない。
 	private func bubbleWorthyText(for session: AgentSession) -> String? {
-		// Waiting (= agent がユーザーに聞いてる) → 最も重要な bubble
-		if session.status == .waiting { return session.message }
-		// Completed の最終応答
-		if session.status == .completed, !session.message.isEmpty, session.message != "Done" {
-			return session.message
+		let status = session.state.status
+		let msg = session.state.message
+		// Blocked (= agent がユーザーに聞いてる) → 最も重要な bubble
+		if status == .blocked { return msg }
+		// Done の最終応答
+		if status == .done, !msg.isEmpty, msg != "Done" {
+			return msg
 		}
-		let msg = session.message
 		// `speech:` prefix = transcript 由来の agent 中間発話
 		if msg.hasPrefix("speech:") {
 			return String(msg.dropFirst("speech:".count))
@@ -278,8 +305,8 @@ final class AgentCompanionStore: ObservableObject {
 		if msg.hasPrefix("subagent:") {
 			return "Agent: \(String(msg.dropFirst("subagent:".count)))"
 		}
-		// User prompt / label と同じテキストは bubble に出さない (= header で既に表示)
-		if msg == session.lastUserPrompt || msg == session.label { return nil }
+		// User prompt / name と同じテキストは bubble に出さない (= header で既に表示)
+		if msg == session.state.lastUserPrompt || msg == session.name { return nil }
 		if msg.hasPrefix("subagent-done:") { return nil }
 		if ["Generating", "started", "ended", "Done", "Ready"].contains(msg) { return nil }
 		if msg.isEmpty { return nil }
@@ -289,26 +316,11 @@ final class AgentCompanionStore: ObservableObject {
 
 	/// 現在実行中の tool を小さいインライン表示用テキストにする。
 	private func currentToolText(for session: AgentSession) -> String? {
-		guard let tool = session.currentTool, !tool.isEmpty else { return nil }
-		if let activity = session.lastAgentActivity, !activity.isEmpty {
+		guard let tool = session.state.currentTool, !tool.isEmpty else { return nil }
+		if let activity = session.state.lastActivity, !activity.isEmpty {
 			return "\(tool): \(activity)"
 		}
 		return tool
-	}
-
-	private func detailText(for session: AgentSession) -> String? {
-		if let tool = session.currentTool, !tool.isEmpty {
-			if let activity = session.lastAgentActivity, !activity.isEmpty {
-				return "\(tool): \(activity)"
-			}
-			return tool
-		}
-		switch session.status {
-		case .waiting: return session.message
-		case .running, .runningSubagent: return "Thinking…"
-		case .sessionStart: return "Ready"
-		default: return nil
-		}
 	}
 
 	/// `paneId` から deterministic に avatar style を選ぶ。

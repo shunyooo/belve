@@ -20,6 +20,7 @@ struct BelveApp: App {
 				.environmentObject(appDelegate.commandPaletteState)
 				.environmentObject(appDelegate.projectStore)
 				.environmentObject(appDelegate.notificationStore)
+				.environmentObject(appDelegate.agentSessionStore)
 		}
 		.windowStyle(.hiddenTitleBar)
 		.defaultSize(width: 1200, height: 800)
@@ -131,9 +132,10 @@ class CommandPaletteState: ObservableObject {
 
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
 	let commandPaletteState = CommandPaletteState()
-	let notificationStore: NotificationStore = {
-		let store = NotificationStore()
-		store.loadSessions()
+	let notificationStore = NotificationStore()
+	let agentSessionStore: AgentSessionStore = {
+		let store = AgentSessionStore()
+		store.load()
 		return store
 	}()
 	let projectStore = ProjectStore()
@@ -214,9 +216,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		}
 
 		// Agent companions: floating panel ごとに claude session の活動を表示。
-		// NotificationStore.sessions を観測して active 化で自動 spawn / 終了で dismiss。
+		// AgentSessionStore の session ストリームを観測して active 化で自動 spawn /
+		// 終了・archive で dismiss。warm-up 判定のみ notificationStore を参照。
 		AgentCompanionStore.shared.attach(
 			notificationStore: notificationStore,
+			agentSessionStore: agentSessionStore,
 			projectStore: projectStore
 		)
 

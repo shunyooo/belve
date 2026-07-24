@@ -17,8 +17,16 @@ if [ "$PANE_ID" = "unknown" ] && [ -n "${BELVE_SESSION_NAME:-}" ]; then
         [ -n "$_pid" ] && PANE_ID="$_pid"
     fi
 fi
+# 実 tmux セッション名 (= SessionKey の権威ソース)。hook は session-bootstrap.sh
+# の `tmux new-session -A -s belve-<paneId>` の内側で走るので `#S` で実名が読める。
+# tmux 外 (= 永続セッションが存在しない) なら空のまま → Mac 側は session record を
+# 作らない (paneId からの推測禁止)。set -euo pipefail 下でも errexit しないよう guard。
+TMUX_SESSION=""
+if [ -n "${TMUX:-}" ]; then
+    TMUX_SESSION=$(tmux display-message -p '#S' 2>/dev/null || true)
+fi
 # Set on first parse_json call (= per-hook subprocess). 同 hook invocation で
-# 後続 emit_event に session_id が乗る。OSC 形式 BELVE2 (= sessionId 付き) の
+# 後続 emit_event に session_id が乗る。OSC 形式 BELVE3 (= sessionId 付き) の
 # ための前置情報。
 SESSION_ID=""
 
@@ -29,13 +37,13 @@ emit_event() {
     local message="$2"
     echo "$(date +%Y-%m-%dT%H:%M:%S) emit_event: pane=$PANE_ID status=$status message=${message:0:200}" >> "$BELVE_HOOK_LOG" 2>/dev/null || true
     local osc
-    # 新 OSC 形式 (BELVE2) は paneId, sessionId, status, message の 4 セグメント。
-    # NotificationStore はこの sessionId を使って「pane あたりの primary session」
-    # を識別し、Stop hook で spawn された別 claude (= 別 session_id) からの通知を
-    # 抑制する。session_id が空 (= 古い hook 等) の場合は「unknown」を入れて
-    # 受信側で空扱いさせる。
+    # 新 OSC 形式 (BELVE3) は paneId, tmuxSession, sessionId, status, message の
+    # 5 セグメント。tmuxSession は実 tmux セッション名 (= Mac 側 SessionKey の権威
+    # ソース)。tmux 外なら空。sessionId は claude code hook の session_id で、
+    # NotificationStore が「pane あたりの primary session」を識別し Stop hook で
+    # spawn された別 claude からの通知を抑制するのに使う。
     local sid="${SESSION_ID:-}"
-    osc=$(printf '\033]9;BELVE2:%s:%s:%s:%s\007' "$PANE_ID" "$sid" "$status" "$message")
+    osc=$(printf '\033]9;BELVE3:%s:%s:%s:%s:%s\007' "$PANE_ID" "$TMUX_SESSION" "$sid" "$status" "$message")
     if [ -n "${BELVE_TTY:-}" ] && [ -w "$BELVE_TTY" ]; then
         echo -n "$osc" > "$BELVE_TTY" 2>/dev/null
     elif echo -n "$osc" > /dev/tty 2>/dev/null; then

@@ -196,9 +196,9 @@ struct SettingsView: View {
 
 	private func mockSessionPreview() -> some View {
 		VStack(spacing: 2) {
-			mockSessionRow(status: .running, prompt: "API のエラーハンドリングを修正して", tool: "Edit", detail: "src/api/handler.ts")
-			mockSessionRow(status: .waiting, prompt: "テストを書いて", waitingMessage: "Claude is waiting for your input")
-			mockSessionRow(status: .completed, prompt: "ドキュメントを更新", detail: "Done")
+			mockSessionRow(status: .working, prompt: "API のエラーハンドリングを修正して", tool: "Edit", detail: "src/api/handler.ts")
+			mockSessionRow(status: .blocked, prompt: "テストを書いて", waitingMessage: "Claude is waiting for your input")
+			mockSessionRow(status: .done, prompt: "ドキュメントを更新", detail: "Done")
 			mockSessionRow(status: .idle, prompt: "Ready", detail: nil)
 		}
 		.padding(6)
@@ -214,7 +214,7 @@ struct SettingsView: View {
 
 	@ViewBuilder
 	private func mockSessionRow(status: AgentStatus, prompt: String, tool: String? = nil, detail: String? = nil, waitingMessage: String? = nil) -> some View {
-		let isActive = status == .running || status == .waiting
+		let isActive = status == .working || status == .blocked
 		HStack(alignment: .top, spacing: 10) {
 			VStack {
 				Spacer().frame(height: 3)
@@ -238,7 +238,7 @@ struct SettingsView: View {
 				if let detail {
 					Text(detail)
 						.font(.system(size: 9))
-						.foregroundStyle(status == .completed ? Theme.green : Theme.textTertiary)
+						.foregroundStyle(status == .done ? Theme.green : Theme.textTertiary)
 						.lineLimit(1)
 				}
 				if let waitingMessage {

@@ -125,6 +125,7 @@ struct XTermTerminalView: NSViewRepresentable {
 	/// updateNSView が触ると現在の active pane から focus を奪う事象を防ぐ)。
 	var isProjectSelected: Bool = true
 	@EnvironmentObject var notificationStore: NotificationStore
+	@EnvironmentObject var agentSessionStore: AgentSessionStore
 	@EnvironmentObject var commandAreaState: CommandAreaState
 
 	func makeNSView(context: Context) -> WKWebView {
@@ -192,6 +193,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		context.coordinator.paneIndex = paneIndex
 		context.coordinator.overrideSocket = overrideSocket
 		context.coordinator.notificationStore = notificationStore
+		context.coordinator.agentSessionStore = agentSessionStore
 		context.coordinator.commandAreaState = commandAreaState
 
 		// Pane → Project マッピングは毎回登録 (registry キャッシュヒットで
@@ -272,6 +274,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		var overrideSocket: String?
 		var ptyService: PTYService?
 		weak var notificationStore: NotificationStore?
+		weak var agentSessionStore: AgentSessionStore?
 		var refitObserver: Any?
 		weak var commandAreaState: CommandAreaState?
 		var fontSizeCancellable: AnyCancellable?
@@ -598,7 +601,7 @@ struct XTermTerminalView: NSViewRepresentable {
 					let warmupDuration: TimeInterval = 8.0
 					pty.agentTransport.suppressUntil = Date().addingTimeInterval(warmupDuration)
 					self.notificationStore?.suppressNotifications(for: paneId, seconds: warmupDuration)
-					pty.agentTransport.onAgentStatus = { [weak self] agentPaneId, sessionId, status, message in
+					pty.agentTransport.onAgentStatus = { [weak self] agentPaneId, tmuxSession, sessionId, status, message in
 						// Remote (DevContainer / SSH) は BELVE_PANE_ID が shell に
 						// 渡らない (= TCP tunnel 経由で env が伝播しない) ため、
 						// hook script が paneId="unknown" で OSC を出す。
@@ -607,6 +610,25 @@ struct XTermTerminalView: NSViewRepresentable {
 						self?.notificationStore?.updateAgentStatus(
 							paneId: effectivePaneId, sessionId: sessionId, status: status, messageRaw: message
 						)
+						// AgentSessionStore は tmuxSession (= hook が実 tmux #S から出した
+						// 権威 SessionKey) が非空のときだけ供給する。空 = 永続 tmux
+						// セッションが存在しない (tmux 外で hook が走った) ケースなので
+						// session record を作らない (paneId からの推測はしない)。
+						if !tmuxSession.isEmpty, let projectId = self?.project?.id {
+							// pane → SessionKey の揮発 binding を先に記録。sidebar が
+							// SessionKey 起点でセッションを引く際の focus/drag 解決に使う。
+							// updateState より前に bind しておかないと、初回 session_start
+							// 時に AgentCompanionStore.reconcile が panes(forSession:) で
+							// pane を解決できず avatar が次 event まで出ない。bind は
+							// idempotent no-op なので後続 event では実質無コスト。
+							self?.agentSessionStore?.bind(paneId: effectivePaneId, sessionKey: tmuxSession)
+							self?.agentSessionStore?.updateState(
+								sessionKey: tmuxSession,
+								projectId: projectId,
+								hookStatus: status,
+								message: message
+							)
+						}
 					}
 				}
 

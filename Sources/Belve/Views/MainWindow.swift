@@ -5,6 +5,7 @@ struct MainWindow: View {
 	@EnvironmentObject var commandPaletteState: CommandPaletteState
 	@EnvironmentObject var projectStore: ProjectStore
 	@EnvironmentObject var notificationStore: NotificationStore
+	@EnvironmentObject var agentSessionStore: AgentSessionStore
 	@ObservedObject private var appConfig = AppConfig.shared
 	@ObservedObject private var viewStore = ProjectViewStore.shared
 	@State private var sidebarWidthAtDragStart: CGFloat = 0
@@ -369,9 +370,11 @@ struct MainWindow: View {
 				BottomBar(
 					project: projectStore.selectedProject,
 					gitBranch: projectStore.gitBranch,
-					activeAgentProjectCount: notificationStore.agentStatus.values.filter {
-						$0.status == .running || $0.status == .waiting
-					}.count,
+					activeAgentProjectCount: projectStore.projects.reduce(0) { sum, project in
+						sum
+							+ agentSessionStore.workingCount(forProject: project.id)
+							+ agentSessionStore.attentionCount(forProject: project.id)
+					},
 					portManager: PortForwardManager.shared,
 					onUpdateForwards: { id, forwards in
 						projectStore.updateProjectForwards(id, forwards: forwards)
@@ -772,7 +775,7 @@ struct MainWindow: View {
 		var visible: [PaneRef] = []
 		for (projIdx, project) in projectStore.projects.enumerated() {
 			let state = commandAreaState(for: project.id)
-			let status = notificationStore.agentStatus[project.id]?.status ?? .idle
+			let status = agentSessionStore.rollupStatus(forProject: project.id) ?? .idle
 			let orderedPaneIds = state.orderedPaneIds()
 			for (idx, paneUUID) in orderedPaneIds.enumerated() {
 				let paneIdString = paneUUID.uuidString
@@ -796,10 +799,9 @@ struct MainWindow: View {
 			paneIndex: { $0.paneIndex },
 			status: { $0.status },
 			lastActivity: { ref in
-				notificationStore.sessions
-					.filter { $0.paneId == ref.paneIdString }
-					.map(\.updatedAt)
-					.max()
+				guard let sessionKey = agentSessionStore.sessionKey(forPane: ref.paneIdString),
+				      let session = agentSessionStore.session(for: sessionKey) else { return nil }
+				return session.updatedAt
 			}
 		)
 		guard !visible.isEmpty else { return }

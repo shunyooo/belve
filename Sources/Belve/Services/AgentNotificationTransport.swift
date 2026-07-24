@@ -3,23 +3,25 @@ import Foundation
 /// Protocol for receiving agent status updates from terminal processes.
 /// Abstracted so the transport can be swapped (OSC → Socket in the future).
 protocol AgentNotificationTransport: AnyObject {
-	/// Called when agent status changes. (paneId, sessionId, status, message)。
-	/// sessionId は claude code hook の `session_id` (= OSC BELVE2 形式)。
+	/// Called when agent status changes. (paneId, tmuxSession, sessionId, status, message)。
+	/// tmuxSession は実 tmux セッション名 (= SessionKey の権威ソース、OSC BELVE3 形式)。
+	/// tmux 外で走った hook や旧 BELVE2/BELVE 形式からの event は tmuxSession="" で渡される。
+	/// sessionId は claude code hook の `session_id` (= OSC BELVE2/BELVE3 形式)。
 	/// 旧 BELVE 形式 (= sessionId 無し) からの event は sessionId="" で渡される。
-	var onAgentStatus: ((String, String, String, String) -> Void)? { get set }
+	var onAgentStatus: ((String, String, String, String, String) -> Void)? { get set }
 }
 
 /// OSC-based transport: scans PTY output for BELVE: / BELVE2: prefixed OSC 9
 /// sequences. Buffers partial data across chunks since OSC sequences can span
 /// chunk boundaries.
 ///
-/// - `BELVE2:<paneId>:<sessionId>:<status>:<message>` — 現行形式。session_id を
-///   含むので NotificationStore で「pane あたり primary session」識別ができる
-///   (= Stop hook で spawn された別 claude を識別して通知抑制)。
-/// - `BELVE:<paneId>:<status>:<message>` — 旧形式。replay や古い hook script
-///   からの event のため互換維持。sessionId は空文字で渡す。
+/// - `BELVE3:<paneId>:<tmuxSession>:<sessionId>:<status>:<message>` — 現行形式。
+///   tmuxSession は実 tmux セッション名で Mac 側 SessionKey の権威ソース (tmux 外なら空)。
+/// - `BELVE2:<paneId>:<sessionId>:<status>:<message>` — 旧形式。replay や古い hook
+///   script からの event のため互換維持。tmuxSession は空文字で渡す。
+/// - `BELVE:<paneId>:<status>:<message>` — 最旧形式。tmuxSession/sessionId とも空で渡す。
 class OSCAgentTransport: AgentNotificationTransport {
-	var onAgentStatus: ((String, String, String, String) -> Void)?
+	var onAgentStatus: ((String, String, String, String, String) -> Void)?
 	private var partialBuffer = ""
 	/// Warm-up window: この時刻まで BELVE OSC event を buffer する。
 	/// Terminal reload 時の replay で過去 OSC が大量再 dispatch されて status が
@@ -27,7 +29,7 @@ class OSCAgentTransport: AgentNotificationTransport {
 	/// 現在の status を復元する。
 	var suppressUntil: Date?
 	/// Warm-up 中に受け取った最後の event (= per paneId)。warm-up 終了後に dispatch。
-	private var bufferedEvents: [(String, String, String, String)] = []
+	private var bufferedEvents: [(String, String, String, String, String)] = []
 	private var warmupFlushed = false
 
 	func scan(_ data: Data) {
@@ -81,21 +83,30 @@ class OSCAgentTransport: AgentNotificationTransport {
 			}
 			partialBuffer = String(partialBuffer[consumeUpTo...])
 
-			// BELVE2: 4 fields (paneId, sessionId, status, message)
+			// BELVE3: 5 fields (paneId, tmuxSession, sessionId, status, message)
 			// Parse event
-			var parsed: (String, String, String, String)?
-			if payload.hasPrefix("BELVE2:") {
+			var parsed: (String, String, String, String, String)?
+			if payload.hasPrefix("BELVE3:") {
+				let body = String(payload.dropFirst("BELVE3:".count))
+				// omittingEmptySubsequences: false — 空 field (tmuxSession="" や
+				// sessionId="") が collapse して後続 field がずれるのを防ぐ。
+				let parts = body.split(separator: ":", maxSplits: 4, omittingEmptySubsequences: false)
+				if parts.count >= 4 {
+					parsed = (String(parts[0]), String(parts[1]), String(parts[2]), String(parts[3]),
+							  parts.count > 4 ? String(parts[4]) : "")
+				}
+			} else if payload.hasPrefix("BELVE2:") {
 				let body = String(payload.dropFirst("BELVE2:".count))
-				let parts = body.split(separator: ":", maxSplits: 3)
+				let parts = body.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
 				if parts.count >= 3 {
-					parsed = (String(parts[0]), String(parts[1]), String(parts[2]),
+					parsed = (String(parts[0]), "", String(parts[1]), String(parts[2]),
 							  parts.count > 3 ? String(parts[3]) : "")
 				}
 			} else if payload.hasPrefix("BELVE:") {
 				let body = String(payload.dropFirst("BELVE:".count))
-				let parts = body.split(separator: ":", maxSplits: 2)
+				let parts = body.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
 				if parts.count >= 2 {
-					parsed = (String(parts[0]), "", String(parts[1]),
+					parsed = (String(parts[0]), "", "", String(parts[1]),
 							  parts.count > 2 ? String(parts[2]) : "")
 				}
 			}
@@ -112,18 +123,18 @@ class OSCAgentTransport: AgentNotificationTransport {
 			if !warmupFlushed && !bufferedEvents.isEmpty {
 				warmupFlushed = true
 				// Per-paneId で最後の event だけ dispatch (= 最新 status を復元)
-				var lastPerPane: [String: (String, String, String, String)] = [:]
+				var lastPerPane: [String: (String, String, String, String, String)] = [:]
 				for e in bufferedEvents { lastPerPane[e.0] = e }
 				bufferedEvents.removeAll()
 				for (_, e) in lastPerPane {
 					DispatchQueue.main.async { [weak self] in
-						self?.onAgentStatus?(e.0, e.1, e.2, e.3)
+						self?.onAgentStatus?(e.0, e.1, e.2, e.3, e.4)
 					}
 				}
 			}
 
 			DispatchQueue.main.async { [weak self] in
-				self?.onAgentStatus?(event.0, event.1, event.2, event.3)
+				self?.onAgentStatus?(event.0, event.1, event.2, event.3, event.4)
 			}
 			// その他の OSC 9 (= claude 自身の terminal title 設定等) は素通し。
 		}

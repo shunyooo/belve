@@ -145,18 +145,18 @@ struct AgentNotificationStack: View {
 
 	private func statusColor(_ status: AgentStatus) -> Color {
 		switch status {
-		case .waiting: return Theme.yellow
-		case .completed: return Theme.green
-		case .running, .runningSubagent: return Theme.accent
+		case .blocked: return Theme.yellow
+		case .done: return Theme.green
+		case .working, .runningSubagent: return Theme.accent
 		default: return Theme.textSecondary
 		}
 	}
 
 	private func statusEmoji(_ status: AgentStatus) -> String {
 		switch status {
-		case .waiting: return "⏸"
-		case .completed: return "✓"
-		case .running: return "▶"
+		case .blocked: return "⏸"
+		case .done: return "✓"
+		case .working: return "▶"
 		default: return ""
 		}
 	}

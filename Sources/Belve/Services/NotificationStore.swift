@@ -1,51 +1,6 @@
 import Foundation
 import UserNotifications
 
-enum AgentStatus: String, Codable {
-	case idle
-	case sessionStart = "session_start"
-	case running
-	case runningSubagent = "running_subagent"  // 親 claude が subagent 完了待ち
-	case waiting
-	case completed
-	case sessionEnd = "session_end"
-}
-
-struct AgentState {
-	var status: AgentStatus
-	var message: String
-}
-
-/// One record per agent session. Status updates in-place.
-struct AgentSession: Identifiable, Codable {
-	let id: UUID
-	let projectId: UUID
-	var paneId: String?
-	var status: AgentStatus
-	var message: String
-	var label: String?
-	var lastUserPrompt: String?
-	var lastAgentActivity: String?
-	var currentTool: String?
-	/// 走ってる subagent (Task tool) の数。0 < count なら表示上 .runningSubagent 優先。
-	/// session.status とは独立に管理し、subagent 終了時に親 status に戻る。
-	var subagentCount: Int = 0
-	let startedAt: Date
-	var updatedAt: Date
-	var isRead: Bool = false
-	var isArchived: Bool = false
-
-	init(projectId: UUID, paneId: String? = nil, status: AgentStatus, message: String, startedAt: Date = Date(), updatedAt: Date = Date()) {
-		self.id = UUID()
-		self.projectId = projectId
-		self.paneId = paneId
-		self.status = status
-		self.message = message
-		self.startedAt = startedAt
-		self.updatedAt = updatedAt
-	}
-}
-
 struct AgentNotification: Identifiable {
 	let id: UUID
 	let projectId: UUID
@@ -56,15 +11,14 @@ struct AgentNotification: Identifiable {
 	let timestamp: Date
 }
 
+/// デスクトップ通知と未読通知リスト (`unreadNotifications`) だけを責務とするストア。
+/// エージェントセッションの identity / 状態は `AgentSessionStore` が唯一所有し、
+/// このストアは所有しない。
 class NotificationStore: ObservableObject {
-	@Published var sessions: [AgentSession] = []
-	@Published var agentStatus: [UUID: AgentState] = [:] // keyed by projectId
 	@Published var unreadNotifications: [AgentNotification] = []
 
-	// Mapping: paneId → projectId
+	// Mapping: paneId → projectId (通知の projectId / projectName 解決に必要)
 	var paneToProject: [String: UUID] = [:]
-	// Active session index per pane (for in-place updates)
-	private var activeSessionIndex: [String: Int] = [:]  // keyed by paneId
 
 	var projectNameResolver: ((UUID) -> String)?
 
@@ -94,14 +48,6 @@ class NotificationStore: ObservableObject {
 		paneToProject[paneId] = projectId
 	}
 
-	/// Latest non-archived session for a pane. UI が pane 単位の status / activity を
-	/// 表示する時に使う (project-keyed `agentStatus` だと pane 間で混ざるため)。
-	func currentSession(forPaneId paneId: String) -> AgentSession? {
-		sessions
-			.filter { $0.paneId == paneId && !$0.isArchived }
-			.max(by: { $0.updatedAt < $1.updatedAt })
-	}
-
 	/// `(paneId, sessionId)` あたり「初回観測した sessionId = primary」を記録。
 	/// Stop hook 等で spawn された別 claude (= 別 session_id) からの通知を抑制
 	/// するために使う。`session_end` で entry を消すので、parent claude が
@@ -116,53 +62,14 @@ class NotificationStore: ObservableObject {
 		return primary == sessionId
 	}
 
-	/// OSC payload を表示可能テキストに整形する。
-	/// 1. `\\n` (2 chars) → `\n` 復元 (hook 側 escape の inverse)
-	/// 2. OSC sequence を ESC + terminator 含めて除去 (= claude の window title 等)
-	/// 3. CSI escape codes を除去 (= 色 / カーソル制御)
-	/// 4. 制御文字を除去 (改行 / タブ / CR は保持)
-	/// 5. ESC 単独 + `]N;...` 残骸 / `]9;BELVE...` 混入を除去
+	/// OSC payload を表示可能テキストに整形する。実体は `AgentMessageSanitizer` に
+	/// 抽出済み (AgentSessionStore と共有)。
 	private static func sanitizeMessage(_ raw: String) -> String {
-		var s = raw.replacingOccurrences(of: "\\n", with: "\n")
-		// OSC: `\x1b]...\x07` or `\x1b]...\x1b\\` を ESC + terminator ごと strip。
-		// ESC を残すと後続 filter で消えても `]N;...` が残るので、
-		// ESC〜terminator を 1 まとめで削除する。
-		s = s.replacingOccurrences(
-			of: "\u{1b}\\][^\u{07}\u{1b}]*(\u{07}|\u{1b}\\\\)",
-			with: "",
-			options: .regularExpression
-		)
-		// CSI: `\x1b[...A-Za-z`
-		s = s.replacingOccurrences(
-			of: "\u{1b}\\[[0-9;?]*[a-zA-Z]",
-			with: "",
-			options: .regularExpression
-		)
-		// 残った制御文字 (BEL / 単独 ESC / その他 0x00-0x08, 0x0b-0x1f) を除去。
-		s = s.unicodeScalars.filter { c in
-			let v = c.value
-			if v == 0x09 || v == 0x0a || v == 0x0d { return true }
-			return v >= 0x20
-		}.map(String.init).joined()
-		// ESC は消えてるが OSC の `]N;...BEL` 形式残骸 (= ESC stripped only) を defensive 削除。
-		s = s.replacingOccurrences(
-			of: "\\][0-9]+;[^\u{1b}\u{07}\\n]*",
-			with: "",
-			options: .regularExpression
-		)
-		// ネスト OSC: `]9;BELVE...` 以降は次 event 残骸 → drop
-		if let r = s.range(of: "]9;BELVE") {
-			s = String(s[..<r.lowerBound])
-		}
-		// 連続する空行を 1 つに圧縮 (= OSC strip 後の隙間が複数空行になりがち)
-		s = s.replacingOccurrences(
-			of: "\n{3,}",
-			with: "\n\n",
-			options: .regularExpression
-		)
-		return s.trimmingCharacters(in: .whitespacesAndNewlines)
+		AgentMessageSanitizer.sanitize(raw)
 	}
 
+	/// OSC 由来の agent status を **通知だけ** に反映する。session identity / 状態は
+	/// `AgentSessionStore` が所有するのでここでは触らない。
 	func updateAgentStatus(paneId: String, sessionId: String, status: String, messageRaw: String) {
 		// belve hook script は OSC payload に literal \n を入れずに "\\n" (= 2 chars)
 		// で escape する (= ターミナル emulator が OSC を生改行で切る回避)。Mac 側で復元。
@@ -185,124 +92,28 @@ class NotificationStore: ObservableObject {
 			}
 		}
 
-		self.agentStatus[projectId] = AgentState(status: agentStatus, message: message)
 		NSLog("[Belve] Agent status: %@ - %@ (pane: %@ sid: %@)", status, message, paneId, sessionId)
 
 		switch agentStatus {
-		case .sessionStart:
-			// Remove existing session for same pane (reload case)
-			if let existingIdx = sessions.firstIndex(where: { $0.paneId == paneId }) {
-				sessions.remove(at: existingIdx)
-				// Fix active indices after removal
-				for (key, idx) in activeSessionIndex {
-					if idx > existingIdx { activeSessionIndex[key] = idx - 1 }
-					else if idx == existingIdx { activeSessionIndex.removeValue(forKey: key) }
-				}
-			}
-			// New session record
-			let session = AgentSession(
-				projectId: projectId,
-				paneId: paneId,
-				status: .sessionStart,
-				message: message,
-				startedAt: Date(),
-				updatedAt: Date()
-			)
-			sessions.insert(session, at: 0)
-			activeSessionIndex[paneId] = 0
-			// Shift other indices
-			for (key, idx) in activeSessionIndex where key != paneId {
-				activeSessionIndex[key] = idx + 1
-			}
-			saveSessions()
-
-		case .running:
-			updateActiveSession(paneId: paneId) { session in
-				// Subagent events describe child-agent lifecycle. They must not
-				// drive the parent session's status — otherwise a stray
-				// SubagentStop can flip a .waiting / .completed pane back to
-				// .running and leave it stuck (no follow-up Stop hook arrives).
-				let isSubagentEvent = message.hasPrefix("subagent:") || message.hasPrefix("subagent-done:")
-				let isSpeechEvent = message.hasPrefix("speech:")
-				let isBackgroundEvent = message.hasPrefix("background:")
-				if !isSubagentEvent {
-					session.status = .running
-					session.message = message
-				}
-				// session が動き出したら通知は不要（ユーザーが対応した or 自動進行）
-				if !isSubagentEvent && !isBackgroundEvent {
-					unreadNotifications.removeAll { $0.paneId == paneId }
-				}
-				// Capture first prompt as label (speech / tool / lifecycle / background は user 入力ではない)
-				if session.label == nil && !message.hasPrefix("tool:") && !message.hasPrefix("result:") && !message.hasPrefix("subagent") && !isSpeechEvent && !isBackgroundEvent && message != "Generating" {
-					session.label = message
-				}
-				// Parse structured messages
-				if message.hasPrefix("tool:") {
-					let detail = String(message.dropFirst(5))
-					let parts = detail.split(separator: ":", maxSplits: 1)
-					session.currentTool = String(parts.first ?? "")
-					session.lastAgentActivity = parts.count > 1 ? String(parts[1]) : nil
-				} else if message.hasPrefix("result:") {
-					let detail = String(message.dropFirst(7))
-					let parts = detail.split(separator: ":", maxSplits: 1)
-					session.lastAgentActivity = parts.count > 1 ? String(parts[1]).prefix(80).description : nil
-					// Keep currentTool visible until next tool or completion
-				} else if message.hasPrefix("subagent:") {
-					session.currentTool = "Agent"
-					session.lastAgentActivity = String(message.dropFirst(9))
-					session.subagentCount += 1
-				} else if message.hasPrefix("subagent-done:") {
-					session.subagentCount = max(0, session.subagentCount - 1)
-					// Only clear tool if the parent session is actively running.
-					// Otherwise leave prior terminal state intact.
-					if session.status == .running || session.status == .sessionStart {
-						session.currentTool = nil
-					}
-				} else if isSpeechEvent {
-					// speech: は agent 中間発話。lastUserPrompt は触らない (= header 維持)。
-					// session.message は flow の上で既に session.message=message 済 → bubble に流れる。
-					// currentTool / activity も維持 (= 次の tool 表示まで切らない)。
-				} else if isBackgroundEvent {
-					// background: = background task 実行中。tool/activity/prompt は触らない。
-					session.currentTool = "Background"
-					session.lastAgentActivity = String(message.dropFirst("background:".count))
-				} else if message != "Generating" {
-					session.lastUserPrompt = message
-					session.currentTool = nil
-					session.lastAgentActivity = nil
-				}
+		case .working:
+			// session が動き出したら通知は不要（ユーザーが対応した or 自動進行）。
+			// subagent / background イベントは親 session の resume ではないので消さない。
+			let isSubagentEvent = message.hasPrefix("subagent:") || message.hasPrefix("subagent-done:")
+			let isBackgroundEvent = message.hasPrefix("background:")
+			if !isSubagentEvent && !isBackgroundEvent {
+				unreadNotifications.removeAll { $0.paneId == paneId }
 			}
 
-		case .waiting:
-			updateActiveSession(paneId: paneId) { session in
-				session.status = .waiting
-				session.message = message
-				session.currentTool = nil
-				session.isRead = false
-			}
+		case .blocked:
 			if isPrimarySession(paneId: paneId, sessionId: sessionId) {
 				let projName = projectNameResolver?(projectId) ?? "?"
-				pushNotification(projectId: projectId, paneId: paneId, projectName: projName, status: .waiting, message: message)
+				pushNotification(projectId: projectId, paneId: paneId, projectName: projName, status: .blocked, message: message)
 				sendDesktopNotification(title: "Claude Code", body: message, projectId: projectId, paneId: paneId)
 			} else {
 				NSLog("[Belve][notif] suppress (non-primary session) pane=%@ sid=%@", paneId, sessionId)
 			}
 
-		case .completed:
-			// Find session by active index first, fallback to latest for this pane
-			// (sessionEnd may have already cleared the active index)
-			let idx = activeSessionIndex[paneId] ?? sessions.firstIndex(where: { $0.paneId == paneId })
-			if let idx, idx < sessions.count, sessions[idx].paneId == paneId {
-				sessions[idx].status = .completed
-				sessions[idx].message = message
-				if message != "Done" {
-					sessions[idx].lastAgentActivity = message
-				}
-				sessions[idx].currentTool = nil
-				sessions[idx].updatedAt = Date()
-				saveSessions()
-			}
+		case .done:
 			// macOS 通知: belve hook の stop は (1) "Done" placeholder を即時送って
 			// sidebar dot を緑化、(2) transcript 抽出して実テキストを送る、の 2 段構え。
 			// 通知は **(2) 実テキストの時だけ** 出す。"Done" はただの即応用 placeholder
@@ -312,136 +123,17 @@ class NotificationStore: ObservableObject {
 			if !message.isEmpty && message != "Done" {
 				if isPrimarySession(paneId: paneId, sessionId: sessionId) {
 					let projName = projectNameResolver?(projectId) ?? "?"
-					pushNotification(projectId: projectId, paneId: paneId, projectName: projName, status: .completed, message: message)
+					pushNotification(projectId: projectId, paneId: paneId, projectName: projName, status: .done, message: message)
 					sendDesktopNotification(title: "Claude Code — Done", body: message, projectId: projectId, paneId: paneId)
 				} else {
 					NSLog("[Belve][notif] suppress (non-primary session) pane=%@ sid=%@", paneId, sessionId)
 				}
 			}
 
-		case .sessionEnd:
-			updateActiveSession(paneId: paneId) { session in
-				// If completed event was missed, mark as completed before ending
-				if session.status == .running || session.status == .waiting || session.status == .sessionStart {
-					session.status = .completed
-					if session.lastAgentActivity == nil {
-						session.message = "Done"
-					}
-				}
-				session.status = .sessionEnd
-				session.currentTool = nil
-			}
-			activeSessionIndex.removeValue(forKey: paneId)
-			// Clear project-level agent status so sidebar dot resets
-			self.agentStatus[projectId] = AgentState(status: .idle, message: "")
-
-		case .idle:
-			break
-		case .runningSubagent:
-			// hook event 由来では来ない (派生表示状態)。switch 網羅性のための case。
+		case .sessionStart, .sessionEnd, .idle, .runningSubagent:
+			// session 状態は AgentSessionStore が所有。通知としての副作用は無い。
 			break
 		}
-	}
-
-	private var sessionPublishTask: DispatchWorkItem?
-
-	private func updateActiveSession(paneId: String, update: (inout AgentSession) -> Void) {
-		if let idx = activeSessionIndex[paneId], idx < sessions.count,
-		   sessions[idx].paneId == paneId {
-			// @Published の発火を抑制して直接書き換え
-			let old = sessions[idx]
-			update(&sessions[idx])
-			sessions[idx].updatedAt = Date()
-			// status 変化（idle→running 等）は即時通知。
-			// それ以外（tool 変更、message 更新等）は 500ms debounce。
-			let statusChanged = old.status != sessions[idx].status
-			if statusChanged {
-				objectWillChange.send()
-			} else {
-				scheduleSessionPublish()
-			}
-			saveSessions()
-		}
-	}
-
-	private func scheduleSessionPublish() {
-		sessionPublishTask?.cancel()
-		let task = DispatchWorkItem { [weak self] in
-			self?.objectWillChange.send()
-		}
-		sessionPublishTask = task
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: task)
-	}
-
-	// MARK: - Persistence
-
-	private static var saveURL: URL {
-		let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-		let belveDir = appSupport.appendingPathComponent("Belve")
-		try? FileManager.default.createDirectory(at: belveDir, withIntermediateDirectories: true)
-		return belveDir.appendingPathComponent("agent-sessions.json")
-	}
-
-	func loadSessions() {
-		guard let data = try? Data(contentsOf: Self.saveURL),
-			  var decoded = try? JSONDecoder().decode([AgentSession].self, from: data) else { return }
-		// On restart we don't know whether the agent process is still alive
-		// (the container broker often is). Fall back to `.sessionStart` so the
-		// row renders as "Ready" — visually distinct from the terminal
-		// `.completed`/`.sessionEnd` states while we wait for the next hook.
-		for i in decoded.indices {
-			if decoded[i].status == .running || decoded[i].status == .waiting || decoded[i].status == .sessionStart {
-				decoded[i].status = .sessionStart
-				decoded[i].currentTool = nil
-			}
-		}
-		// Keep only last 50 sessions
-		sessions = Array(decoded.prefix(50))
-		// Rebuild activeSessionIndex so that OSC events arriving after restart
-		// can update the correct session. Without this, updateActiveSession
-		// silently drops all updates (index lookup returns nil).
-		activeSessionIndex.removeAll()
-		for (idx, session) in sessions.enumerated() {
-			guard let paneId = session.paneId else { continue }
-			if session.status == .sessionEnd || session.isArchived { continue }
-			if activeSessionIndex[paneId] == nil {
-				activeSessionIndex[paneId] = idx
-			}
-		}
-	}
-
-	private var pendingSaveTask: DispatchWorkItem?
-
-	private func saveSessions() {
-		pendingSaveTask?.cancel()
-		let task = DispatchWorkItem { [weak self] in
-			guard let self else { return }
-			let toSave = Array(self.sessions.prefix(50))
-			if let data = try? JSONEncoder().encode(toSave) {
-				try? data.write(to: Self.saveURL)
-			}
-		}
-		pendingSaveTask = task
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: task)
-	}
-
-	func archiveSessionsForPane(_ paneId: String) {
-		for i in sessions.indices where sessions[i].paneId == paneId {
-			sessions[i].isArchived = true
-		}
-		activeSessionIndex.removeValue(forKey: paneId)
-		saveSessions()
-	}
-
-	/// Archive a single session by id — used for manual dismissal from the sidebar.
-	func archiveSession(_ id: UUID) {
-		guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
-		sessions[idx].isArchived = true
-		if let paneId = sessions[idx].paneId,
-		   activeSessionIndex[paneId] == idx {
-			activeSessionIndex.removeValue(forKey: paneId)
-		}
-		saveSessions()
 	}
 
 	func requestNotificationPermission() {

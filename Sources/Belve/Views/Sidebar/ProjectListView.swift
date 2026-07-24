@@ -125,6 +125,9 @@ struct ProjectListView: View {
 	let projects: [Project]
 	@Binding var selectedProject: Project?
 	@EnvironmentObject var notificationStore: NotificationStore
+	/// セッション実体の所有者。sidebar のセッション一覧はこちらを唯一のソースにする
+	/// (BelveApp が WindowGroup root で注入済み)。
+	@EnvironmentObject var agentSessionStore: AgentSessionStore
 	var onAddProject: (() -> Void)?
 	var onToggleSidebar: (() -> Void)?
 	var onRenameProject: ((UUID, String) -> Void)?
@@ -293,7 +296,9 @@ struct ProjectListView: View {
 		// → main area との同期感優先で sidebar 切替は即時化。
 		.onReceive(NotificationCenter.default.publisher(for: .belvePaneClosed)) { notif in
 			if let paneId = notif.userInfo?["paneId"] as? String {
-				notificationStore.archiveSessionsForPane(paneId)
+				// pane が消えたら揮発 binding を解除 (SessionKey は durable なので
+				// session record 自体は残す)。
+				agentSessionStore.unbind(paneId: paneId)
 			}
 		}
 	}
@@ -537,7 +542,7 @@ struct ProjectListView: View {
 				project: project,
 				isSelected: selectedProject == project,
 				isMultiSelected: selectedProjectIds.contains(project.id) && selectedProjectIds.count > 1,
-				agentState: notificationStore.agentStatus[project.id],
+				agentStatus: agentSessionStore.rollupStatus(forProject: project.id),
 				selectionNamespace: selectionNamespace,
 				loadingStatus: loadingStatusFor?(project.id)
 			)
@@ -615,30 +620,33 @@ struct ProjectListView: View {
 
 	@ViewBuilder
 	private func sessionRowDraggable(session: AgentSession, view v: ProjectView, project: Project) -> some View {
+		// SessionKey → paneId を揮発 binding で解決 (この view に属する pane)。
+		let resolvedPaneId = paneId(for: session, inView: v.id)
 		let base = SessionRow(
 			session: session,
-			isFocused: session.paneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId
+			paneId: resolvedPaneId,
+			isFocused: resolvedPaneId.flatMap { UUID(uuidString: $0) } == activeCommandState.activePaneId
 				&& selectedProject == project,
 			onDismiss: {
-				notificationStore.archiveSession(session.id)
+				agentSessionStore.archive(sessionKey: session.id)
 			}
 		)
 		.onTapGesture {
 			selectedProject = project
 			viewStore.setActiveView(v.id, for: project.id)
-			if let paneId = session.paneId {
+			if let paneId = resolvedPaneId {
 				onFocusPane?(project.id, paneId)
 			}
 		}
 
 		Group {
-			if let paneIdString = session.paneId, let paneUUID = UUID(uuidString: paneIdString) {
+			if let paneIdString = resolvedPaneId, let paneUUID = UUID(uuidString: paneIdString) {
 				base.draggable(PaneTransferToken(
 					paneId: paneUUID,
 					sourceViewId: v.id,
 					projectId: project.id
 				)) {
-					Text(session.lastUserPrompt ?? session.label ?? "Session")
+					Text(session.state.lastUserPrompt ?? (session.name.isEmpty ? "Session" : session.name))
 						.font(.system(size: 11))
 						.padding(6)
 						.background(Theme.surface)
@@ -650,7 +658,7 @@ struct ProjectListView: View {
 		}
 		.overlay(
 			RightClickArea { screenPoint in
-				showSessionContextMenu(session: session, at: screenPoint)
+				showSessionContextMenu(session: session, paneId: resolvedPaneId, at: screenPoint)
 			}
 		)
 	}
@@ -783,8 +791,8 @@ struct ProjectListView: View {
 		.buttonStyle(.plain)
 	}
 
-	private func showSessionContextMenu(session: AgentSession, at screenPoint: NSPoint) {
-		let paneId = session.paneId ?? ""
+	private func showSessionContextMenu(session: AgentSession, paneId: String?, at screenPoint: NSPoint) {
+		let paneId = paneId ?? ""
 		let hasPane = !paneId.isEmpty
 		let isEnabled = hasPane && AgentCompanionStore.shared.isCompanionEnabled(for: paneId)
 		FloatingMenuPopup.shared.show(
@@ -812,9 +820,9 @@ struct ProjectListView: View {
 					label: "Dismiss Session",
 					icon: "xmark.circle",
 					isDestructive: true,
-					action: { [weak notificationStore] in
+					action: { [weak agentSessionStore] in
 						FloatingMenuPopup.shared.close()
-						notificationStore?.archiveSession(session.id)
+						agentSessionStore?.archive(sessionKey: session.id)
 					}
 				)
 			}
@@ -838,28 +846,33 @@ struct ProjectListView: View {
 	// the pane still exists.
 	private static let inactiveStatuses: Set<AgentStatus> = [.sessionEnd, .idle]
 
-	/// 指定 view 配下の agent sessions。session の paneId が view の pane tree
-	/// に含まれているものだけ返す。同 pane の重複は最新 updatedAt を残す。
+	/// 指定 view 配下の agent sessions。`AgentSessionStore` を唯一のソースとし、
+	/// view の pane 群 (paneIdsForView) に揮発 binding された SessionKey のセッション
+	/// だけ返す。triage 順 (blocked→working→done→idle) → recency は store の
+	/// `triageOrdered` を再利用。inactive (idle/sessionEnd) は除外。SessionKey で一意
+	/// なので dedup 済み。
 	private func sessionsForView(viewId: UUID, projectId: UUID) -> [AgentSession] {
 		let viewPaneIds = paneIdsForView?(viewId) ?? []
 		guard !viewPaneIds.isEmpty else { return [] }
-		let candidates = notificationStore.sessions.filter { s in
-			guard s.projectId == projectId,
-			      !s.isArchived,
-			      !Self.inactiveStatuses.contains(s.status) else { return false }
-			guard let paneId = s.paneId else { return false }
-			return viewPaneIds.contains(paneId.lowercased())
+		return agentSessionStore.triageOrdered(forProject: projectId).filter { session in
+			guard !Self.inactiveStatuses.contains(session.state.status) else { return false }
+			return agentSessionStore.panes(forSession: session.id)
+				.contains { viewPaneIds.contains($0.lowercased()) }
 		}
-		var latestPerPane: [String: AgentSession] = [:]
-		for s in candidates {
-			guard let paneId = s.paneId else { continue }
-			if let existing = latestPerPane[paneId] {
-				if s.updatedAt > existing.updatedAt { latestPerPane[paneId] = s }
-			} else {
-				latestPerPane[paneId] = s
-			}
-		}
-		return Array(latestPerPane.values).sorted { $0.updatedAt > $1.updatedAt }
+	}
+
+	/// session が現在 bind されている pane のうち、指定 view に属する paneId を返す。
+	/// 返す paneId は UUID canonical 形 (大文字) — webview identifier や
+	/// AgentCompanionStore のキーと同じ表記に正規化して focus/drag/companion を
+	/// 揃える (binding は小文字保持のため round-trip で正規化)。
+	private func paneId(for session: AgentSession, inView viewId: UUID) -> String? {
+		let viewPaneIds = paneIdsForView?(viewId) ?? []
+		guard let match = agentSessionStore.panes(forSession: session.id)
+			.first(where: { viewPaneIds.contains($0.lowercased()) }) else { return nil }
+		// binding は必ず valid UUID から作られるので、canonical 化できない値は
+		// バグ (silent fallback で非正規 id を返さない — 設計原則: 優しい fallback 禁止)。
+		guard let canonical = UUID(uuidString: match)?.uuidString else { return nil }
+		return canonical
 	}
 
 	// MARK: - Click handling
@@ -1010,25 +1023,27 @@ struct ProjectListView: View {
 
 private struct SessionRow: View {
 	let session: AgentSession
+	/// SessionKey から解決した pane (companion avatar のキー)。nil = 未 attach。
+	var paneId: String? = nil
 	var isFocused: Bool = false
 	var onDismiss: (() -> Void)? = nil
 	@State private var isHovering = false
 
 	/// Sessions in `.sessionStart` are idle (claude is waiting for user input
-	/// after launch); only `.running` and `.waiting` should look "live" in the
+	/// after launch); only `working` / `blocked` should look "live" in the
 	/// sidebar.
 	private var isActive: Bool {
-		session.status == .running || session.status == .waiting
+		session.state.status == .working || session.state.status == .blocked
 	}
 
 	/// Primary text shown in the session row. Falls back to "Ready" for the
 	/// `sessionStart` state so the row reads as idle instead of showing the
 	/// raw hook message ("started").
 	private var primaryText: String {
-		if let prompt = session.lastUserPrompt, !prompt.isEmpty { return prompt }
-		if let label = session.label, !label.isEmpty { return label }
-		if session.status == .sessionStart { return "Ready" }
-		return session.message
+		if let prompt = session.state.lastUserPrompt, !prompt.isEmpty { return prompt }
+		if !session.name.isEmpty { return session.name }
+		if session.state.status == .sessionStart { return "Ready" }
+		return session.state.message
 	}
 
 	var body: some View {
@@ -1037,8 +1052,8 @@ private struct SessionRow: View {
 				Spacer().frame(height: 3)
 				// Per-session avatar (= companion と同期)。未設定なら global style。
 				StatusIndicator(
-					status: session.subagentCount > 0 ? .runningSubagent : session.status,
-					styleOverride: session.paneId.flatMap { AgentCompanionStore.shared.avatarStyle(for: $0) }
+					status: session.state.subagentCount > 0 ? .runningSubagent : session.state.status,
+					styleOverride: paneId.flatMap { AgentCompanionStore.shared.avatarStyle(for: $0) }
 				)
 			}
 
@@ -1052,16 +1067,16 @@ private struct SessionRow: View {
 				// 詳細行: 状態ごとに 1 行だけ表示。content によらず高さ揃えるため
 				// 常に Group を出して line を予約する (=空文字でも line height ぶん確保)。
 				Group {
-					if session.currentTool == "Background" {
+					if session.state.currentTool == "Background" {
 						HStack(spacing: 3) {
 							Image(systemName: "hourglass")
 								.font(.system(size: 8))
-							Text(session.lastAgentActivity ?? "tasks running")
+							Text(session.state.lastActivity ?? "tasks running")
 								.lineLimit(1)
 						}
 						.font(.system(size: 9))
 						.foregroundStyle(Theme.accent.opacity(0.6))
-					} else if let tool = session.currentTool {
+					} else if let tool = session.state.currentTool {
 						HStack(spacing: 3) {
 							Image(systemName: "wrench.and.screwdriver")
 								.font(.system(size: 8))
@@ -1070,13 +1085,13 @@ private struct SessionRow: View {
 						}
 						.font(.system(size: 9))
 						.foregroundStyle(Theme.accent)
-					} else if session.status == .waiting {
-						Text(session.message)
+					} else if session.state.status == .blocked {
+						Text(session.state.message)
 							.font(.system(size: 9))
 							.foregroundStyle(Theme.yellow)
 							.lineLimit(1)
-					} else if session.status == .completed {
-						Text(session.lastAgentActivity ?? "Completed")
+					} else if session.state.status == .done {
+						Text(session.state.lastActivity ?? "Completed")
 							.font(.system(size: 9))
 							.foregroundStyle(Theme.textTertiary)
 							.lineLimit(1)
@@ -1725,7 +1740,10 @@ struct ProjectRow: View {
 	/// True when part of a multi-selection (Shift/Cmd click). Gets a subtler
 	/// highlight than the primary selection so the focus row is still obvious.
 	var isMultiSelected: Bool = false
-	var agentState: AgentState?
+	/// project 配下セッションの rollup status (要対応→作業中→完了→待機 の最重篤)。
+	/// legacy `AgentStatus` で受ける (現状 status dot 描画には未使用だが、ソースは
+	/// `AgentSessionStore.rollupStatus` に張り替え済み)。
+	var agentStatus: AgentStatus?
 	var selectionNamespace: Namespace.ID?
 	/// 親から明示的に渡してもらう。`@EnvironmentObject projectStore` を
 	/// 観察してると git 更新など無関係な @Published 変更でも全 row が

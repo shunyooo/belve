@@ -8,7 +8,7 @@ import SwiftUI
 /// makeNSView が registry から既存 WebView を返し、新しい親 NSView に reparent される。
 struct TileView: View {
 	@EnvironmentObject var projectStore: ProjectStore
-	@EnvironmentObject var notificationStore: NotificationStore
+	@EnvironmentObject var agentSessionStore: AgentSessionStore
 	@ObservedObject private var filterState = TileFilterState.shared
 	@ObservedObject private var registry = PaneHostRegistry.shared
 	/// 各 project の pane tree の source of truth。MainWindow から注入。
@@ -89,7 +89,7 @@ struct TileView: View {
 		var result: [PaneCellInfo] = []
 		for (projectIdx, project) in projectStore.projects.enumerated() {
 			let state = stateManager.state(for: ProjectViewStore.shared.activeView(for: project.id).id)
-			let status = notificationStore.agentStatus[project.id]?.status ?? .idle
+			let status = agentSessionStore.rollupStatus(forProject: project.id) ?? .idle
 			for (paneIdString, paneIndex) in collectLeafPanes(from: state.root) {
 				guard filterState.hiddenPaneIds.contains(paneIdString) else { continue }
 				result.append(PaneCellInfo(
@@ -210,7 +210,7 @@ struct TileView: View {
 		var result: [PaneCellInfo] = []
 		for (projectIdx, project) in projectStore.projects.enumerated() {
 			let state = stateManager.state(for: ProjectViewStore.shared.activeView(for: project.id).id)
-			let status = notificationStore.agentStatus[project.id]?.status ?? .idle
+			let status = agentSessionStore.rollupStatus(forProject: project.id) ?? .idle
 			for (paneIdString, paneIndex) in collectLeafPanes(from: state.root) {
 				guard filterState.shouldShow(paneId: paneIdString, projectId: project.id, status: status, isPinnedProject: project.isPinned) else {
 					continue
@@ -238,12 +238,13 @@ struct TileView: View {
 		)
 	}
 
-	/// 該当 paneId の最終 session 更新時刻 (NotificationStore.sessions から検索)。
+	/// 該当 leaf paneId の bind 先 session の最終更新時刻。
+	/// pane→SessionKey binding (`sessionKey(forPane:)`) で session を解決し updatedAt を返す。
+	/// paneId は raw のまま渡す (binding 側で lowercase 正規化される)。
 	private func lastActivity(paneId: String) -> Date? {
-		notificationStore.sessions
-			.filter { $0.paneId == paneId }
-			.map(\.updatedAt)
-			.max()
+		guard let sessionKey = agentSessionStore.sessionKey(forPane: paneId),
+		      let session = agentSessionStore.session(for: sessionKey) else { return nil }
+		return session.updatedAt
 	}
 
 	/// PaneNode tree から leaf pane (paneId, paneIndex) を再帰収集。
@@ -283,7 +284,6 @@ private struct TileCell: View {
 	@ObservedObject var commandAreaState: CommandAreaState
 
 	@EnvironmentObject var projectStore: ProjectStore
-	@EnvironmentObject var notificationStore: NotificationStore
 	@ObservedObject private var filterState = TileFilterState.shared
 
 

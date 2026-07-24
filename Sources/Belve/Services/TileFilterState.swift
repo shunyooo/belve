@@ -267,10 +267,10 @@ final class TileFilterState: ObservableObject {
 
 	static func statusPriority(_ s: AgentStatus) -> Int {
 		switch s {
-		case .running: return 0
+		case .working: return 0
 		case .runningSubagent: return 1
-		case .waiting: return 2
-		case .completed, .sessionEnd: return 3
+		case .blocked: return 2
+		case .done, .sessionEnd: return 3
 		case .sessionStart: return 4
 		case .idle: return 5
 		}
