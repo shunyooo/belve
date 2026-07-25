@@ -261,6 +261,21 @@ struct FolderBrowserView: View {
 	}
 
 	private func handlePathInput(_ newValue: String) {
+		// 末尾が "/" のパスはディレクトリ移動として扱い、その配下候補を再取得する。
+		// prefix 一致 (フィルタ扱い) より先に判定しないと、現在ディレクトリ配下の
+		// サブディレクトリを直接打った時 (例: ~/src/mydir/) が「フィルタ = mydir/」
+		// と誤解釈され enterDirectory が発火せず候補が出ない (タブ補完との差の原因)。
+		if newValue.hasSuffix("/") && newValue.count > 1 {
+			let newPath = String(newValue.dropLast())
+			if newPath != currentPath {
+				enterDirectory(newPath)
+			} else {
+				// base 自身を打ち直した → フィルタ解除して全候補表示。
+				typedSuffix = ""
+				selectedIndex = 0
+			}
+			return
+		}
 		let base = currentPath.hasSuffix("/") ? currentPath : currentPath + "/"
 		if newValue.hasPrefix(base) {
 			let newSuffix = String(newValue.dropFirst(base.count))
@@ -268,10 +283,6 @@ struct FolderBrowserView: View {
 				typedSuffix = newSuffix
 				selectedIndex = 0
 			}
-		} else if newValue.hasSuffix("/") && newValue.count > 1 {
-			// User typed a full path ending with /
-			let newPath = String(newValue.dropLast())
-			enterDirectory(newPath)
 		}
 	}
 }
