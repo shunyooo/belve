@@ -90,21 +90,14 @@ struct PaneCreationChooserView: View {
 		.shadow(color: .black.opacity(0.34), radius: 18, y: 8)
 		.onAppear {
 			loadSessions()
+			// 名前欄のフォーカスは常時保持する。フォーカスを外すと矢印キーが
+			// .onKeyPress へ bubble しなくなり、連続移動できなくなるため
+			// (選択のハイライトは selectedIndex だけで表現する)。
 			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { nameFocused = true }
-		}
-		.onChange(of: selectedIndex) { _, newValue in
-			nameFocused = (newValue == -1)
 		}
 		.onKeyPress(.upArrow) { moveSelection(-1); return .handled }
 		.onKeyPress(.downArrow) { moveSelection(1); return .handled }
 		.onKeyPress(.escape) { onDismiss(); return .handled }
-		.onKeyPress(.return) {
-			// 名前欄 (index -1) は TextField.onSubmit が処理する。ここで二重に
-			// 処理すると onCreateNew が 2 回走り pane が二重生成されるため ignore。
-			guard selectedIndex >= 0 else { return .ignored }
-			confirmSelection()
-			return .handled
-		}
 	}
 
 	private var header: some View {
@@ -140,7 +133,9 @@ struct PaneCreationChooserView: View {
 					.font(.system(size: 13))
 					.foregroundStyle(Theme.textPrimary)
 					.focused($nameFocused)
-					.onSubmit(submitNew)
+					// フォーカスは常に名前欄にあるので、Enter はここに一本化。
+					// selectedIndex に応じて 新規作成 / 行アタッチ を分岐する。
+					.onSubmit(confirmSelection)
 					.padding(.horizontal, 10)
 					.padding(.vertical, 7)
 					.background(
