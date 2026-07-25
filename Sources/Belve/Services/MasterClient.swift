@@ -250,6 +250,11 @@ final class MasterClient: @unchecked Sendable {
 		var command: String = ""
 		/// 最終アクティビティの epoch 秒 (tmux `#{session_activity}`)。remote のみ。
 		var activity: TimeInterval? = nil
+		/// belve フックが tmux オプション @belve_state に書いた agent 状態
+		/// (running/waiting/… )。空 = フック未装着 or 未起動。remote のみ。
+		var agentState: String = ""
+		/// @belve_msg。agent の最新 1 行 (今なにをしているか)。
+		var agentMsg: String = ""
 	}
 
 	func listSessions() async throws -> [SessionInfo] {
@@ -291,8 +296,11 @@ final class MasterClient: @unchecked Sendable {
 			let attached = dict["attached"] as? Bool ?? false
 			let command = dict["command"] as? String ?? ""
 			let activity = (dict["activity"] as? String).flatMap { TimeInterval($0) }
+			let agentState = dict["agentState"] as? String ?? ""
+			let agentMsg = dict["agentMsg"] as? String ?? ""
 			return SessionInfo(name: name, socket: "", modTime: "", alive: true,
-			                   windows: windows, attached: attached, command: command, activity: activity)
+			                   windows: windows, attached: attached, command: command, activity: activity,
+			                   agentState: agentState, agentMsg: agentMsg)
 		}
 	}
 

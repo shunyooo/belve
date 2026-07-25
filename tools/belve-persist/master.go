@@ -27,7 +27,7 @@ import (
 // Master が公開する API のバージョン。Belve.app は handshake でこの値を
 // 確認し、想定と違ったら master を kill → spawn し直して新版に attach する
 // (= broker の version negotiation 議論を Mac 側に持ってきた版)。
-const macMasterVersion = "1.6" // 1.6: captureRemotePane op 追加
+const macMasterVersion = "1.7" // 1.7: listRemoteSessions に @belve_state/@belve_msg 追加
 
 // Master 起動時に記録する自身の binary identity。version 応答に含めて
 // Belve.app 側が「app bundle 内の binary と違ったら respawn」判定に使う。
@@ -384,7 +384,8 @@ func opListRemoteSessions(req masterReq) masterRes {
 	}
 	// `\t` は Go 文字列上で実タブになり、tmux -F にそのまま渡るので出力も実タブ区切り。
 	// フィールド: name / windows / attached / activity(epoch秒) / active pane の command。
-	tmuxCmd := "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}' 2>/dev/null || true"
+	// 末尾 2 フィールドは belve フックが書き込む agent 状態 (@belve_state / @belve_msg)。
+	tmuxCmd := "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}\t#{@belve_state}\t#{@belve_msg}' 2>/dev/null || true"
 	args := append([]string{}, sshOpts(host)...)
 	args = append(args, host, tmuxCmd)
 	out, err := exec.Command("ssh", args...).CombinedOutput()
@@ -409,11 +410,13 @@ func opListRemoteSessions(req masterReq) masterRes {
 			continue
 		}
 		sessions = append(sessions, map[string]interface{}{
-			"name":     name,
-			"windows":  field(parts, 1),
-			"attached": field(parts, 2) != "0" && field(parts, 2) != "",
-			"activity": field(parts, 3),
-			"command":  field(parts, 4),
+			"name":       name,
+			"windows":    field(parts, 1),
+			"attached":   field(parts, 2) != "0" && field(parts, 2) != "",
+			"activity":   field(parts, 3),
+			"command":    field(parts, 4),
+			"agentState": field(parts, 5),
+			"agentMsg":   field(parts, 6),
 		})
 	}
 	if sessions == nil {

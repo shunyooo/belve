@@ -36,6 +36,15 @@ emit_event() {
     local status="$1"
     local message="$2"
     echo "$(date +%Y-%m-%dT%H:%M:%S) emit_event: pane=$PANE_ID status=$status message=${message:0:200}" >> "$BELVE_HOOK_LOG" 2>/dev/null || true
+    # tmux セッションに状態を貼る (= Mac 側 SessionKey 単位の権威ソース)。表示
+    # ストリームに乗せる OSC と違い tmux が飲み込まず、Belve は list-sessions -F
+    # で読める。ペイン未 attach でも取得可。set -euo pipefail 下でも errexit
+    # しないよう必ず guard する。
+    if [ -n "${TMUX:-}" ] && [ -n "$TMUX_SESSION" ]; then
+        tmux set-option -t "$TMUX_SESSION" @belve_state "$status" 2>/dev/null || true
+        tmux set-option -t "$TMUX_SESSION" @belve_msg "${message:0:500}" 2>/dev/null || true
+        tmux set-option -t "$TMUX_SESSION" @belve_ts "$(date +%s)" 2>/dev/null || true
+    fi
     local osc
     # 新 OSC 形式 (BELVE3) は paneId, tmuxSession, sessionId, status, message の
     # 5 セグメント。tmuxSession は実 tmux セッション名 (= Mac 側 SessionKey の権威
