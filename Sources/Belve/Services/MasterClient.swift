@@ -244,6 +244,12 @@ final class MasterClient: @unchecked Sendable {
 		let socket: String
 		let modTime: String
 		let alive: Bool
+		// remote tmux 用の付加情報 (local セッションでは既定値)。
+		var windows: Int = 0
+		var attached: Bool = false
+		var command: String = ""
+		/// 最終アクティビティの epoch 秒 (tmux `#{session_activity}`)。remote のみ。
+		var activity: TimeInterval? = nil
 	}
 
 	func listSessions() async throws -> [SessionInfo] {
@@ -270,7 +276,12 @@ final class MasterClient: @unchecked Sendable {
 		guard let sessions = res.result?["sessions"] as? [[String: Any]] else { return [] }
 		return sessions.compactMap { dict in
 			guard let name = dict["name"] as? String else { return nil }
-			return SessionInfo(name: name, socket: "", modTime: "", alive: true)
+			let windows = Int(dict["windows"] as? String ?? "") ?? 0
+			let attached = dict["attached"] as? Bool ?? false
+			let command = dict["command"] as? String ?? ""
+			let activity = (dict["activity"] as? String).flatMap { TimeInterval($0) }
+			return SessionInfo(name: name, socket: "", modTime: "", alive: true,
+			                   windows: windows, attached: attached, command: command, activity: activity)
 		}
 	}
 

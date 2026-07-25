@@ -27,7 +27,7 @@ import (
 // Master が公開する API のバージョン。Belve.app は handshake でこの値を
 // 確認し、想定と違ったら master を kill → spawn し直して新版に attach する
 // (= broker の version negotiation 議論を Mac 側に持ってきた版)。
-const macMasterVersion = "1.4" // 1.4: listRemoteSessions op 追加
+const macMasterVersion = "1.5" // 1.5: listRemoteSessions に activity/command 追加
 
 // Master 起動時に記録する自身の binary identity。version 応答に含めて
 // Belve.app 側が「app bundle 内の binary と違ったら respawn」判定に使う。
@@ -381,12 +381,19 @@ func opListRemoteSessions(req masterReq) masterRes {
 		return masterRes{ID: req.ID, OK: false, Error: "host required"}
 	}
 	// `\t` は Go 文字列上で実タブになり、tmux -F にそのまま渡るので出力も実タブ区切り。
-	tmuxCmd := "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}' 2>/dev/null || true"
+	// フィールド: name / windows / attached / activity(epoch秒) / active pane の command。
+	tmuxCmd := "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}' 2>/dev/null || true"
 	args := append([]string{}, sshOpts(host)...)
 	args = append(args, host, tmuxCmd)
 	out, err := exec.Command("ssh", args...).CombinedOutput()
 	if err != nil {
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("ssh tmux ls: %v: %s", err, string(out))}
+	}
+	field := func(parts []string, i int) string {
+		if i < len(parts) {
+			return parts[i]
+		}
+		return ""
 	}
 	var sessions []map[string]interface{}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -399,15 +406,12 @@ func opListRemoteSessions(req masterReq) masterRes {
 		if name == "" {
 			continue
 		}
-		windows := ""
-		if len(parts) > 1 {
-			windows = parts[1]
-		}
-		attached := len(parts) > 2 && parts[2] != "0"
 		sessions = append(sessions, map[string]interface{}{
 			"name":     name,
-			"windows":  windows,
-			"attached": attached,
+			"windows":  field(parts, 1),
+			"attached": field(parts, 2) != "0" && field(parts, 2) != "",
+			"activity": field(parts, 3),
+			"command":  field(parts, 4),
 		})
 	}
 	if sessions == nil {

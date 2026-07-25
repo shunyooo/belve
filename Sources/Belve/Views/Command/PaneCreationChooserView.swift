@@ -70,7 +70,8 @@ struct PaneCreationChooserView: View {
 	/// アタッチ候補。ローカルは alive かつ未使用のみ。リモート (tmux) は host 上の
 	/// 全セッションをそのまま出す (全 tmux セッション対象という方針)。
 	private var attachable: [MasterClient.SessionInfo] {
-		if isRemote { return sessions.sorted(by: sortRule) }
+		// remote は最終アクティビティの新しい順。
+		if isRemote { return sessions.sorted { ($0.activity ?? 0) > ($1.activity ?? 0) } }
 		return sessions.filter { $0.alive && !inUseNames.contains($0.name) }
 	}
 
@@ -260,14 +261,14 @@ struct PaneCreationChooserView: View {
 		let selected = index == selectedIndex
 		return HStack(spacing: 10) {
 			Circle()
-				.fill(Theme.green)
+				.fill(isRemote ? (session.attached ? Theme.green : Theme.textTertiary) : Theme.green)
 				.frame(width: 8, height: 8)
 			VStack(alignment: .leading, spacing: 2) {
 				Text(displayName(session))
 					.font(.system(size: 12, weight: .medium))
 					.foregroundStyle(Theme.textPrimary)
 					.lineLimit(1)
-				Text(session.name)
+				Text(subtitle(session))
 					.font(.system(size: 9))
 					.foregroundStyle(Theme.textTertiary)
 					.lineLimit(1)
@@ -347,6 +348,34 @@ struct PaneCreationChooserView: View {
 			return "\(projName) / \(token)"
 		}
 		return session.name
+	}
+
+	/// 行の 2 段目。remote は `1:claude · 25秒前 · 接続中` 風、local は生セッション名。
+	private func subtitle(_ session: MasterClient.SessionInfo) -> String {
+		guard isRemote else { return session.name }
+		var parts: [String] = []
+		let cmd = session.command.isEmpty ? "" : ":\(session.command)"
+		parts.append("\(session.windows)\(cmd)")
+		if let rel = relativeActivity(session.activity) {
+			parts.append(rel)
+		}
+		if session.attached {
+			parts.append("接続中")
+		}
+		return parts.joined(separator: " · ")
+	}
+
+	private static let relativeFormatter: RelativeDateTimeFormatter = {
+		let f = RelativeDateTimeFormatter()
+		f.unitsStyle = .short
+		return f
+	}()
+
+	/// epoch 秒 → "25秒前" / "3分前" 等。remote server の epoch を Mac の時計基準で
+	/// 比較するため、両者の NTP ズレぶんだけ誤差が乗りうる (表示用途なので許容)。
+	private func relativeActivity(_ epoch: TimeInterval?) -> String? {
+		guard let epoch else { return nil }
+		return Self.relativeFormatter.localizedString(for: Date(timeIntervalSince1970: epoch), relativeTo: Date())
 	}
 
 	// MARK: - Rename
