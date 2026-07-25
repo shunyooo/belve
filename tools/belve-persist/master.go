@@ -27,7 +27,7 @@ import (
 // Master が公開する API のバージョン。Belve.app は handshake でこの値を
 // 確認し、想定と違ったら master を kill → spawn し直して新版に attach する
 // (= broker の version negotiation 議論を Mac 側に持ってきた版)。
-const macMasterVersion = "1.2"
+const macMasterVersion = "1.3" // 1.3: renameSession op 追加
 
 // Master 起動時に記録する自身の binary identity。version 応答に含めて
 // Belve.app 側が「app bundle 内の binary と違ったら respawn」判定に使う。
@@ -182,6 +182,8 @@ func masterDispatch(req masterReq) masterRes {
 		return opListSessions(req)
 	case "killSession":
 		return opKillSession(req)
+	case "renameSession":
+		return opRenameSession(req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
@@ -385,4 +387,45 @@ func opKillSession(req masterReq) masterRes {
 	// lock ファイルも掃除
 	os.Remove(sockPath + ".lock")
 	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"name": name}}
+}
+
+// renameSession: セッションの socket ファイル (+ .pid / .lock) を付け替える。
+// AF_UNIX の listen は inode に bind されているので、稼働中 daemon でも
+// socket ファイルを rename すれば新パスで到達でき、daemon 側の変更は不要。
+// 呼び出し側は「どの pane にも紐付いていない (= 未使用)」セッションだけを
+// 対象にする前提 (in-use セッションはチューザで除外済み)。
+func opRenameSession(req masterReq) masterRes {
+	from := strParam(req.Params, "from")
+	to := strParam(req.Params, "to")
+	if from == "" || to == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "from and to required"}
+	}
+	// パス区切りや別ディレクトリへの脱出を防ぐ (basename のみ許可)。
+	if from != filepath.Base(from) || to != filepath.Base(to) {
+		return masterRes{ID: req.ID, OK: false, Error: "invalid session name"}
+	}
+	if from == to {
+		return masterRes{ID: req.ID, OK: true, Result: map[string]string{"name": to}}
+	}
+	sessDir := "/tmp/belve-shell/sessions"
+	fromSock := filepath.Join(sessDir, from+".sock")
+	toSock := filepath.Join(sessDir, to+".sock")
+	if _, err := os.Stat(fromSock); err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: "session not found: " + from}
+	}
+	if _, err := os.Stat(toSock); err == nil {
+		return masterRes{ID: req.ID, OK: false, Error: "session already exists: " + to}
+	}
+	if err := os.Rename(fromSock, toSock); err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("rename failed: %v", err)}
+	}
+	// 付随ファイルも一緒に付け替える (存在すれば)。
+	for _, suffix := range []string{".sock.pid", ".sock.lock"} {
+		fromExtra := filepath.Join(sessDir, from+suffix)
+		toExtra := filepath.Join(sessDir, to+suffix)
+		if _, err := os.Stat(fromExtra); err == nil {
+			os.Rename(fromExtra, toExtra)
+		}
+	}
+	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"name": to}}
 }

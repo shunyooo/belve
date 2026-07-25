@@ -262,6 +262,12 @@ final class MasterClient: @unchecked Sendable {
 		_ = try await send(op: "killSession", params: ["name": name])
 	}
 
+	/// セッションの socket 名を付け替える (稼働中でも可)。呼び出し側は未使用
+	/// セッションのみを対象にすること (in-use は pane 再接続キーが古い名前を指すため)。
+	func renameSession(from: String, to: String) async throws {
+		_ = try await send(op: "renameSession", params: ["from": from, "to": to])
+	}
+
 	/// Mac 上の `localPath` (画像等) を SSH ControlMaster 経由で remote に
 	/// コピーし、remote 側のパス (`/tmp/belve-clipboard/<basename>`) を返す。
 	func transferImage(host: String, projShort: String, localPath: String) async throws -> String {

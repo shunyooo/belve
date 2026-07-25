@@ -25,7 +25,11 @@ struct PaneCreationChooserView: View {
 	@State private var error: String?
 	/// -1 = 名前欄, 0.. = navigableSessions のインデックス。
 	@State private var selectedIndex: Int = -1
+	/// リネーム中のセッション名 (nil = リネームしていない)。
+	@State private var renamingName: String?
+	@State private var renameText: String = ""
 	@FocusState private var nameFocused: Bool
+	@FocusState private var renameFocused: Bool
 
 	init(
 		project: Project,
@@ -95,9 +99,13 @@ struct PaneCreationChooserView: View {
 			// (選択のハイライトは selectedIndex だけで表現する)。
 			DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { nameFocused = true }
 		}
-		.onKeyPress(.upArrow) { moveSelection(-1); return .handled }
-		.onKeyPress(.downArrow) { moveSelection(1); return .handled }
-		.onKeyPress(.escape) { onDismiss(); return .handled }
+		.onKeyPress(.upArrow) { if renamingName != nil { return .ignored }; moveSelection(-1); return .handled }
+		.onKeyPress(.downArrow) { if renamingName != nil { return .ignored }; moveSelection(1); return .handled }
+		.onKeyPress(.escape) {
+			// リネーム中は Esc で編集キャンセル、そうでなければチューザを閉じる。
+			if renamingName != nil { cancelRename() } else { onDismiss() }
+			return .handled
+		}
 	}
 
 	private var header: some View {
@@ -216,7 +224,16 @@ struct PaneCreationChooserView: View {
 		.padding(.bottom, 4)
 	}
 
+	@ViewBuilder
 	private func sessionRow(_ session: MasterClient.SessionInfo, index: Int) -> some View {
+		if renamingName == session.name {
+			renameRow(session)
+		} else {
+			normalRow(session, index: index)
+		}
+	}
+
+	private func normalRow(_ session: MasterClient.SessionInfo, index: Int) -> some View {
 		let selected = index == selectedIndex
 		return HStack(spacing: 10) {
 			Circle()
@@ -240,6 +257,12 @@ struct PaneCreationChooserView: View {
 				.padding(.horizontal, 8)
 				.padding(.vertical, 3)
 				.background(RoundedRectangle(cornerRadius: 4).fill(Theme.accent.opacity(0.1)))
+			Button(action: { beginRename(session) }) {
+				Image(systemName: "pencil")
+					.font(.system(size: 10))
+					.foregroundStyle(Theme.textTertiary)
+			}
+			.buttonStyle(.plain)
 			Button(action: { deleteSession(session.name) }) {
 				Image(systemName: "trash")
 					.font(.system(size: 10))
@@ -254,6 +277,39 @@ struct PaneCreationChooserView: View {
 		.onTapGesture { selectedIndex = index }
 	}
 
+	/// リネーム編集中の行。`belve-<shortId>-` prefix は固定し、token 部分だけ編集させる。
+	private func renameRow(_ session: MasterClient.SessionInfo) -> some View {
+		HStack(spacing: 6) {
+			if let prefix = renamePrefix(session.name) {
+				Text(prefix)
+					.font(.system(size: 10))
+					.foregroundStyle(Theme.textTertiary)
+			}
+			TextField("名前", text: $renameText)
+				.textFieldStyle(.plain)
+				.font(.system(size: 12))
+				.foregroundStyle(Theme.textPrimary)
+				.focused($renameFocused)
+				.onSubmit(commitRename)
+				.padding(.horizontal, 8)
+				.padding(.vertical, 5)
+				.background(RoundedRectangle(cornerRadius: 5).fill(Theme.bg))
+				.overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.accent, lineWidth: 1))
+			Button("保存", action: commitRename)
+				.buttonStyle(.plain)
+				.font(.system(size: 11, weight: .semibold))
+				.foregroundStyle(Theme.accent)
+			Button(action: cancelRename) {
+				Image(systemName: "xmark")
+					.font(.system(size: 10))
+					.foregroundStyle(Theme.textTertiary)
+			}
+			.buttonStyle(.plain)
+		}
+		.padding(.horizontal, 16)
+		.padding(.vertical, 8)
+	}
+
 	/// 他プロジェクトのセッションは projShort からプロジェクト名を引いて見やすく表示。
 	private func displayName(_ session: MasterClient.SessionInfo) -> String {
 		let parts = session.name.split(separator: "-")
@@ -264,6 +320,59 @@ struct PaneCreationChooserView: View {
 			return "\(projName) / \(token)"
 		}
 		return session.name
+	}
+
+	// MARK: - Rename
+
+	/// `belve-<shortId>-<token>` の shortId 部分。パターン外なら nil。
+	private func shortId(of name: String) -> String? {
+		let parts = name.split(separator: "-")
+		guard parts.count >= 3, parts[0] == "belve" else { return nil }
+		return String(parts[1])
+	}
+
+	/// リネーム行に固定表示する `belve-<shortId>-` prefix。パターン外なら nil。
+	private func renamePrefix(_ name: String) -> String? {
+		shortId(of: name).map { "belve-\($0)-" }
+	}
+
+	/// 編集対象の token 部分 (prefix を除いた末尾)。パターン外なら名前全体。
+	private func renameToken(_ name: String) -> String {
+		let parts = name.split(separator: "-")
+		guard parts.count >= 3, parts[0] == "belve" else { return name }
+		return parts[2...].joined(separator: "-")
+	}
+
+	private func beginRename(_ session: MasterClient.SessionInfo) {
+		renamingName = session.name
+		renameText = renameToken(session.name)
+		nameFocused = false
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { renameFocused = true }
+	}
+
+	private func cancelRename() {
+		renamingName = nil
+		renameFocused = false
+		nameFocused = true
+	}
+
+	private func commitRename() {
+		guard let old = renamingName else { return }
+		guard let token = PaneSessionNaming.sanitizedToken(renameText) else { cancelRename(); return }
+		let newName = shortId(of: old).map { "belve-\($0)-\(token)" } ?? token
+		guard newName != old else { cancelRename(); return }
+		Task { @MainActor in
+			renamingName = nil
+			renameFocused = false
+			nameFocused = true
+			do {
+				try await MasterClient.shared.renameSession(from: old, to: newName)
+				loadSessions() // 成功時のみ再読込 (loadSessions が error=nil を立てるため)
+			} catch {
+				// 失敗時は再読込せずエラーを残す (名前は変わっていない)。
+				self.error = "リネームに失敗しました: \(error.localizedDescription)"
+			}
+		}
 	}
 
 	// MARK: - Keyboard
@@ -305,10 +414,10 @@ struct PaneCreationChooserView: View {
 		Task { @MainActor in
 			do {
 				try await MasterClient.shared.killSession(name: name)
+				loadSessions() // 成功時のみ再読込 (loadSessions が error=nil を立てるため)
 			} catch {
 				self.error = "削除に失敗しました: \(error.localizedDescription)"
 			}
-			loadSessions()
 		}
 	}
 }
