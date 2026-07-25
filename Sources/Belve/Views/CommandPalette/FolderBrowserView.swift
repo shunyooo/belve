@@ -10,6 +10,8 @@ struct FolderBrowserView: View {
 	@State private var items: [FileItem] = []
 	@State private var selectedIndex: Int = 0
 	@State private var keyMonitor: Any? = nil
+	/// remote 接続 (RPC) 確立待ちで listDirectory がまだ空を返す状態。
+	@State private var connecting: Bool = false
 	@FocusState private var isFocused: Bool
 
 	init(
@@ -90,6 +92,12 @@ struct FolderBrowserView: View {
 				.onSubmit {
 					isPresented = false
 					onSelect(currentPath)
+				}
+				if connecting {
+					ProgressView().controlSize(.small)
+					Text("接続中…")
+						.font(.system(size: 11))
+						.foregroundStyle(Theme.textTertiary)
 				}
 			}
 			.padding(.horizontal, 12)
@@ -228,12 +236,25 @@ struct FolderBrowserView: View {
 		loadDirectory()
 	}
 
-	private func loadDirectory() {
+	private func loadDirectory(retry: Int = 0) {
 		let pathAtStart = currentPath
+		connecting = !provider.isReady
 		DispatchQueue.global().async {
 			let dirs = provider.listDirectory(pathAtStart).filter { $0.isDirectory }
 			DispatchQueue.main.async {
 				guard pathAtStart == currentPath else { return }  // user navigated away mid-load
+				// remote は接続 (RPC) 確立前だと空が返る。準備完了まで再試行して
+				// 自動でリスト更新する (最大 ~15s)。genuine な空ディレクトリ
+				// (isReady=true かつ空) は再試行しない。
+				if dirs.isEmpty && !provider.isReady && retry < 30 {
+					DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+						// 閉じた/移動したら再試行を止める。
+						guard isPresented, pathAtStart == currentPath else { return }
+						loadDirectory(retry: retry + 1)
+					}
+					return
+				}
+				connecting = false
 				items = dirs
 			}
 		}

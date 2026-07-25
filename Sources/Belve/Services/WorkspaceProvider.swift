@@ -11,6 +11,10 @@ protocol WorkspaceProvider {
 	var effectivePath: String { get }
 	var homeDirectory: String { get }
 	var isRemote: Bool { get }
+	/// ディレクトリ列挙などのファイル操作が今すぐ使えるか。local は常に true、
+	/// remote は RPC クライアントが登録済み (= 接続確立済み) の時だけ true。
+	/// 接続確立前は listDirectory が空を返すので、UI 側の再読込判断に使う。
+	var isReady: Bool { get }
 	/// Display label for the connection (e.g. "SSH: host")
 	var displayLabel: String { get }
 
@@ -546,6 +550,11 @@ extension WorkspaceProvider {
 
 // MARK: - LocalProvider
 
+extension WorkspaceProvider {
+	// local や RPC 不要な provider は常に準備完了。SSHProvider だけ override する。
+	var isReady: Bool { true }
+}
+
 struct LocalProvider: WorkspaceProvider {
 	let path: String?
 
@@ -710,6 +719,8 @@ struct SSHProvider: WorkspaceProvider, RemoteProjectScoped {
 	var effectivePath: String { path ?? "~" }
 	var homeDirectory: String { "~" }
 	var isRemote: Bool { true }
+	/// RPC クライアントが登録済み (= 接続確立済み) の時だけ ls 等が使える。
+	var isReady: Bool { RemoteRPCRegistry.shared.client(for: projectId) != nil }
 	var displayLabel: String { "SSH: \(host.components(separatedBy: ".").first ?? host)" }
 
 	func run(_ command: String) -> String? {
