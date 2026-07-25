@@ -1237,13 +1237,11 @@ struct FileTreeRow: View {
 			.modifier(RowDropModifier(
 				active: projectActive,
 				dropDestination: dropDestination,
-				onTargeted: { targeted in
-					isDropTargeted = targeted
-					if targeted { scheduleSpringExpand() } else { cancelSpringExpand() }
-				},
+				// highlight / spring-load は下の .onChange(of: isDropTargeted) が
+				// 一元管理する。ここでは isDropTargeted を上げ下げするだけ。
+				onTargeted: { isDropTargeted = $0 },
 				onDrop: { urls, dest in
 					isDropTargeted = false
-					cancelSpringExpand()
 					onDropFiles(urls, dest)
 				}
 			))
@@ -1279,9 +1277,6 @@ struct FileTreeRow: View {
 			.onHover { hovering in
 				isHovering = hovering
 			}
-			// per-row drop は一旦撤去 (= 同 active project gate 問題のため)。
-			// 必要なら MainWindow level の global drop handler から coordinates 経由で
-			// 行特定する形で復活させる予定。
 			.onChange(of: isDropTargeted) { _, targeted in
 				// Spring-load: folder の上に 0.6s 留まったら自動展開して
 				// ネストした folder にも drop できるようにする (= Finder 互換)。
