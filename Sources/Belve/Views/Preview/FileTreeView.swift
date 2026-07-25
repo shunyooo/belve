@@ -52,24 +52,37 @@ class FileTreeState: ObservableObject {
 		statusMessage = nil
 	}
 
-	func loadRoot(project: Project, rootPath: String, completion: (() -> Void)? = nil) {
+	func loadRoot(project: Project, rootPath: String, completion: (() -> Void)? = nil, retry: Int = 0) {
 		isRootLoading = true
 		DispatchQueue.global().async {
 			let result = project.provider.listDirectory(rootPath)
+			let ready = project.provider.isReady
 			DispatchQueue.main.async {
+				// remote は接続 (RPC) 確立前だと listDirectory が空を返す。準備できる
+				// まで再試行し、繋がった時点で反映する (最大 ~15s)。isReady=true の空は
+				// 本当に空のディレクトリなので再試行しない。
+				if result.isEmpty && !ready && retry < 30 {
+					DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+						self.loadRoot(project: project, rootPath: rootPath, completion: completion, retry: retry + 1)
+					}
+					return
+				}
 				self.items = result
 				self.isRootLoading = false
 				if self.focusedPath == nil {
 					self.focusedPath = result.first?.path
 				}
 				completion?()
-			}
-			// Check gitignore asynchronously (non-blocking)
-			let ignored = project.provider.gitCheckIgnore(rootPath, paths: result.map(\.name))
-			if !ignored.isEmpty {
-				DispatchQueue.main.async {
-					for item in result where ignored.contains(item.name) {
-						self.ignoredPaths.insert(item.path)
+				// gitignore は結果確定後にバックグラウンドで (空なら不要)。
+				guard !result.isEmpty else { return }
+				DispatchQueue.global().async {
+					let ignored = project.provider.gitCheckIgnore(rootPath, paths: result.map(\.name))
+					if !ignored.isEmpty {
+						DispatchQueue.main.async {
+							for item in result where ignored.contains(item.name) {
+								self.ignoredPaths.insert(item.path)
+							}
+						}
 					}
 				}
 			}
@@ -80,6 +93,9 @@ class FileTreeState: ObservableObject {
 	func refreshVisible(project: Project, rootPath: String) {
 		DispatchQueue.global().async {
 			let rootItems = project.provider.listDirectory(rootPath)
+			// 接続 (RPC) 未確立で空が返った時は、既存表示を空で上書きしない
+			// (再接続中の refresh でツリーが一瞬消えるのを防ぐ)。
+			if rootItems.isEmpty && !project.provider.isReady { return }
 			// Refresh expanded directories
 			var updatedCache: [String: [FileItem]] = [:]
 			for path in self.expandedPaths {
