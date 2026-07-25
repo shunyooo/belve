@@ -739,6 +739,16 @@ struct FileTreeView: View {
 			// Tree-level drop indicator: row に hit しなかった drop を root に逃がす。
 			// 視認性確保のため枠線を太く + 鮮やかな赤に (= debug 中)。
 			.overlay { dropBorderOverlay }
+			// ツリーへの D&D アップロードを配線。active(=選択中 project) の時だけ
+			// dropDestination を付けるので、非選択 project の tree には drop が誤誘導
+			// されない。drop されたファイルは uploadFiles で root へアップロード。
+			.modifier(ProjectScopedDropModifier(
+				active: projectActive,
+				project: project,
+				dropState: dropState,
+				rootPath: rootPath,
+				onDrop: { urls, dest in uploadFiles(urls, to: dest) }
+			))
 			// Remote は SwiftUI dropDestination が反応 (per-row hover + border)、
 			// Local は SwiftUI が取りこぼすので NSView 経路 (background) も同居させる。
 			// どちらが発火しても isTreeDropTargeted (= OR) で border 表示。
@@ -939,41 +949,83 @@ struct FileTreeView: View {
 	/// フォーカス中のフォルダ (or ファイルの親ディレクトリ) を送信先にする。
 	private func pasteFromClipboard() {
 		let pb = NSPasteboard.general
-		guard let urls = pb.readObjects(forClasses: [NSURL.self], options: [
-			.urlReadingFileURLsOnly: true
-		]) as? [URL], !urls.isEmpty else {
-			state.showStatus("No files in clipboard")
+		let destination = currentUploadDestination()
+		// (1) ファイル URL があればそれをアップロード。
+		if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+			uploadFiles(urls, to: destination)
 			return
 		}
-
-		// 送信先: フォーカス中のパスがディレクトリならそのまま、ファイルなら親
-		let destination: String
-		if let focused = state.focusedPath {
-			if state.items.contains(where: { $0.path == focused && $0.isDirectory }) ||
-			   state.childrenCache.keys.contains(focused) {
-				destination = focused
-			} else {
-				destination = (focused as NSString).deletingLastPathComponent
-			}
-		} else {
-			destination = rootPath
+		// (2) 画像データ (スクショ等。file URL ではないので (1) に載らない) を
+		//     temp PNG に書き出してアップロード。従来はここが無く「反映されない」原因だった。
+		if let imageURL = clipboardImageTempURL(pb) {
+			uploadFiles([imageURL], to: destination)
+			return
 		}
+		state.showStatus("クリップボードにファイル/画像がありません")
+	}
 
+	/// アップロード先: フォーカス中パスがディレクトリならそこ、ファイルなら親、無ければ root。
+	private func currentUploadDestination() -> String {
+		guard let focused = state.focusedPath else { return rootPath }
+		if state.items.contains(where: { $0.path == focused && $0.isDirectory }) ||
+		   state.childrenCache.keys.contains(focused) {
+			return focused
+		}
+		return (focused as NSString).deletingLastPathComponent
+	}
+
+	/// クリップボードの画像データ (png / tiff) を temp PNG に保存し URL を返す。無ければ nil。
+	private func clipboardImageTempURL(_ pb: NSPasteboard) -> URL? {
+		let pngData: Data?
+		if let png = pb.data(forType: .png) {
+			pngData = png
+		} else if let tiff = pb.data(forType: .tiff), let rep = NSBitmapImageRep(data: tiff) {
+			pngData = rep.representation(using: .png, properties: [:])
+		} else {
+			return nil
+		}
+		guard let data = pngData else { return nil }
+		let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("belve-clipboard")
+		try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+		let ts = Int(Date().timeIntervalSince1970 * 1000)
+		let url = URL(fileURLWithPath: (dir as NSString).appendingPathComponent("pasted-\(ts).png"))
+		do { try data.write(to: url); return url } catch {
+			NSLog("[Belve] failed to save pasted image: \(error)")
+			return nil
+		}
+	}
+
+	/// urls を destination 配下へ順次アップロードし、進捗をステータス表示する
+	/// (paste / drag-drop 共通)。進捗が分からないストレスを解消するため、開始・
+	/// 途中 (k/N)・完了/失敗を showStatus で明示する。
+	func uploadFiles(_ urls: [URL], to destination: String) {
+		guard !urls.isEmpty else { return }
 		let provider = project.provider
-		var uploaded = 0
-		for url in urls {
-			let destPath = (destination as NSString).appendingPathComponent(url.lastPathComponent)
-			DispatchQueue.global(qos: .userInitiated).async {
+		let total = urls.count
+		state.showStatus(total == 1 ? "アップロード中…" : "アップロード中… 0/\(total)")
+		DispatchQueue.global(qos: .userInitiated).async {
+			var done = 0
+			var failed = 0
+			for url in urls {
+				let destPath = (destination as NSString).appendingPathComponent(url.lastPathComponent)
 				let ok = provider.uploadFile(localURL: url, to: destPath)
 				DispatchQueue.main.async {
 					if ok {
-						uploaded += 1
-						state.refreshVisible(project: project, rootPath: rootPath)
-						if uploaded == urls.count {
-							state.showStatus("\(uploaded) file(s) pasted")
-						}
+						done += 1
 					} else {
-						NSLog("[Belve] paste upload failed: \(url.lastPathComponent) -> \(destPath)")
+						failed += 1
+						NSLog("[Belve] upload failed: %@ -> %@", url.lastPathComponent, destPath)
+					}
+					let n = done + failed
+					if n < total {
+						state.showStatus("アップロード中… \(n)/\(total)")
+					} else {
+						state.refreshVisible(project: project, rootPath: rootPath)
+						if failed == 0 {
+							state.showStatus(total == 1 ? "アップロード完了" : "\(done) 件アップロード完了")
+						} else {
+							state.showStatus("\(done) 件完了 / \(failed) 件失敗")
+						}
 					}
 				}
 			}
@@ -983,22 +1035,6 @@ struct FileTreeView: View {
 	/// `.dropDestination(for: URL.self)` 経由の drop ハンドラ。NSItemProvider 経由の
 	/// `.onDrop` だと local Finder drag で isTargeted が反応しない事象があるため、
 	/// modern Transferable API に統一する。
-	private func handleURLDrop(urls: [URL], destination: String) {
-		let provider = project.provider
-		for url in urls {
-			let destPath = (destination as NSString).appendingPathComponent(url.lastPathComponent)
-			DispatchQueue.global(qos: .userInitiated).async {
-				let ok = provider.uploadFile(localURL: url, to: destPath)
-				DispatchQueue.main.async {
-					if ok {
-						state.refreshVisible(project: project, rootPath: rootPath)
-					} else {
-						NSLog("[Belve] upload failed: \(url.lastPathComponent) -> \(destPath)")
-					}
-				}
-			}
-		}
-	}
 }
 
 /// ルート直下に新規ファイル作成中だけ表示される TextField row。
