@@ -3,7 +3,7 @@ import Foundation
 /// discovered セッション = tuple(SessionKey, 粗い導出 status)。
 /// `SessionDiscoveryService.discover` の返り値であり、`AgentSessionStore.mergeDiscovered`
 /// の入力。SessionKey = tmux セッション名。
-typealias DiscoveredSession = (sessionKey: String, coarseStatus: AgentStatus)
+typealias DiscoveredSession = (sessionKey: String, coarseStatus: AgentStatus, message: String)
 
 /// Belve が起動していない (= OSC hook を張っていない) tmux セッションのうち、
 /// **agent ツールが検出されたもの** を `tmux ls` 発見＋ pane プロセス観測で導出するサービス。
@@ -66,21 +66,32 @@ final class SessionDiscoveryService {
 	///   prefix 一致セッションが全て bare shell で agent 未検出のケースを含む)。返される各
 	///   エントリの coarseStatus は常に `.working`。
 	func discover(projectId: UUID, filterPrefix: String = "belve-") -> [DiscoveredSession] {
-		guard let raw = runCommand("tmux list-sessions -F '#{session_name}'") else {
+		// 1 回の list-sessions で名前 + belve フックが書いた状態 (@belve_state / @belve_msg)
+		// を取る。フックが状態を書いていれば **名前を問わず** agent セッションとして surface
+		// し、fine な状態を反映する (clay-seto 等の非 belve- 名も拾える)。フック未装着でも
+		// belve- セッションで agent プロセスが走っていれば従来どおり粗く .working で surface。
+		guard let raw = runCommand("tmux list-sessions -F '#{session_name}\t#{@belve_state}\t#{@belve_msg}'") else {
 			// runner が nil = tmux 未起動 / セッション無し。明示的に「セッション無し」を返す
 			// (silent fallback ではなく、単に発見対象が存在しない状態)。
 			return []
 		}
-		let names = raw
-			.split(whereSeparator: { $0.isNewline })
-			.map { $0.trimmingCharacters(in: .whitespaces) }
-			.filter { !$0.isEmpty && $0.hasPrefix(filterPrefix) }
-
-		return names.compactMap { name in
-			// agent が検出されたセッションだけ surface (§8.2 昇格ゲート)。
-			guard hasAgent(inSession: name) else { return nil }
-			return (sessionKey: name, coarseStatus: .working)
+		var out: [DiscoveredSession] = []
+		for line in raw.split(whereSeparator: { $0.isNewline }) {
+			let parts = String(line).components(separatedBy: "\t")
+			let name = parts.first?.trimmingCharacters(in: .whitespaces) ?? ""
+			guard !name.isEmpty else { continue }
+			let belveState = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+			let belveMsg = parts.count > 2 ? parts[2] : ""
+			if !belveState.isEmpty {
+				// フックが状態を書いている = agent セッション (昇格ゲート成立)。
+				let status = AgentStatus(rawValue: belveState) ?? .working
+				out.append((sessionKey: name, coarseStatus: status, message: belveMsg))
+			} else if name.hasPrefix(filterPrefix), hasAgent(inSession: name) {
+				// フック未装着だが agent プロセスが走る belve- セッション → 粗く working。
+				out.append((sessionKey: name, coarseStatus: .working, message: ""))
+			}
 		}
+		return out
 	}
 
 	/// 指定セッションの pane foreground プロセスを列挙し、いずれかが `agentCommands` に

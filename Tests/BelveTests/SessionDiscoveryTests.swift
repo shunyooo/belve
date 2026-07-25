@@ -58,6 +58,25 @@ final class SessionDiscoveryTests: XCTestCase {
 		XCTAssertTrue(discovered.allSatisfy { $0.coarseStatus == .working })
 	}
 
+	// (a2) @belve_state が書かれているセッションは、名前の prefix を問わず fine な状態で
+	//      surface する (フックが状態を書く = 昇格ゲート成立)。running→working, waiting→blocked。
+	func testBelveStateSurfacesAnyNameWithFineStatus() {
+		let runner = FakeRunner()
+		runner.sessionsOutput = """
+		clay-seto\trunning\tediting foo.py
+		peakrail\twaiting\tneeds permission
+		bare-session\t\t
+		"""
+		// bare-session は @belve_state 空 かつ belve- prefix でないので fallback でも除外。
+		let service = SessionDiscoveryService(runCommand: runner.run)
+		let discovered = service.discover(projectId: projectA)
+
+		XCTAssertEqual(discovered.map { $0.sessionKey }, ["clay-seto", "peakrail"])
+		XCTAssertEqual(discovered.first(where: { $0.sessionKey == "clay-seto" })?.coarseStatus, .working)
+		XCTAssertEqual(discovered.first(where: { $0.sessionKey == "clay-seto" })?.message, "editing foo.py")
+		XCTAssertEqual(discovered.first(where: { $0.sessionKey == "peakrail" })?.coarseStatus, .blocked)
+	}
+
 	// (a') tmux 未起動 (runner nil) / 空出力は空配列。
 	func testNilOrEmptyOutputYieldsEmpty() {
 		let runner = FakeRunner()
@@ -102,8 +121,8 @@ final class SessionDiscoveryTests: XCTestCase {
 	func testMergeInsertsNewDiscoveredSessions() {
 		let store = AgentSessionStore()
 		store.mergeDiscovered([
-			(sessionKey: "belve-x", coarseStatus: .working),
-			(sessionKey: "belve-y", coarseStatus: .idle),
+			(sessionKey: "belve-x", coarseStatus: .working, message: ""),
+			(sessionKey: "belve-y", coarseStatus: .idle, message: ""),
 		], projectId: projectA)
 
 		let x = store.session(for: "belve-x")
@@ -126,7 +145,7 @@ final class SessionDiscoveryTests: XCTestCase {
 		XCTAssertEqual(store.session(for: "belve-osc")?.origin, .launched)
 
 		// discovery が同じ SessionKey を working として報告しても上書きしない。
-		store.mergeDiscovered([(sessionKey: "belve-osc", coarseStatus: .working)], projectId: projectA)
+		store.mergeDiscovered([(sessionKey: "belve-osc", coarseStatus: .working, message: "")], projectId: projectA)
 		XCTAssertEqual(store.session(for: "belve-osc")?.state.status, .blocked)
 		XCTAssertEqual(store.session(for: "belve-osc")?.origin, .launched)
 	}
@@ -134,10 +153,10 @@ final class SessionDiscoveryTests: XCTestCase {
 	// (d') 既存 .discovered は粗い status を更新する (discovery が所有し続ける)。
 	func testMergeUpdatesExistingDiscoveredStatus() {
 		let store = AgentSessionStore()
-		store.mergeDiscovered([(sessionKey: "belve-d", coarseStatus: .idle)], projectId: projectA)
+		store.mergeDiscovered([(sessionKey: "belve-d", coarseStatus: .idle, message: "")], projectId: projectA)
 		XCTAssertEqual(store.session(for: "belve-d")?.state.status, .idle)
 
-		store.mergeDiscovered([(sessionKey: "belve-d", coarseStatus: .working)], projectId: projectA)
+		store.mergeDiscovered([(sessionKey: "belve-d", coarseStatus: .working, message: "")], projectId: projectA)
 		XCTAssertEqual(store.session(for: "belve-d")?.state.status, .working)
 		XCTAssertEqual(store.session(for: "belve-d")?.origin, .discovered)
 	}
@@ -146,12 +165,12 @@ final class SessionDiscoveryTests: XCTestCase {
 	func testMergeMarksAbsentDiscoveredAsSessionEnd() {
 		let store = AgentSessionStore()
 		store.mergeDiscovered([
-			(sessionKey: "belve-gone", coarseStatus: .working),
-			(sessionKey: "belve-stay", coarseStatus: .working),
+			(sessionKey: "belve-gone", coarseStatus: .working, message: ""),
+			(sessionKey: "belve-stay", coarseStatus: .working, message: ""),
 		], projectId: projectA)
 
 		// 次の poll で belve-gone が消える。
-		store.mergeDiscovered([(sessionKey: "belve-stay", coarseStatus: .working)], projectId: projectA)
+		store.mergeDiscovered([(sessionKey: "belve-stay", coarseStatus: .working, message: "")], projectId: projectA)
 
 		XCTAssertEqual(store.session(for: "belve-gone")?.state.status, .sessionEnd)
 		XCTAssertEqual(store.session(for: "belve-stay")?.state.status, .working)
@@ -165,7 +184,7 @@ final class SessionDiscoveryTests: XCTestCase {
 		XCTAssertEqual(store.session(for: "belve-launched")?.state.status, .working)
 
 		// discovery が別セッションだけ報告 (launched は list に居ない) → launched は working のまま。
-		store.mergeDiscovered([(sessionKey: "belve-other", coarseStatus: .idle)], projectId: projectA)
+		store.mergeDiscovered([(sessionKey: "belve-other", coarseStatus: .idle, message: "")], projectId: projectA)
 		XCTAssertEqual(store.session(for: "belve-launched")?.state.status, .working)
 		XCTAssertEqual(store.session(for: "belve-launched")?.origin, .launched)
 	}

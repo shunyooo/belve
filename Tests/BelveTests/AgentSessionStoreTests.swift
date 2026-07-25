@@ -163,7 +163,7 @@ final class AgentSessionStoreTests: XCTestCase {
 		let store = AgentSessionStore()
 
 		// discovery first surfaces the raw tmux session (origin == .discovered).
-		store.mergeDiscovered([(sessionKey: "belve-A", coarseStatus: .idle)], projectId: projectA)
+		store.mergeDiscovered([(sessionKey: "belve-A", coarseStatus: .idle, message: "")], projectId: projectA)
 		XCTAssertEqual(store.session(for: "belve-A")?.origin, .discovered)
 
 		// OSC's first observed event is a .working (no session_start) — goes through mutate.

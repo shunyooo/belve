@@ -300,9 +300,13 @@ final class AgentSessionStore: ObservableObject {
 			if let idx = sessions.firstIndex(where: { $0.id == entry.sessionKey }) {
 				// (2) OSC 追跡中の .launched は権威。state を一切上書きしない。
 				if sessions[idx].origin == .launched { continue }
-				// (3) discovery 所有の既存セッション → 粗い status を更新。
+				// (3) discovery 所有の既存セッション → status / message を更新。
 				if sessions[idx].state.status != entry.coarseStatus {
 					sessions[idx].state.status = entry.coarseStatus
+					statusChanged = true
+				}
+				if !entry.message.isEmpty, sessions[idx].state.message != entry.message {
+					sessions[idx].state.message = entry.message
 					statusChanged = true
 				}
 				sessions[idx].updatedAt = Date()
@@ -313,7 +317,7 @@ final class AgentSessionStore: ObservableObject {
 					id: entry.sessionKey,
 					projectId: projectId,
 					name: "",
-					state: AgentState(status: entry.coarseStatus),
+					state: AgentState(status: entry.coarseStatus, message: entry.message),
 					origin: .discovered
 				)
 				sessions.insert(session, at: 0)
