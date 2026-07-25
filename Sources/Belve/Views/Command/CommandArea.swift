@@ -310,6 +310,12 @@ class CommandAreaState: ObservableObject {
 	private func spawnNode(_ paneId: UUID, newPaneId: UUID, direction: SplitDirection, in node: PaneNode) -> Bool {
 		if node.paneId == paneId && node.isLeaf {
 			let existing = PaneNode(paneId: node.paneId, paneIndex: node.paneIndex)
+			// 分割で残す側の pane のセッション紐付け (attach/命名) を引き継ぐ。
+			// これを忘れると、紐付け済み pane の隣に split した瞬間に binding が
+			// 消え、保存 → 再起動で再現されなくなる。
+			existing.overrideSocket = node.overrideSocket
+			existing.sessionNameOverride = node.sessionNameOverride
+			existing.tmuxSessionOverride = node.tmuxSessionOverride
 			let newPane = PaneNode(paneId: newPaneId, paneIndex: nextPaneIndex)
 			nextPaneIndex += 1
 			node.paneId = nil

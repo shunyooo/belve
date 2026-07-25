@@ -33,6 +33,20 @@ final class PaneCreationTests: XCTestCase {
 		XCTAssertNil(leaf?.sessionNameOverride)
 	}
 
+	// 紐付け済み pane の隣に split しても、その pane の override は保持される
+	// (spawnNode が残す側へ引き継ぐ)。回帰防止。
+	func testSplitPreservesExistingPaneOverride() {
+		let state = CommandAreaState()
+		guard let first = state.root.paneId else { return XCTFail("no first pane") }
+		state.findLeafByPaneId(first, in: state.root)?.tmuxSessionOverride = "clay-seto"
+		state.findLeafByPaneId(first, in: state.root)?.overrideSocket = "/tmp/x.sock"
+		state.activePaneId = first
+		state.addPane(direction: .vertical)
+		let leaf = state.findLeafByPaneId(first, in: state.root)
+		XCTAssertEqual(leaf?.tmuxSessionOverride, "clay-seto")
+		XCTAssertEqual(leaf?.overrideSocket, "/tmp/x.sock")
+	}
+
 	// allLeaves は現在レイアウトの全 leaf pane を返す (使用中セッション集計の土台)。
 	func testAllLeavesCountsPanes() {
 		let state = CommandAreaState()

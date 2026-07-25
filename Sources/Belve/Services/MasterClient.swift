@@ -268,6 +268,17 @@ final class MasterClient: @unchecked Sendable {
 		_ = try await send(op: "killSession", params: ["name": name])
 	}
 
+	/// 指定 host の tmux セッションの現在画面を plain text で取得する
+	/// (チューザで選択中セッションのプレビュー用)。
+	func captureRemotePane(host: String, session: String) async throws -> String {
+		let res = try await send(op: "captureRemotePane", params: ["host": host, "session": session])
+		guard res.ok else {
+			throw NSError(domain: "Belve.MasterClient", code: 1,
+			              userInfo: [NSLocalizedDescriptionKey: res.error ?? "capture-pane failed"])
+		}
+		return res.result?["content"] as? String ?? ""
+	}
+
 	/// 指定 host 上の tmux セッションを列挙する (リモートプロジェクトのチューザ用)。
 	/// remote tmux セッションはローカル socket を持たないので socket は空。attach は
 	/// セッション名 (tmux `#S`) で行う。

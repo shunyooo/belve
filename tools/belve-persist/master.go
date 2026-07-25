@@ -27,7 +27,7 @@ import (
 // Master が公開する API のバージョン。Belve.app は handshake でこの値を
 // 確認し、想定と違ったら master を kill → spawn し直して新版に attach する
 // (= broker の version negotiation 議論を Mac 側に持ってきた版)。
-const macMasterVersion = "1.5" // 1.5: listRemoteSessions に activity/command 追加
+const macMasterVersion = "1.6" // 1.6: captureRemotePane op 追加
 
 // Master 起動時に記録する自身の binary identity。version 応答に含めて
 // Belve.app 側が「app bundle 内の binary と違ったら respawn」判定に使う。
@@ -186,6 +186,8 @@ func masterDispatch(req masterReq) masterRes {
 		return opRenameSession(req)
 	case "listRemoteSessions":
 		return opListRemoteSessions(req)
+	case "captureRemotePane":
+		return opCaptureRemotePane(req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
@@ -418,6 +420,29 @@ func opListRemoteSessions(req masterReq) masterRes {
 		sessions = []map[string]interface{}{}
 	}
 	return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{"sessions": sessions}}
+}
+
+// shellSingleQuote は文字列を sh の単一引用符で安全に囲む (インジェクション防止)。
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// captureRemotePane: 指定 host の tmux セッションの現在画面を plain text で返す
+// (チューザで選択中セッションのプレビュー表示用)。`tmux capture-pane -p`。
+func opCaptureRemotePane(req masterReq) masterRes {
+	host := strParam(req.Params, "host")
+	session := strParam(req.Params, "session")
+	if host == "" || session == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "host and session required"}
+	}
+	tmuxCmd := fmt.Sprintf("tmux capture-pane -p -t %s 2>/dev/null || true", shellSingleQuote(session))
+	args := append([]string{}, sshOpts(host)...)
+	args = append(args, host, tmuxCmd)
+	out, err := exec.Command("ssh", args...).CombinedOutput()
+	if err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("ssh capture-pane: %v: %s", err, string(out))}
+	}
+	return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{"content": string(out)}}
 }
 
 // killSession: 指定セッションの daemon を終了し、socket ファイルを削除する。
