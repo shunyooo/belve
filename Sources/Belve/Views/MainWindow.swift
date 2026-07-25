@@ -53,6 +53,8 @@ struct MainWindow: View {
 		case commands
 		case sshHosts
 		case folderBrowser
+		/// 新規プロジェクトのワークスペース (ホスト) 選択。ローカル or SSH ホスト。
+		case newProjectHost
 	}
 
 	var body: some View {
@@ -120,9 +122,6 @@ struct MainWindow: View {
 				pendingPaneDirection = dir
 				showPaneChooser = true
 			}
-			// option b: 初回未選択のプロジェクトを開いた/切り替えたら自動でチューザを出す。
-			.onChange(of: projectStore.selectedProject?.id) { _, _ in maybeOpenInitialChooser() }
-			.task { maybeOpenInitialChooser() }
 			.overlay {
 				if let pending = lspManager.pendingInstall {
 					Color.black.opacity(0.3)
@@ -286,7 +285,7 @@ struct MainWindow: View {
 					}
 				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveNewProject)) { _ in
-					DispatchQueue.main.async { [self] in let _ = projectStore.addProject() }
+					DispatchQueue.main.async { [self] in startNewProject() }
 				}
 				.onReceive(NotificationCenter.default.publisher(for: .belveReloadProject)) { notif in
 					DispatchQueue.main.async { [self] in
@@ -469,7 +468,7 @@ struct MainWindow: View {
 					get: { projectStore.selectedProject },
 					set: { projectStore.select($0) }
 				),
-				onAddProject: { let _ = projectStore.addProject() },
+				onAddProject: { startNewProject() },
 				onToggleSidebar: toggleSidebar,
 				onRenameProject: { id, name in projectStore.renameProject(id, name: name) },
 				onDeleteProject: { id in projectStore.deleteProject(id) },
@@ -543,7 +542,7 @@ struct MainWindow: View {
 			}
 		} else {
 			WelcomeView {
-				let _ = projectStore.addProject()
+				startNewProject()
 			}
 		}
 	}
@@ -666,6 +665,9 @@ struct MainWindow: View {
 						provider: projectStore.selectedProject?.provider ?? LocalProvider(path: nil)
 					) { path in
 						projectStore.setProjectFolder(path)
+						// ワークスペース確定後、続けてセッション選択チューザを開く
+						// (新規プロジェクトの 3 段目 / フォルダ変更で clean slate)。
+						DispatchQueue.main.async { maybeOpenInitialChooser() }
 					}
 					.padding(.top, 80)
 				default:
@@ -1061,9 +1063,35 @@ struct MainWindow: View {
 			return buildMainCommands()
 		case .sshHosts:
 			return buildSSHHostCommands()
+		case .newProjectHost:
+			return buildNewProjectHostCommands()
 		case .folderBrowser:
 			return []
 		}
+	}
+
+	/// 新規プロジェクトのワークスペース (ホスト) 選択。ローカル or ~/.ssh/config の
+	/// ホスト。選ぶと project を作り、続けてフォルダ選択 (openFolder) に進む。
+	private func buildNewProjectHostCommands() -> [PaletteCommand] {
+		var cmds: [PaletteCommand] = [
+			PaletteCommand(title: "ローカル", icon: "desktopcomputer") {
+				let _ = projectStore.addProject()
+				openFolder()
+			}
+		]
+		for host in SSHConfigParser.parse() {
+			cmds.append(PaletteCommand(title: host.name, icon: "network") {
+				let _ = projectStore.addProject(sshHost: host.name)
+				openFolder()
+			})
+		}
+		return cmds
+	}
+
+	/// 新規プロジェクト作成の起点。ホスト選択 → フォルダ選択 → セッション選択 と進む。
+	private func startNewProject() {
+		paletteMode = .newProjectHost
+		commandPaletteState.isPresented = true
 	}
 
 	private static func toggleAnimation(isShowing: Bool) -> Animation {
@@ -1117,7 +1145,7 @@ struct MainWindow: View {
 			BrowserWindowManager.shared.recenterAllBrowserWindows()
 		})
 		cmds.append(PaletteCommand(title: "New Project", icon: "plus") {
-			let _ = projectStore.addProject()
+			startNewProject()
 		})
 		cmds.append(PaletteCommand(title: "Delete Project", icon: "trash") {
 			if let id = projectStore.selectedProject?.id {
