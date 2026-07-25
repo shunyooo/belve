@@ -98,11 +98,14 @@ struct MainWindow: View {
 						project: project,
 						projectNamesByShort: projectNamesByShort(),
 						defaultName: suggestedPaneName(for: project.id),
+						inUseNames: stateManager.inUseSessionNames(),
 						onCreateNew: { name in
+							guard showPaneChooser else { return }
 							showPaneChooser = false
 							createNewPane(name: name)
 						},
 						onAttach: { socketPath in
+							guard showPaneChooser else { return }
 							showPaneChooser = false
 							attachNewPane(socketPath: socketPath)
 						},

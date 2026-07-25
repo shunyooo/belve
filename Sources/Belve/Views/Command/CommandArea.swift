@@ -151,6 +151,26 @@ class CommandAreaStateManager: ObservableObject {
 		DispatchQueue.main.asyncAfter(deadline: .now() + saveDebounce, execute: task)
 	}
 
+	/// 現在レイアウトに存在する全 pane の belve-persist セッション名。
+	/// ペイン追加チューザで「既に開いているセッション」をアタッチ候補から除くのに使う。
+	/// Phase1 では state のキー viewId == projectId なので projShort = key.prefix(8)。
+	func inUseSessionNames() -> Set<String> {
+		var names: Set<String> = []
+		for (viewId, state) in states {
+			let projShort = String(viewId.uuidString.prefix(8))
+			for leaf in state.allLeaves() {
+				guard let pid = leaf.paneId else { continue }
+				names.insert(PaneSessionNaming.sessionName(
+					projShort: projShort,
+					paneIdString: pid.uuidString,
+					sessionNameOverride: leaf.sessionNameOverride,
+					overrideSocket: leaf.overrideSocket
+				))
+			}
+		}
+		return names
+	}
+
 	/// Wrapper that persists both the pane tree and the high-water pane index
 	/// so that closed-pane indices are never reused (which would reconnect to
 	/// a stale belve-persist daemon session).
@@ -428,6 +448,17 @@ class CommandAreaState: ObservableObject {
 			if let found = findLeafByPaneId(paneId, in: child) { return found }
 		}
 		return nil
+	}
+
+	/// レイアウト内の全 leaf pane。使用中セッション名の集計に使う。
+	func allLeaves() -> [PaneNode] {
+		var out: [PaneNode] = []
+		func walk(_ node: PaneNode) {
+			if node.isLeaf { out.append(node); return }
+			for child in node.children ?? [] { walk(child) }
+		}
+		walk(root)
+		return out
 	}
 
 	/// Public alias for `firstLeaf(root)` used by CommandAreaStateManager.load().

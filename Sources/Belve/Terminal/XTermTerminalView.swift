@@ -509,19 +509,13 @@ struct XTermTerminalView: NSViewRepresentable {
 						postDisconnectedState(isDisconnected: true)
 						return
 					}
-					let sockPath: String
-					let sessionName: String
-					if let override = self.overrideSocket {
-						sockPath = override
-						sessionName = (override as NSString).lastPathComponent.replacingOccurrences(of: ".sock", with: "")
-					} else if let named = Self.sanitizedSessionToken(self.sessionNameOverride) {
-						sessionName = "belve-\(projShort)-\(named)"
-						sockPath = "/tmp/belve-shell/sessions/\(sessionName).sock"
-					} else {
-						let paneIdShort = String((paneId ?? UUID().uuidString).prefix(8))
-						sessionName = "belve-\(projShort)-\(paneIdShort)"
-						sockPath = "/tmp/belve-shell/sessions/\(sessionName).sock"
-					}
+					let sessionName = PaneSessionNaming.sessionName(
+						projShort: projShort,
+						paneIdString: paneId ?? UUID().uuidString,
+						sessionNameOverride: self.sessionNameOverride,
+						overrideSocket: self.overrideSocket
+					)
+					let sockPath = self.overrideSocket ?? PaneSessionNaming.socketPath(for: sessionName)
 					try? FileManager.default.createDirectory(
 						atPath: "/tmp/belve-shell/sessions",
 						withIntermediateDirectories: true
@@ -549,17 +543,6 @@ struct XTermTerminalView: NSViewRepresentable {
 					self?.commandAreaState?.activePaneId = paneUUID
 				}
 			}
-		}
-
-		/// ユーザー入力のセッション名を socket ファイル名 / tmux セッション名に
-		/// 使える token へ正規化する。許可外文字は `-` に置換、前後の `-` は除去。
-		/// 空 (または全て不正文字) の場合は nil を返し、呼び出し側は自動命名へ倒す。
-		static func sanitizedSessionToken(_ raw: String?) -> String? {
-			guard let raw else { return nil }
-			let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
-			let mapped = String(raw.map { allowed.contains($0) ? $0 : "-" })
-			let trimmed = mapped.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-			return trimmed.isEmpty ? nil : trimmed
 		}
 
 		/// Resolve the path to the bundled `belve-persist-darwin-arm64` binary.
@@ -1154,10 +1137,17 @@ struct XTermTerminalView: NSViewRepresentable {
 				postReconnectingState(attempt: ptyRetryCount, max: Self.ptyMaxRetries)
 				// Remote: daemon の reconnect ループに任せる（最初の数回）。
 				// 繰り返し失敗する場合のみ daemon を kill して新規作成。
-				if project.isRemote, let paneId, ptyRetryCount > 5 {
+				// overrideSocket 付き (= 他セッションへ相乗り中) の pane は共有 daemon を
+				// kill すると他 pane を巻き込むので対象外。自分専用セッションの pane だけ掃除。
+				if project.isRemote, let paneId, ptyRetryCount > 5, self.overrideSocket == nil {
 					let projShort = String(project.id.uuidString.prefix(8))
-					let paneIdShort = String(paneId.prefix(8))
-					let sockPath = "/tmp/belve-shell/sessions/belve-\(projShort)-\(paneIdShort).sock"
+					let sessionName = PaneSessionNaming.sessionName(
+						projShort: projShort,
+						paneIdString: paneId,
+						sessionNameOverride: self.sessionNameOverride,
+						overrideSocket: nil
+					)
+					let sockPath = PaneSessionNaming.socketPath(for: sessionName)
 					let pidPath = sockPath + ".pid"
 					if let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
 					   let pid = Int32(pidStr) {

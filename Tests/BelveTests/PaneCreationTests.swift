@@ -33,6 +33,15 @@ final class PaneCreationTests: XCTestCase {
 		XCTAssertNil(leaf?.sessionNameOverride)
 	}
 
+	// allLeaves は現在レイアウトの全 leaf pane を返す (使用中セッション集計の土台)。
+	func testAllLeavesCountsPanes() {
+		let state = CommandAreaState()
+		XCTAssertEqual(state.allLeaves().count, 1)
+		state.addPane()
+		state.addPane()
+		XCTAssertEqual(state.allLeaves().count, 3)
+	}
+
 	// 引数なしの addPane は従来どおり自動命名 (両 override とも nil)。
 	func testAddPaneWithoutArgsLeavesOverridesNil() {
 		let state = CommandAreaState()
@@ -55,14 +64,32 @@ final class PaneCreationTests: XCTestCase {
 
 	// セッション名トークンの正規化: 不正文字→'-'、前後の '-' 除去、空→nil。
 	func testSanitizedSessionToken() {
-		typealias C = XTermTerminalView.Coordinator
-		XCTAssertNil(C.sanitizedSessionToken(nil))
-		XCTAssertNil(C.sanitizedSessionToken(""))
-		XCTAssertNil(C.sanitizedSessionToken("   "))
-		XCTAssertNil(C.sanitizedSessionToken("!!!"))
-		XCTAssertEqual(C.sanitizedSessionToken("backend"), "backend")
-		XCTAssertEqual(C.sanitizedSessionToken("my session!"), "my-session")
-		XCTAssertEqual(C.sanitizedSessionToken("--api--"), "api")
-		XCTAssertEqual(C.sanitizedSessionToken("a_b-c1"), "a_b-c1")
+		XCTAssertNil(PaneSessionNaming.sanitizedToken(nil))
+		XCTAssertNil(PaneSessionNaming.sanitizedToken(""))
+		XCTAssertNil(PaneSessionNaming.sanitizedToken("   "))
+		XCTAssertNil(PaneSessionNaming.sanitizedToken("!!!"))
+		XCTAssertEqual(PaneSessionNaming.sanitizedToken("backend"), "backend")
+		XCTAssertEqual(PaneSessionNaming.sanitizedToken("my session!"), "my-session")
+		XCTAssertEqual(PaneSessionNaming.sanitizedToken("--api--"), "api")
+		XCTAssertEqual(PaneSessionNaming.sanitizedToken("a_b-c1"), "a_b-c1")
+	}
+
+	// セッション名の確定規則: overrideSocket → 命名 → paneId 自動、の優先順位。
+	func testSessionNameResolution() {
+		// overrideSocket 優先 (basename から .sock を除去)
+		XCTAssertEqual(
+			PaneSessionNaming.sessionName(projShort: "abc12345", paneIdString: "PANEIDXX-....", sessionNameOverride: "ignored", overrideSocket: "/tmp/belve-shell/sessions/belve-xyz-logs.sock"),
+			"belve-xyz-logs"
+		)
+		// ユーザー命名
+		XCTAssertEqual(
+			PaneSessionNaming.sessionName(projShort: "abc12345", paneIdString: "PANEIDXX-....", sessionNameOverride: "back end", overrideSocket: nil),
+			"belve-abc12345-back-end"
+		)
+		// 自動 (paneId 先頭8桁)
+		XCTAssertEqual(
+			PaneSessionNaming.sessionName(projShort: "abc12345", paneIdString: "0123456789ABCDEF", sessionNameOverride: nil, overrideSocket: nil),
+			"belve-abc12345-01234567"
+		)
 	}
 }
