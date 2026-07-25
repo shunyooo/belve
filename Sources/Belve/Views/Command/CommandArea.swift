@@ -121,6 +121,9 @@ class CommandAreaStateManager: ObservableObject {
 		}
 		let state = CommandAreaState()
 		state.onLayoutChanged = { [weak self] in self?.scheduleSave() }
+		// 永続レイアウトが無い = 新規プロジェクトの初回。チューザで選ばせる。
+		// (load() で復元された state はこの経路を通らないので false のまま。)
+		state.needsInitialChoice = true
 		states[projectId] = state
 		// 新 view 作成直後に paneId を pane-layouts.json へ即時永続化する。
 		// scheduleSave (200ms debounce) だと、view 作成 → すぐに Belve quit
@@ -230,6 +233,10 @@ class CommandAreaStateManager: ObservableObject {
 class CommandAreaState: ObservableObject {
 	@Published var root = PaneNode(paneId: UUID(), paneIndex: 0)
 	@Published var activePaneId: UUID?
+	/// 永続レイアウトが無い新規コマンドエリア = まだユーザーが最初のセッションを
+	/// 選んでいない状態。true の間は端末を起動せず、チューザで new/attach を選ばせる
+	/// (選ぶと firstLeaf に override を焼いて false 化)。永続化しない (transient)。
+	@Published var needsInitialChoice: Bool = false
 	private var nextPaneIndex = 1
 	/// Called when layout changes, so the manager can persist
 	var onLayoutChanged: (() -> Void)?
@@ -698,9 +705,35 @@ struct CommandArea: View {
 				onRetry: { projectStore.clearConnectionError(project.id) },
 				onDismiss: { projectStore.clearConnectionError(project.id) }
 			)
+		} else if state.needsInitialChoice {
+			initialChoicePlaceholder
 		} else {
 			paneLayoutView
 		}
+	}
+
+	/// 初回セッション未選択時のプレースホルダ。端末は起動せず、チューザ (⌘D) で
+	/// new/attach を選ばせる。選択すると needsInitialChoice が false 化して端末が出る。
+	private var initialChoicePlaceholder: some View {
+		VStack(spacing: 12) {
+			Image(systemName: "terminal")
+				.font(.system(size: 30))
+				.foregroundStyle(Theme.textTertiary)
+			Text("セッションを選択してください")
+				.font(.system(size: 13))
+				.foregroundStyle(Theme.textSecondary)
+			Button("セッションを選ぶ  ⌘D") {
+				NotificationCenter.default.post(name: .belveRequestAddPane, object: nil, userInfo: ["direction": "vertical"])
+			}
+			.buttonStyle(.plain)
+			.font(.system(size: 12, weight: .medium))
+			.foregroundStyle(Theme.accent)
+			.padding(.horizontal, 14)
+			.padding(.vertical, 7)
+			.background(RoundedRectangle(cornerRadius: 6).fill(Theme.accent.opacity(0.12)))
+		}
+		.frame(maxWidth: .infinity, maxHeight: .infinity)
+		.background(Theme.bg)
 	}
 
 	private var paneLayoutView: some View {

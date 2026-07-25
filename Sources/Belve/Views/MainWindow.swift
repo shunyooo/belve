@@ -120,6 +120,9 @@ struct MainWindow: View {
 				pendingPaneDirection = dir
 				showPaneChooser = true
 			}
+			// option b: 初回未選択のプロジェクトを開いた/切り替えたら自動でチューザを出す。
+			.onChange(of: projectStore.selectedProject?.id) { _, _ in maybeOpenInitialChooser() }
+			.task { maybeOpenInitialChooser() }
 			.overlay {
 				if let pending = lspManager.pendingInstall {
 					Color.black.opacity(0.3)
@@ -1261,33 +1264,57 @@ struct MainWindow: View {
 		return "pane-\(count + 1)"
 	}
 
-	/// チューザ「新規」確定。空名なら自動命名 (sessionName: nil)。
+	/// チューザ「新規」確定。remote は入力名を tmux セッション名に、local は
+	/// belve-persist セッション名に使う。空名なら自動命名。初回 (needsInitialChoice)
+	/// なら split せず既存の first pane を設定する。
 	private func createNewPane(name: String) {
 		guard let project = projectStore.selectedProject else { return }
 		let trimmed = name.trimmingCharacters(in: .whitespaces)
-		commandAreaState(for: project.id).addPane(
-			direction: pendingPaneDirection,
-			sessionName: trimmed.isEmpty ? nil : trimmed
-		)
-		stateManager.scheduleSave()
+		let remote = project.sshHost != nil
+		let sessionName = (!remote && !trimmed.isEmpty) ? trimmed : nil
+		let tmuxName = (remote && !trimmed.isEmpty) ? (PaneSessionNaming.sanitizedToken(trimmed) ?? trimmed) : nil
+		applyChoice(project: project, sessionName: sessionName, overrideSocket: nil, tmuxSessionName: tmuxName)
 	}
 
 	/// チューザ「既存にアタッチ」確定。remote は tmux セッション名で、local は
-	/// belve-persist socket で新 pane を該当セッションに接続して作る。
+	/// belve-persist socket で該当セッションに接続する。
 	private func attachNewPane(_ session: MasterClient.SessionInfo) {
 		guard let project = projectStore.selectedProject else { return }
-		if project.sshHost != nil {
-			commandAreaState(for: project.id).addPane(
-				direction: pendingPaneDirection,
-				tmuxSessionName: session.name
-			)
+		let remote = project.sshHost != nil
+		applyChoice(project: project,
+		            sessionName: nil,
+		            overrideSocket: remote ? nil : session.socket,
+		            tmuxSessionName: remote ? session.name : nil)
+	}
+
+	/// チューザの選択結果を適用する。初回 (needsInitialChoice) は既存 first pane を
+	/// 設定して端末を起動、そうでなければ新 pane を split して追加する。
+	private func applyChoice(project: Project, sessionName: String?, overrideSocket: String?, tmuxSessionName: String?) {
+		let state = commandAreaState(for: project.id)
+		if state.needsInitialChoice {
+			if let leaf = state.firstLeafPublic() {
+				leaf.sessionNameOverride = sessionName
+				leaf.overrideSocket = overrideSocket
+				leaf.tmuxSessionOverride = tmuxSessionName
+			}
+			state.needsInitialChoice = false
+			state.objectWillChange.send()
 		} else {
-			commandAreaState(for: project.id).addPane(
-				direction: pendingPaneDirection,
-				overrideSocket: session.socket
-			)
+			state.addPane(direction: pendingPaneDirection,
+			              sessionName: sessionName,
+			              overrideSocket: overrideSocket,
+			              tmuxSessionName: tmuxSessionName)
 		}
 		stateManager.scheduleSave()
+	}
+
+	/// 選択中プロジェクトが初回未選択なら自動でチューザを開く (option b)。
+	private func maybeOpenInitialChooser() {
+		guard !showPaneChooser, let project = projectStore.selectedProject else { return }
+		if commandAreaState(for: project.id).needsInitialChoice {
+			pendingPaneDirection = .vertical
+			showPaneChooser = true
+		}
 	}
 
 	// MARK: - Open file persistence
