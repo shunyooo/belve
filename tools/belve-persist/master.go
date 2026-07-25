@@ -27,7 +27,7 @@ import (
 // Master が公開する API のバージョン。Belve.app は handshake でこの値を
 // 確認し、想定と違ったら master を kill → spawn し直して新版に attach する
 // (= broker の version negotiation 議論を Mac 側に持ってきた版)。
-const macMasterVersion = "1.3" // 1.3: renameSession op 追加
+const macMasterVersion = "1.4" // 1.4: listRemoteSessions op 追加
 
 // Master 起動時に記録する自身の binary identity。version 応答に含めて
 // Belve.app 側が「app bundle 内の binary と違ったら respawn」判定に使う。
@@ -184,6 +184,8 @@ func masterDispatch(req masterReq) masterRes {
 		return opKillSession(req)
 	case "renameSession":
 		return opRenameSession(req)
+	case "listRemoteSessions":
+		return opListRemoteSessions(req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
@@ -362,6 +364,50 @@ func opListSessions(req masterReq) masterRes {
 			"socket":  sockPath,
 			"modTime": modTime,
 			"alive":   alive,
+		})
+	}
+	if sessions == nil {
+		sessions = []map[string]interface{}{}
+	}
+	return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{"sessions": sessions}}
+}
+
+// listRemoteSessions: 指定 host 上の tmux セッションを ssh ControlMaster 経由で
+// 列挙する (リモートプロジェクトのペイン追加チューザ用)。tmux 未起動 / セッション
+// 無しは空一覧扱い。フォーマットはタブ区切り: name<TAB>windows<TAB>attached。
+func opListRemoteSessions(req masterReq) masterRes {
+	host := strParam(req.Params, "host")
+	if host == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "host required"}
+	}
+	// `\t` は Go 文字列上で実タブになり、tmux -F にそのまま渡るので出力も実タブ区切り。
+	tmuxCmd := "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}' 2>/dev/null || true"
+	args := append([]string{}, sshOpts(host)...)
+	args = append(args, host, tmuxCmd)
+	out, err := exec.Command("ssh", args...).CombinedOutput()
+	if err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("ssh tmux ls: %v: %s", err, string(out))}
+	}
+	var sessions []map[string]interface{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		name := parts[0]
+		if name == "" {
+			continue
+		}
+		windows := ""
+		if len(parts) > 1 {
+			windows = parts[1]
+		}
+		attached := len(parts) > 2 && parts[2] != "0"
+		sessions = append(sessions, map[string]interface{}{
+			"name":     name,
+			"windows":  windows,
+			"attached": attached,
 		})
 	}
 	if sessions == nil {

@@ -42,6 +42,27 @@ final class PaneCreationTests: XCTestCase {
 		XCTAssertEqual(state.allLeaves().count, 3)
 	}
 
+	// addPane(tmuxSessionName:) は新 leaf に tmuxSessionOverride を焼き込む
+	// (remote 既存 tmux セッションへの attach 用)。他 override は nil。
+	func testAddPaneWithTmuxSessionSetsOverrideOnNewLeaf() {
+		let state = CommandAreaState()
+		let newId = state.addPane(direction: .vertical, tmuxSessionName: "clay-seto")
+		XCTAssertNotNil(newId)
+		let leaf = state.findLeafByPaneId(newId!, in: state.root)
+		XCTAssertEqual(leaf?.tmuxSessionOverride, "clay-seto")
+		XCTAssertNil(leaf?.sessionNameOverride)
+		XCTAssertNil(leaf?.overrideSocket)
+	}
+
+	// PaneNode の tmuxSessionOverride は Codable round-trip で保持される。
+	func testPaneNodeTmuxSessionOverrideCodableRoundTrip() throws {
+		let node = PaneNode(paneId: UUID(), paneIndex: 0)
+		node.tmuxSessionOverride = "peakrail"
+		let data = try JSONEncoder().encode(node)
+		let decoded = try JSONDecoder().decode(PaneNode.self, from: data)
+		XCTAssertEqual(decoded.tmuxSessionOverride, "peakrail")
+	}
+
 	// 引数なしの addPane は従来どおり自動命名 (両 override とも nil)。
 	func testAddPaneWithoutArgsLeavesOverridesNil() {
 		let state = CommandAreaState()

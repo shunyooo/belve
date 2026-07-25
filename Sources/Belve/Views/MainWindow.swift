@@ -99,15 +99,16 @@ struct MainWindow: View {
 						projectNamesByShort: projectNamesByShort(),
 						defaultName: suggestedPaneName(for: project.id),
 						inUseNames: stateManager.inUseSessionNames(),
+						remoteHost: project.sshHost,
 						onCreateNew: { name in
 							guard showPaneChooser else { return }
 							showPaneChooser = false
 							createNewPane(name: name)
 						},
-						onAttach: { socketPath in
+						onAttach: { session in
 							guard showPaneChooser else { return }
 							showPaneChooser = false
-							attachNewPane(socketPath: socketPath)
+							attachNewPane(session)
 						},
 						onDismiss: { showPaneChooser = false }
 					)
@@ -1271,13 +1272,21 @@ struct MainWindow: View {
 		stateManager.scheduleSave()
 	}
 
-	/// チューザ「既存にアタッチ」確定。新 pane を該当 socket に接続して作る。
-	private func attachNewPane(socketPath: String) {
+	/// チューザ「既存にアタッチ」確定。remote は tmux セッション名で、local は
+	/// belve-persist socket で新 pane を該当セッションに接続して作る。
+	private func attachNewPane(_ session: MasterClient.SessionInfo) {
 		guard let project = projectStore.selectedProject else { return }
-		commandAreaState(for: project.id).addPane(
-			direction: pendingPaneDirection,
-			overrideSocket: socketPath
-		)
+		if project.sshHost != nil {
+			commandAreaState(for: project.id).addPane(
+				direction: pendingPaneDirection,
+				tmuxSessionName: session.name
+			)
+		} else {
+			commandAreaState(for: project.id).addPane(
+				direction: pendingPaneDirection,
+				overrideSocket: session.socket
+			)
+		}
 		stateManager.scheduleSave()
 	}
 

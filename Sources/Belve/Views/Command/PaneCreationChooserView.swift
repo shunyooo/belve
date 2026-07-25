@@ -15,9 +15,16 @@ struct PaneCreationChooserView: View {
 	let defaultName: String
 	/// 既に pane で開いているセッション名。アタッチ候補から除外する。
 	let inUseNames: Set<String>
+	/// リモートプロジェクトの ssh host。nil = ローカル。set 時はこの host の
+	/// tmux セッションを列挙し、attach は tmux セッション名で行う。
+	let remoteHost: String?
 	let onCreateNew: (String) -> Void
-	let onAttach: (String) -> Void
+	/// アタッチ確定。ローカルは socket、リモートは tmux 名で解決するため
+	/// SessionInfo を渡し、呼び出し側 (MainWindow) が remote/local を分岐する。
+	let onAttach: (MasterClient.SessionInfo) -> Void
 	let onDismiss: () -> Void
+
+	private var isRemote: Bool { remoteHost != nil }
 
 	@State private var name: String
 	@State private var sessions: [MasterClient.SessionInfo] = []
@@ -36,14 +43,16 @@ struct PaneCreationChooserView: View {
 		projectNamesByShort: [String: String],
 		defaultName: String,
 		inUseNames: Set<String>,
+		remoteHost: String?,
 		onCreateNew: @escaping (String) -> Void,
-		onAttach: @escaping (String) -> Void,
+		onAttach: @escaping (MasterClient.SessionInfo) -> Void,
 		onDismiss: @escaping () -> Void
 	) {
 		self.project = project
 		self.projectNamesByShort = projectNamesByShort
 		self.defaultName = defaultName
 		self.inUseNames = inUseNames
+		self.remoteHost = remoteHost
 		self.onCreateNew = onCreateNew
 		self.onAttach = onAttach
 		self.onDismiss = onDismiss
@@ -58,10 +67,15 @@ struct PaneCreationChooserView: View {
 		a.modTime > b.modTime
 	}
 
-	/// アタッチ候補 = alive かつ未使用。使用中 / 停止中は除外する。
+	/// アタッチ候補。ローカルは alive かつ未使用のみ。リモート (tmux) は host 上の
+	/// 全セッションをそのまま出す (全 tmux セッション対象という方針)。
 	private var attachable: [MasterClient.SessionInfo] {
-		sessions.filter { $0.alive && !inUseNames.contains($0.name) }
+		if isRemote { return sessions.sorted(by: sortRule) }
+		return sessions.filter { $0.alive && !inUseNames.contains($0.name) }
 	}
+
+	/// リモート: host の全セッション (単一グループ)。
+	private var hostSessions: [MasterClient.SessionInfo] { attachable }
 
 	private var currentProjectSessions: [MasterClient.SessionInfo] {
 		attachable.filter { $0.name.contains(projShort) }.sorted(by: sortRule)
@@ -73,7 +87,7 @@ struct PaneCreationChooserView: View {
 
 	/// キーボードで辿れる行の並び (グループ順に flatten)。selectedIndex はこの配列に対応。
 	private var navigableSessions: [MasterClient.SessionInfo] {
-		currentProjectSessions + otherProjectSessions
+		isRemote ? hostSessions : currentProjectSessions + otherProjectSessions
 	}
 
 	var body: some View {
@@ -185,6 +199,15 @@ struct PaneCreationChooserView: View {
 					Image(systemName: "terminal").font(.system(size: 20)).foregroundStyle(Theme.textTertiary)
 					Text("アタッチできる既存セッションはありません").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
 				}
+			} else if isRemote {
+				ScrollView {
+					VStack(spacing: 0) {
+						groupHeader("このホストのセッション")
+						ForEach(Array(hostSessions.enumerated()), id: \.element.name) { offset, session in
+							sessionRow(session, index: offset)
+						}
+					}
+				}
 			} else {
 				ScrollView {
 					VStack(spacing: 0) {
@@ -250,25 +273,29 @@ struct PaneCreationChooserView: View {
 					.lineLimit(1)
 			}
 			Spacer()
-			Button("アタッチ") { onAttach(session.socket) }
+			Button("アタッチ") { onAttach(session) }
 				.buttonStyle(.plain)
 				.font(.system(size: 11, weight: .medium))
 				.foregroundStyle(Theme.accent)
 				.padding(.horizontal, 8)
 				.padding(.vertical, 3)
 				.background(RoundedRectangle(cornerRadius: 4).fill(Theme.accent.opacity(0.1)))
-			Button(action: { beginRename(session) }) {
-				Image(systemName: "pencil")
-					.font(.system(size: 10))
-					.foregroundStyle(Theme.textTertiary)
+			// rename/delete はローカル belve-persist セッション用 op。リモート tmux
+			// セッションには適用できないので remote では出さない。
+			if !isRemote {
+				Button(action: { beginRename(session) }) {
+					Image(systemName: "pencil")
+						.font(.system(size: 10))
+						.foregroundStyle(Theme.textTertiary)
+				}
+				.buttonStyle(.plain)
+				Button(action: { deleteSession(session.name) }) {
+					Image(systemName: "trash")
+						.font(.system(size: 10))
+						.foregroundStyle(Theme.textTertiary)
+				}
+				.buttonStyle(.plain)
 			}
-			.buttonStyle(.plain)
-			Button(action: { deleteSession(session.name) }) {
-				Image(systemName: "trash")
-					.font(.system(size: 10))
-					.foregroundStyle(Theme.textTertiary)
-			}
-			.buttonStyle(.plain)
 		}
 		.padding(.horizontal, 16)
 		.padding(.vertical, 8)
@@ -386,7 +413,7 @@ struct PaneCreationChooserView: View {
 		if selectedIndex == -1 {
 			submitNew()
 		} else if selectedIndex < navigableSessions.count {
-			onAttach(navigableSessions[selectedIndex].socket)
+			onAttach(navigableSessions[selectedIndex])
 		}
 	}
 
@@ -402,7 +429,11 @@ struct PaneCreationChooserView: View {
 			isLoading = true
 			error = nil
 			do {
-				sessions = try await MasterClient.shared.listSessions()
+				if let host = remoteHost {
+					sessions = try await MasterClient.shared.listRemoteSessions(host: host)
+				} else {
+					sessions = try await MasterClient.shared.listSessions()
+				}
 			} catch {
 				self.error = error.localizedDescription
 			}

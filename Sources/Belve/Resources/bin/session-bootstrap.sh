@@ -61,7 +61,13 @@ set -g prefix C-Space
 unbind C-b
 bind C-Space send-prefix
 TMUXCONF
-    _belve_sess="belve-$(printf '%s' "$BELVE_PANE_ID" | tr './:@ ' '_____')"
+    # BELVE_TMUX_SESSION が指定されていれば既存 tmux セッションへアタッチする
+    # (ペイン追加チューザの「既存にアタッチ」)。未指定なら従来どおり paneId 由来。
+    if [ -n "$BELVE_TMUX_SESSION" ]; then
+        _belve_sess="$BELVE_TMUX_SESSION"
+    else
+        _belve_sess="belve-$(printf '%s' "$BELVE_PANE_ID" | tr './:@ ' '_____')"
+    fi
     # -A: 既存なら attach / 無ければ作成。作成時のみ pane command として $0 を
     # 再実行し、$TMUX が立った状態で下の通常シェル起動に落ちる。
     exec tmux -f "$HOME/.belve/belve-tmux.conf" new-session -A -s "$_belve_sess" "$0"

@@ -262,6 +262,18 @@ final class MasterClient: @unchecked Sendable {
 		_ = try await send(op: "killSession", params: ["name": name])
 	}
 
+	/// 指定 host 上の tmux セッションを列挙する (リモートプロジェクトのチューザ用)。
+	/// remote tmux セッションはローカル socket を持たないので socket は空。attach は
+	/// セッション名 (tmux `#S`) で行う。
+	func listRemoteSessions(host: String) async throws -> [SessionInfo] {
+		let res = try await send(op: "listRemoteSessions", params: ["host": host])
+		guard let sessions = res.result?["sessions"] as? [[String: Any]] else { return [] }
+		return sessions.compactMap { dict in
+			guard let name = dict["name"] as? String else { return nil }
+			return SessionInfo(name: name, socket: "", modTime: "", alive: true)
+		}
+	}
+
 	/// セッションの socket 名を付け替える (稼働中でも可)。呼び出し側は未使用
 	/// セッションのみを対象にすること (in-use は pane 再接続キーが古い名前を指すため)。
 	func renameSession(from: String, to: String) async throws {

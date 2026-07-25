@@ -120,6 +120,9 @@ struct XTermTerminalView: NSViewRepresentable {
 	var overrideSocket: String?
 	/// ユーザーが付けた新規セッション名。set 時は `belve-<projShort>-<name>` を使う。
 	var sessionNameOverride: String?
+	/// リモート既存 tmux セッションへアタッチする時の tmux セッション名。
+	/// set 時は env BELVE_TMUX_SESSION として remote bootstrap に渡る。
+	var tmuxSessionOverride: String?
 	var viewWidth: CGFloat = 0
 	var viewHeight: CGFloat = 0
 	/// この project が現在 sidebar で選択中か。非選択時は auto-focus を抑制する
@@ -195,6 +198,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		context.coordinator.paneIndex = paneIndex
 		context.coordinator.overrideSocket = overrideSocket
 		context.coordinator.sessionNameOverride = sessionNameOverride
+		context.coordinator.tmuxSessionOverride = tmuxSessionOverride
 		context.coordinator.notificationStore = notificationStore
 		context.coordinator.agentSessionStore = agentSessionStore
 		context.coordinator.commandAreaState = commandAreaState
@@ -276,6 +280,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		var paneIndex: Int = 0
 		var overrideSocket: String?
 		var sessionNameOverride: String?
+		var tmuxSessionOverride: String?
 		var ptyService: PTYService?
 		weak var notificationStore: NotificationStore?
 		weak var agentSessionStore: AgentSessionStore?
@@ -441,6 +446,11 @@ struct XTermTerminalView: NSViewRepresentable {
 			// orphan 化した belve-persist client / daemon が自動 exit する。
 			// container broker や mac-master は self-spawn なので env を継承しない。
 			env["BELVE_PARENT_PID"] = "\(ProcessInfo.processInfo.processIdentifier)"
+			// 既存 tmux セッションへアタッチする場合、remote bootstrap がこの名前で
+			// `tmux new-session -A -s` する (未設定なら従来の paneId 由来命名)。
+			if let tmuxSession = tmuxSessionOverride, !tmuxSession.isEmpty {
+				env["BELVE_TMUX_SESSION"] = tmuxSession
+			}
 
 			// Add Belve's bin directory to PATH
 			if let execDir = Bundle.main.executableURL?.deletingLastPathComponent() {

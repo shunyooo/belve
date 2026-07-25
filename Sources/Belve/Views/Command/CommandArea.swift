@@ -17,6 +17,10 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 	/// 新規ペイン作成時にユーザーが付けたセッション名。nil なら paneId 由来の
 	/// 自動命名 (`belve-<projShort>-<paneShort>`)。set 時は `belve-<projShort>-<name>`。
 	var sessionNameOverride: String?
+	/// リモートプロジェクトで既存 tmux セッションへアタッチする時の tmux セッション名
+	/// (`#S`)。set 時は remote 側 bootstrap が `tmux new-session -A -s <name>` で
+	/// 既存セッションに合流する (env BELVE_TMUX_SESSION 経由)。
+	var tmuxSessionOverride: String?
 	@Published var children: [PaneNode]?
 	@Published var splitDirection: SplitDirection?
 	@Published var splitRatio: CGFloat = 0.5
@@ -32,7 +36,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 	// MARK: - Codable
 
 	enum CodingKeys: String, CodingKey {
-		case id, paneId, paneIndex, overrideSocket, sessionNameOverride, children, splitDirection, splitRatio
+		case id, paneId, paneIndex, overrideSocket, sessionNameOverride, tmuxSessionOverride, children, splitDirection, splitRatio
 	}
 
 	required init(from decoder: Decoder) throws {
@@ -42,6 +46,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 		paneIndex = try c.decodeIfPresent(Int.self, forKey: .paneIndex)
 		overrideSocket = try c.decodeIfPresent(String.self, forKey: .overrideSocket)
 		sessionNameOverride = try c.decodeIfPresent(String.self, forKey: .sessionNameOverride)
+		tmuxSessionOverride = try c.decodeIfPresent(String.self, forKey: .tmuxSessionOverride)
 		children = try c.decodeIfPresent([PaneNode].self, forKey: .children)
 		splitDirection = try c.decodeIfPresent(SplitDirection.self, forKey: .splitDirection)
 		splitRatio = try c.decode(CGFloat.self, forKey: .splitRatio)
@@ -64,6 +69,7 @@ class PaneNode: ObservableObject, Identifiable, Codable {
 		try c.encodeIfPresent(paneIndex, forKey: .paneIndex)
 		try c.encodeIfPresent(overrideSocket, forKey: .overrideSocket)
 		try c.encodeIfPresent(sessionNameOverride, forKey: .sessionNameOverride)
+		try c.encodeIfPresent(tmuxSessionOverride, forKey: .tmuxSessionOverride)
 		try c.encodeIfPresent(children, forKey: .children)
 		try c.encodeIfPresent(splitDirection, forKey: .splitDirection)
 		try c.encode(splitRatio, forKey: .splitRatio)
@@ -285,7 +291,7 @@ class CommandAreaState: ObservableObject {
 	/// - `overrideSocket` を指定すれば既存セッションへの attach として
 	/// 新 leaf に焼き込む。両者 nil なら従来の自動命名。新 pane を active にして id を返す。
 	@discardableResult
-	func addPane(direction: SplitDirection = .vertical, sessionName: String? = nil, overrideSocket: String? = nil) -> UUID? {
+	func addPane(direction: SplitDirection = .vertical, sessionName: String? = nil, overrideSocket: String? = nil, tmuxSessionName: String? = nil) -> UUID? {
 		let targetPaneId = activePaneId ?? firstLeaf(root)?.paneId
 		guard let targetPaneId else { return nil }
 		let newPaneId = UUID()
@@ -293,6 +299,7 @@ class CommandAreaState: ObservableObject {
 		if let leaf = findLeaf(paneId: newPaneId, in: root) {
 			leaf.sessionNameOverride = sessionName
 			leaf.overrideSocket = overrideSocket
+			leaf.tmuxSessionOverride = tmuxSessionName
 		}
 		activePaneId = newPaneId
 		objectWillChange.send()
@@ -734,6 +741,7 @@ struct CommandArea: View {
 								paneIndex: pane.paneIndex,
 								overrideSocket: state.findLeafByPaneId(pane.paneId, in: state.root)?.overrideSocket,
 								sessionNameOverride: state.findLeafByPaneId(pane.paneId, in: state.root)?.sessionNameOverride,
+								tmuxSessionOverride: state.findLeafByPaneId(pane.paneId, in: state.root)?.tmuxSessionOverride,
 								viewWidth: max(1, pane.rect.width),
 								viewHeight: max(1, pane.rect.height - paneHeaderHeight),
 								// 全 project が ZStack で同時 mount される構造上、
