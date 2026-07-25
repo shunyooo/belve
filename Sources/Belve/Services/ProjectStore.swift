@@ -581,6 +581,7 @@ class ProjectStore: ObservableObject {
 		let project = Project(
 			name: finalName,
 			workspace: workspace,
+			isPinned: true, // 新規プロジェクトは既定でピン付き (Inbox 埋没を避ける)
 			groupName: defaultGroupName
 		)
 		projects.append(project)
