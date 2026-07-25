@@ -43,7 +43,6 @@ emit_event() {
     if [ -n "${TMUX:-}" ] && [ -n "$TMUX_SESSION" ]; then
         tmux set-option -t "$TMUX_SESSION" @belve_state "$status" 2>/dev/null || true
         tmux set-option -t "$TMUX_SESSION" @belve_msg "${message:0:500}" 2>/dev/null || true
-        tmux set-option -t "$TMUX_SESSION" @belve_ts "$(date +%s)" 2>/dev/null || true
     fi
     local osc
     # 新 OSC 形式 (BELVE3) は paneId, tmuxSession, sessionId, status, message の

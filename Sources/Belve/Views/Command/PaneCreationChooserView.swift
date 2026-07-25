@@ -387,6 +387,10 @@ struct PaneCreationChooserView: View {
 	private func subtitle(_ session: MasterClient.SessionInfo) -> String {
 		guard isRemote else { return session.name }
 		var parts: [String] = []
+		// belve フックが書いた agent 状態 (@belve_state) があれば先頭に。
+		if !session.agentState.isEmpty {
+			parts.append(agentStateLabel(session.agentState))
+		}
 		let cmd = session.command.isEmpty ? "" : ":\(session.command)"
 		parts.append("\(session.windows)\(cmd)")
 		if let rel = relativeActivity(session.activity) {
@@ -395,7 +399,20 @@ struct PaneCreationChooserView: View {
 		if session.attached {
 			parts.append("接続中")
 		}
+		// agent の最新メッセージ (今なにをしているか) を末尾に短く。
+		if !session.agentMsg.isEmpty {
+			parts.append(String(session.agentMsg.prefix(40)))
+		}
 		return parts.joined(separator: " · ")
+	}
+
+	private func agentStateLabel(_ state: String) -> String {
+		switch state {
+		case "running": return "▶ 実行中"
+		case "waiting": return "⏸ 入力待ち"
+		case "completed", "done": return "✓ 完了"
+		default: return state
+		}
 	}
 
 	private static let relativeFormatter: RelativeDateTimeFormatter = {
