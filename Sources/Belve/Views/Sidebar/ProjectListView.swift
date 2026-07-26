@@ -616,6 +616,19 @@ struct ProjectListView: View {
 			.padding(.leading, 16)
 			.padding(.bottom, 4)
 		}
+
+		// pane に未 attach の discovered agent (host で動いてるが Belve pane に
+		// 繋いでいない) を project 直下に表示。司令塔として全 agent の状態を出す。
+		let unattached = unattachedSessions(projectId: project.id)
+		if !unattached.isEmpty {
+			VStack(spacing: 1) {
+				ForEach(unattached) { session in
+					sessionRowDraggable(session: session, view: viewStore.activeView(for: project.id), project: project)
+				}
+			}
+			.padding(.leading, 16)
+			.padding(.bottom, 4)
+		}
 	}
 
 	@ViewBuilder
@@ -836,6 +849,16 @@ struct ProjectListView: View {
 			guard !Self.inactiveStatuses.contains(session.state.status) else { return false }
 			return agentSessionStore.panes(forSession: session.id)
 				.contains { viewPaneIds.contains($0.lowercased()) }
+		}
+	}
+
+	/// どの pane にも bind されていない agent セッション (= host で discovery された
+	/// が Belve pane に attach していないもの)。司令塔として全 agent の状態を出すため、
+	/// これらを project 直下に表示する。attach 済みは view 配下に出るので重複しない。
+	private func unattachedSessions(projectId: UUID) -> [AgentSession] {
+		agentSessionStore.triageOrdered(forProject: projectId).filter { session in
+			guard !Self.inactiveStatuses.contains(session.state.status) else { return false }
+			return agentSessionStore.panes(forSession: session.id).isEmpty
 		}
 	}
 
