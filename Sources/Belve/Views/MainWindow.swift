@@ -1371,7 +1371,16 @@ struct MainWindow: View {
 		// 出せるようになる。
 		if remote, let host = project.sshHost {
 			let projectId = project.id.uuidString
-			Task { try? await MasterClient.shared.tagRemoteSessionProject(host: host, session: session.name, projectId: projectId) }
+			let sessionName = session.name
+			Task {
+				do {
+					try await MasterClient.shared.tagRemoteSessionProject(host: host, session: sessionName, projectId: projectId)
+				} catch {
+					// 失敗をサイレントにしない: 紐付けが焼けないと discovery が cwd 推測に
+					// 落ちて誤プロジェクト配下に出得るので、明示的にログする。
+					NSLog("[Belve] tagRemoteSessionProject failed session=\(sessionName) host=\(host): \(error)")
+				}
+			}
 		}
 	}
 
