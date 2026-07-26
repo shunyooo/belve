@@ -387,14 +387,31 @@ struct MainWindow: View {
 		guard !isDiscovering else { return }
 		guard let project = projectStore.selectedProject else { return }
 		isDiscovering = true
-		let provider = project.provider
 		let projectId = project.id
-		DispatchQueue.global(qos: .utility).async {
-			let service = SessionDiscoveryService(runCommand: { provider.run($0) })
-			let discovered = service.discover(projectId: projectId)
-			DispatchQueue.main.async {
+		if let host = project.sshHost {
+			// remote: master の listRemoteSessions (ControlMaster 経由) から @belve_state を
+			// 読む。SSHProvider.run→executeSSH の直 ssh 経路は不安定なので、チューザと
+			// 同じ信頼できる経路に統一する。@belve_state を持つ (= agent 稼働中の) セッション
+			// だけ fine な状態で surface。
+			Task { @MainActor in
+				let sessions = (try? await MasterClient.shared.listRemoteSessions(host: host)) ?? []
+				let discovered: [DiscoveredSession] = sessions.compactMap { s in
+					guard !s.agentState.isEmpty else { return nil }
+					return (sessionKey: s.name, coarseStatus: AgentStatus(rawValue: s.agentState) ?? .working, message: s.agentMsg)
+				}
 				agentSessionStore.mergeDiscovered(discovered, projectId: projectId)
 				isDiscovering = false
+			}
+		} else {
+			// local: provider.run 経由の tmux discovery (list-sessions -F で @belve_state も読む)。
+			let provider = project.provider
+			DispatchQueue.global(qos: .utility).async {
+				let service = SessionDiscoveryService(runCommand: { provider.run($0) })
+				let discovered = service.discover(projectId: projectId)
+				DispatchQueue.main.async {
+					agentSessionStore.mergeDiscovered(discovered, projectId: projectId)
+					isDiscovering = false
+				}
 			}
 		}
 	}
