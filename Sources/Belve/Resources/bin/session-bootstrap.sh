@@ -73,6 +73,13 @@ TMUXCONF
     exec tmux -f "$HOME/.belve/belve-tmux.conf" new-session -A -s "$_belve_sess" "$0"
 fi
 
+# ここに来る = tmux セッションの中 ($0 が new-session の command として再実行された)。
+# Belve が作った/開いたセッションに project を焼く (@belve_project)。discovery が
+# cwd 推測でなくこの明示的紐付けでプロジェクト配下に振り分けられる。
+if [ -n "${TMUX:-}" ] && [ -n "${BELVE_PROJECT_ID:-}" ]; then
+    tmux set-option @belve_project "$BELVE_PROJECT_ID" 2>/dev/null || true
+fi
+
 SHELL_PATH="${SHELL:-/bin/bash}"
 SHELL_NAME="$(basename "$SHELL_PATH")"
 

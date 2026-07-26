@@ -258,6 +258,9 @@ final class MasterClient: @unchecked Sendable {
 		/// アクティブ pane の作業ディレクトリ (tmux `#{pane_current_path}`)。
 		/// プロジェクト紐付け (cwd 最長一致) に使う。remote のみ。
 		var cwd: String = ""
+		/// tmux オプション @belve_project (Belve が pane 作成/attach 時に焼く project id)。
+		/// これがあれば cwd 推測より優先してプロジェクトへ紐付ける。
+		var belveProject: String = ""
 	}
 
 	func listSessions() async throws -> [SessionInfo] {
@@ -287,6 +290,12 @@ final class MasterClient: @unchecked Sendable {
 		return res.result?["content"] as? String ?? ""
 	}
 
+	/// 指定 host の tmux セッションを attach 元プロジェクトへ明示的に紐付ける
+	/// (@belve_project を焼く)。既存/生セッションへ Belve pane から attach した時に呼ぶ。
+	func tagRemoteSessionProject(host: String, session: String, projectId: String) async throws {
+		_ = try await send(op: "tagRemoteSessionProject", params: ["host": host, "session": session, "projectId": projectId])
+	}
+
 	/// 指定 host 上の tmux セッションを列挙する (リモートプロジェクトのチューザ用)。
 	/// remote tmux セッションはローカル socket を持たないので socket は空。attach は
 	/// セッション名 (tmux `#S`) で行う。
@@ -302,9 +311,10 @@ final class MasterClient: @unchecked Sendable {
 			let agentState = dict["agentState"] as? String ?? ""
 			let agentMsg = dict["agentMsg"] as? String ?? ""
 			let cwd = dict["cwd"] as? String ?? ""
+			let belveProject = dict["belveProject"] as? String ?? ""
 			return SessionInfo(name: name, socket: "", modTime: "", alive: true,
 			                   windows: windows, attached: attached, command: command, activity: activity,
-			                   agentState: agentState, agentMsg: agentMsg, cwd: cwd)
+			                   agentState: agentState, agentMsg: agentMsg, cwd: cwd, belveProject: belveProject)
 		}
 	}
 

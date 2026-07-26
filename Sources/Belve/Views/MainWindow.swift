@@ -418,9 +418,18 @@ struct MainWindow: View {
 						entry = nil // bare shell 等は対象外
 					}
 					guard let entry else { continue }
-					// cwd 最長一致でプロジェクトへ。該当なしは選択中プロジェクトへ寄せる。
-					let ownerId = SessionDiscoveryService.projectIndex(forCwd: s.cwd, projectPaths: projectPaths)
-						.map { hostProjects[$0].id } ?? projectId
+					// 紐付け優先度: (1) @belve_project (pane 作成/attach 時に焼いた明示的
+					// 紐付け) → (2) cwd 最長一致 → (3) どれも無ければ「プロジェクト外」として
+					// 表示しない (選択中プロジェクトへ誤ぶら下げしない)。
+					let ownerId: UUID
+					if !s.belveProject.isEmpty, let pid = UUID(uuidString: s.belveProject),
+					   hostProjects.contains(where: { $0.id == pid }) {
+						ownerId = pid
+					} else if let idx = SessionDiscoveryService.projectIndex(forCwd: s.cwd, projectPaths: projectPaths) {
+						ownerId = hostProjects[idx].id
+					} else {
+						continue
+					}
 					byProject[ownerId, default: []].append(entry)
 				}
 				// 同一ホストの各プロジェクトぶん merge (絶えたセッションの sessionEnd 化も
@@ -1357,6 +1366,13 @@ struct MainWindow: View {
 		            sessionName: nil,
 		            overrideSocket: remote ? nil : session.socket,
 		            tmuxSessionName: remote ? session.name : nil)
+		// remote: attach したセッションを attach 元プロジェクトへ明示的に紐付ける
+		// (@belve_project)。既存/生セッションでも discovery が正しいプロジェクト配下に
+		// 出せるようになる。
+		if remote, let host = project.sshHost {
+			let projectId = project.id.uuidString
+			Task { try? await MasterClient.shared.tagRemoteSessionProject(host: host, session: session.name, projectId: projectId) }
+		}
 	}
 
 	/// チューザの選択結果を適用する。初回 (needsInitialChoice) は既存 first pane を

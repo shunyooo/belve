@@ -27,7 +27,7 @@ import (
 // Master が公開する API のバージョン。Belve.app は handshake でこの値を
 // 確認し、想定と違ったら master を kill → spawn し直して新版に attach する
 // (= broker の version negotiation 議論を Mac 側に持ってきた版)。
-const macMasterVersion = "1.8" // 1.8: listRemoteSessions に cwd 追加
+const macMasterVersion = "1.9" // 1.9: @belve_project (tag on attach + read)
 
 // Master 起動時に記録する自身の binary identity。version 応答に含めて
 // Belve.app 側が「app bundle 内の binary と違ったら respawn」判定に使う。
@@ -188,6 +188,8 @@ func masterDispatch(req masterReq) masterRes {
 		return opListRemoteSessions(req)
 	case "captureRemotePane":
 		return opCaptureRemotePane(req)
+	case "tagRemoteSessionProject":
+		return opTagRemoteSessionProject(req)
 	default:
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("unknown op: %s", req.Op)}
 	}
@@ -384,8 +386,9 @@ func opListRemoteSessions(req masterReq) masterRes {
 	}
 	// `\t` は Go 文字列上で実タブになり、tmux -F にそのまま渡るので出力も実タブ区切り。
 	// フィールド: name / windows / attached / activity(epoch秒) / active pane の command。
-	// 末尾: agent 状態 (@belve_state/@belve_msg) + cwd (pane_current_path、プロジェクト紐付け用)。
-	tmuxCmd := "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}\t#{@belve_state}\t#{@belve_msg}\t#{pane_current_path}' 2>/dev/null || true"
+	// 末尾: agent 状態 + cwd + @belve_project (pane 作成/attach 時に焼く明示的な
+	// プロジェクト紐付け。cwd 推測より優先)。
+	tmuxCmd := "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_activity}\t#{pane_current_command}\t#{@belve_state}\t#{@belve_msg}\t#{pane_current_path}\t#{@belve_project}' 2>/dev/null || true"
 	args := append([]string{}, sshOpts(host)...)
 	args = append(args, host, tmuxCmd)
 	out, err := exec.Command("ssh", args...).CombinedOutput()
@@ -410,14 +413,15 @@ func opListRemoteSessions(req masterReq) masterRes {
 			continue
 		}
 		sessions = append(sessions, map[string]interface{}{
-			"name":       name,
-			"windows":    field(parts, 1),
-			"attached":   field(parts, 2) != "0" && field(parts, 2) != "",
-			"activity":   field(parts, 3),
-			"command":    field(parts, 4),
-			"agentState": field(parts, 5),
-			"agentMsg":   field(parts, 6),
-			"cwd":        field(parts, 7),
+			"name":         name,
+			"windows":      field(parts, 1),
+			"attached":     field(parts, 2) != "0" && field(parts, 2) != "",
+			"activity":     field(parts, 3),
+			"command":      field(parts, 4),
+			"agentState":   field(parts, 5),
+			"agentMsg":     field(parts, 6),
+			"cwd":          field(parts, 7),
+			"belveProject": field(parts, 8),
 		})
 	}
 	if sessions == nil {
@@ -447,6 +451,26 @@ func opCaptureRemotePane(req masterReq) masterRes {
 		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("ssh capture-pane: %v: %s", err, string(out))}
 	}
 	return masterRes{ID: req.ID, OK: true, Result: map[string]interface{}{"content": string(out)}}
+}
+
+// tagRemoteSessionProject: 指定 host の tmux セッションに @belve_project を焼く。
+// Belve のペインが既存セッションへ attach した時に、そのセッションを attach 元の
+// プロジェクトへ明示的に紐付けるため (discovery が cwd 推測でなくこれで振り分ける)。
+func opTagRemoteSessionProject(req masterReq) masterRes {
+	host := strParam(req.Params, "host")
+	session := strParam(req.Params, "session")
+	projectID := strParam(req.Params, "projectId")
+	if host == "" || session == "" || projectID == "" {
+		return masterRes{ID: req.ID, OK: false, Error: "host, session, projectId required"}
+	}
+	tmuxCmd := fmt.Sprintf("tmux set-option -t %s @belve_project %s 2>/dev/null || true",
+		shellSingleQuote(session), shellSingleQuote(projectID))
+	args := append([]string{}, sshOpts(host)...)
+	args = append(args, host, tmuxCmd)
+	if out, err := exec.Command("ssh", args...).CombinedOutput(); err != nil {
+		return masterRes{ID: req.ID, OK: false, Error: fmt.Sprintf("ssh set-option: %v: %s", err, string(out))}
+	}
+	return masterRes{ID: req.ID, OK: true, Result: map[string]string{"session": session}}
 }
 
 // killSession: 指定セッションの daemon を終了し、socket ファイルを削除する。
