@@ -394,13 +394,19 @@ struct MainWindow: View {
 			// 同じ信頼できる経路に統一する。@belve_state を持つ (= agent 稼働中の) セッション
 			// だけ fine な状態で surface。
 			Task { @MainActor in
-				let sessions = (try? await MasterClient.shared.listRemoteSessions(host: host)) ?? []
+				defer { isDiscovering = false }
+				// poll 失敗を「セッション 0 件」と混同しない。混同して mergeDiscovered([]) を
+				// 呼ぶと roster が全消えする (= サイレントにエラーを状態へ反映)。失敗時は
+				// merge をスキップし前回状態を保持、次 poll で回復させる。
+				guard let sessions = try? await MasterClient.shared.listRemoteSessions(host: host) else {
+					NSLog("[Belve] session discovery poll failed (host=%@) — keep previous state", host)
+					return
+				}
 				let discovered: [DiscoveredSession] = sessions.compactMap { s in
 					guard !s.agentState.isEmpty else { return nil }
 					return (sessionKey: s.name, coarseStatus: AgentStatus(rawValue: s.agentState) ?? .working, message: s.agentMsg)
 				}
 				agentSessionStore.mergeDiscovered(discovered, projectId: projectId)
-				isDiscovering = false
 			}
 		} else {
 			// local: provider.run 経由の tmux discovery (list-sessions -F で @belve_state も読む)。
