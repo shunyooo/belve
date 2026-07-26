@@ -77,6 +77,26 @@ final class SessionDiscoveryTests: XCTestCase {
 		XCTAssertEqual(discovered.first(where: { $0.sessionKey == "peakrail" })?.coarseStatus, .blocked)
 	}
 
+	// (a3) cwd 最長一致でプロジェクトへ割り当て (1 ホスト複数プロジェクト、ネスト含む)。
+	func testProjectIndexForCwdLongestMatch() {
+		// projects: 0=~/src, 1=~/src/life, 2=~/src/peekrail
+		let paths: [String?] = ["~/src", "~/src/life", "~/src/peekrail"]
+		func idx(_ cwd: String) -> Int? { SessionDiscoveryService.projectIndex(forCwd: cwd, projectPaths: paths) }
+		XCTAssertEqual(idx("/home/u/src"), 0)             // clay-seto
+		XCTAssertEqual(idx("/home/u/src/life"), 1)        // life (最長一致で 0 でなく 1)
+		XCTAssertEqual(idx("/home/u/src/life/sub"), 1)    // life 配下
+		XCTAssertEqual(idx("/home/u/src/peekrail"), 2)    // peekrail
+		XCTAssertEqual(idx("/home/u/src/other"), 0)       // src 直下扱い
+		XCTAssertNil(idx(""))                              // cwd 不明 → nil
+	}
+
+	// (a4) 空 path (= ~) は catch-all として最低優先で一致する。
+	func testProjectIndexHomeCatchAll() {
+		let paths: [String?] = ["~", "~/work"]
+		XCTAssertEqual(SessionDiscoveryService.projectIndex(forCwd: "/home/u/work", projectPaths: paths), 1) // 具体的な方
+		XCTAssertEqual(SessionDiscoveryService.projectIndex(forCwd: "/home/u/random", projectPaths: paths), 0) // catch-all
+	}
+
 	// (a') tmux 未起動 (runner nil) / 空出力は空配列。
 	func testNilOrEmptyOutputYieldsEmpty() {
 		let runner = FakeRunner()

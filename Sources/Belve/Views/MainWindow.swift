@@ -391,8 +391,10 @@ struct MainWindow: View {
 		if let host = project.sshHost {
 			// remote: master の listRemoteSessions (ControlMaster 経由) から @belve_state を
 			// 読む。SSHProvider.run→executeSSH の直 ssh 経路は不安定なので、チューザと
-			// 同じ信頼できる経路に統一する。@belve_state を持つ (= agent 稼働中の) セッション
-			// だけ fine な状態で surface。
+			// 同じ信頼できる経路に統一する。1 ホストに複数プロジェクトがある場合は、
+			// 各セッションを cwd 最長一致でプロジェクトへ振り分ける (全部を選択中
+			// プロジェクトに集約しない)。
+			let hostProjects = projectStore.projects.filter { $0.sshHost == host }
 			Task { @MainActor in
 				defer { isDiscovering = false }
 				// poll 失敗を「セッション 0 件」と混同しない。混同して mergeDiscovered([]) を
@@ -402,20 +404,30 @@ struct MainWindow: View {
 					NSLog("[Belve] session discovery poll failed (host=%@) — keep previous state", host)
 					return
 				}
-				let discovered: [DiscoveredSession] = sessions.compactMap { s in
-					// フックが状態を書いていれば fine な状態で。
+				let projectPaths = hostProjects.map { $0.path }
+				var byProject: [UUID: [DiscoveredSession]] = [:]
+				for p in hostProjects { byProject[p.id] = [] }
+				for s in sessions {
+					let entry: DiscoveredSession?
 					if !s.agentState.isEmpty {
-						return (sessionKey: s.name, coarseStatus: AgentStatus(rawValue: s.agentState) ?? .working, message: s.agentMsg)
+						entry = (sessionKey: s.name, coarseStatus: AgentStatus(rawValue: s.agentState) ?? .working, message: s.agentMsg)
+					} else if SessionDiscoveryService.agentCommands.contains(s.command) {
+						// フック未発火でも agent プロセスが走っていれば Ready で surface。
+						entry = (sessionKey: s.name, coarseStatus: .sessionStart, message: "")
+					} else {
+						entry = nil // bare shell 等は対象外
 					}
-					// フック未発火 (state 空) でも、agent プロセス (claude/codex) が
-					// 走っていれば Ready(sessionStart) で surface する。アイドルの claude
-					// セッションが一覧から消えないように。bare shell (bash 等) は対象外。
-					if SessionDiscoveryService.agentCommands.contains(s.command) {
-						return (sessionKey: s.name, coarseStatus: .sessionStart, message: "")
-					}
-					return nil
+					guard let entry else { continue }
+					// cwd 最長一致でプロジェクトへ。該当なしは選択中プロジェクトへ寄せる。
+					let ownerId = SessionDiscoveryService.projectIndex(forCwd: s.cwd, projectPaths: projectPaths)
+						.map { hostProjects[$0].id } ?? projectId
+					byProject[ownerId, default: []].append(entry)
 				}
-				agentSessionStore.mergeDiscovered(discovered, projectId: projectId)
+				// 同一ホストの各プロジェクトぶん merge (絶えたセッションの sessionEnd 化も
+				// プロジェクト単位で正しく効く)。
+				for p in hostProjects {
+					agentSessionStore.mergeDiscovered(byProject[p.id] ?? [], projectId: p.id)
+				}
 			}
 		} else {
 			// local: provider.run 経由の tmux discovery (list-sessions -F で @belve_state も読む)。

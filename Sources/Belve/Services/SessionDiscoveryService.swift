@@ -110,6 +110,31 @@ final class SessionDiscoveryService {
 		return commands.contains { Self.agentCommands.contains($0) }
 	}
 
+	/// tmux セッションの cwd を候補プロジェクトの workspace path に **最長一致**で
+	/// 割り当て、その index を返す。同一ホストに複数プロジェクトがある時
+	/// (例: ~/src, ~/src/life, ~/src/peekrail) に、ネストした最も具体的な
+	/// プロジェクトを選ぶ。path は "~/src/life" 形式 (先頭 ~ は無視)、cwd は絶対パス。
+	/// 一致なし → nil。空 path (= ~) は catch-all として最低優先で一致。
+	static func projectIndex(forCwd cwd: String, projectPaths: [String?]) -> Int? {
+		guard !cwd.isEmpty else { return nil }
+		// 配下判定用に前後を "/" で囲む。cwd が rel ディレクトリの中 (= その配下も含む)
+		// なら一致。例: cwd "/home/u/src/life/sub" は rel "src/life" に一致。
+		let haystack = (cwd.hasSuffix("/") ? cwd : cwd + "/")
+		var best: Int? = nil
+		var bestLen = -1
+		for (i, path) in projectPaths.enumerated() {
+			guard var rel = path else { continue }
+			if rel.hasPrefix("~") { rel.removeFirst() }
+			rel = rel.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+			let matches = rel.isEmpty || haystack.contains("/" + rel + "/")
+			if matches && rel.count > bestLen {
+				best = i
+				bestLen = rel.count
+			}
+		}
+		return best
+	}
+
 	/// single-quote で安全に囲む (セッション名は任意文字を含み得るので shell injection を防ぐ)。
 	private static func shellQuote(_ value: String) -> String {
 		"'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"

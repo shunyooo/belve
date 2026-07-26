@@ -255,6 +255,9 @@ final class MasterClient: @unchecked Sendable {
 		var agentState: String = ""
 		/// @belve_msg。agent の最新 1 行 (今なにをしているか)。
 		var agentMsg: String = ""
+		/// アクティブ pane の作業ディレクトリ (tmux `#{pane_current_path}`)。
+		/// プロジェクト紐付け (cwd 最長一致) に使う。remote のみ。
+		var cwd: String = ""
 	}
 
 	func listSessions() async throws -> [SessionInfo] {
@@ -298,9 +301,10 @@ final class MasterClient: @unchecked Sendable {
 			let activity = (dict["activity"] as? String).flatMap { TimeInterval($0) }
 			let agentState = dict["agentState"] as? String ?? ""
 			let agentMsg = dict["agentMsg"] as? String ?? ""
+			let cwd = dict["cwd"] as? String ?? ""
 			return SessionInfo(name: name, socket: "", modTime: "", alive: true,
 			                   windows: windows, attached: attached, command: command, activity: activity,
-			                   agentState: agentState, agentMsg: agentMsg)
+			                   agentState: agentState, agentMsg: agentMsg, cwd: cwd)
 		}
 	}
 
