@@ -403,8 +403,17 @@ struct MainWindow: View {
 					return
 				}
 				let discovered: [DiscoveredSession] = sessions.compactMap { s in
-					guard !s.agentState.isEmpty else { return nil }
-					return (sessionKey: s.name, coarseStatus: AgentStatus(rawValue: s.agentState) ?? .working, message: s.agentMsg)
+					// フックが状態を書いていれば fine な状態で。
+					if !s.agentState.isEmpty {
+						return (sessionKey: s.name, coarseStatus: AgentStatus(rawValue: s.agentState) ?? .working, message: s.agentMsg)
+					}
+					// フック未発火 (state 空) でも、agent プロセス (claude/codex) が
+					// 走っていれば Ready(sessionStart) で surface する。アイドルの claude
+					// セッションが一覧から消えないように。bare shell (bash 等) は対象外。
+					if SessionDiscoveryService.agentCommands.contains(s.command) {
+						return (sessionKey: s.name, coarseStatus: .sessionStart, message: "")
+					}
+					return nil
 				}
 				agentSessionStore.mergeDiscovered(discovered, projectId: projectId)
 			}
