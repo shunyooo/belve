@@ -669,7 +669,7 @@ struct XTermTerminalView: NSViewRepresentable {
 		/// Buffer PTY output and flush every ~4ms to reduce JS calls.
 		/// After resize, buffers longer to avoid visible redraw scroll.
 		private func bufferOutput(_ data: Data) {
-			let parsed = extractBelveStatusMessages(from: statusScanBuffer + data)
+			let parsed = BelveStatusOSCParser.extract(from: statusScanBuffer + data)
 			statusScanBuffer = parsed.trailingData
 
 			for statusMessage in parsed.messages {
@@ -740,50 +740,6 @@ struct XTermTerminalView: NSViewRepresentable {
 		}
 
 		/// Extract belve-status OSC 9 sequences while preserving normal terminal output.
-		private func extractBelveStatusMessages(from data: Data) -> (messages: [String], outputData: Data, trailingData: Data) {
-			let prefix = Array("\u{1b}]9;belve-status;".utf8)
-			let suffix: UInt8 = 0x07
-			let bytes = Array(data)
-			var messages: [String] = []
-			var output = Data()
-			var cursor = 0
-			var lastCopied = 0
-
-			while cursor + prefix.count <= bytes.count {
-				if Array(bytes[cursor..<(cursor + prefix.count)]) != prefix {
-					cursor += 1
-					continue
-				}
-
-				if lastCopied < cursor {
-					output.append(contentsOf: bytes[lastCopied..<cursor])
-				}
-
-				var end = cursor + prefix.count
-				while end < bytes.count {
-					if bytes[end] == suffix {
-						let messageBytes = Data(bytes[(cursor + prefix.count)..<end])
-						if let message = String(data: messageBytes, encoding: .utf8), !message.isEmpty {
-							messages.append(message)
-						}
-						cursor = end + 1
-						lastCopied = cursor
-						break
-					}
-					end += 1
-				}
-
-				if end == bytes.count {
-					return (messages, output, Data(bytes[cursor...]))
-				}
-			}
-
-			if lastCopied < bytes.count {
-				output.append(contentsOf: bytes[lastCopied...])
-			}
-			return (messages, output, Data())
-		}
-
 		private func handleBelveStatusMessage(_ message: String) {
 			isShowingTransientStatus = true
 			postDisconnectedState(isDisconnected: false)
