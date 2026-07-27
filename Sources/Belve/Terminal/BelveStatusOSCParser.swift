@@ -22,6 +22,16 @@ enum BelveStatusOSCParser {
 		let messages: [String]
 		let outputData: Data
 		let trailingData: Data
+		/// pending が上限を超えて保持を打ち切った (= BEL 無しの偽プレフィックスを検出した)。
+		/// 稀な異常経路なので呼び出し側がログできるようにフラグで返す。
+		let didExceedPendingCap: Bool
+
+		init(messages: [String], outputData: Data, trailingData: Data, didExceedPendingCap: Bool = false) {
+			self.messages = messages
+			self.outputData = outputData
+			self.trailingData = trailingData
+			self.didExceedPendingCap = didExceedPendingCap
+		}
 	}
 
 	/// - Parameters:
@@ -65,7 +75,7 @@ enum BelveStatusOSCParser {
 				// literal 出力として吐いて保持を打ち切る (無限膨張の防止)。
 				if bytes.count - cursor > maxPendingBytes {
 					output.append(contentsOf: bytes[cursor...])
-					return Result(messages: messages, outputData: output, trailingData: Data())
+					return Result(messages: messages, outputData: output, trailingData: Data(), didExceedPendingCap: true)
 				}
 				return Result(messages: messages, outputData: output, trailingData: Data(bytes[cursor...]))
 			}

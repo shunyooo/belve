@@ -671,6 +671,11 @@ struct XTermTerminalView: NSViewRepresentable {
 		private func bufferOutput(_ data: Data) {
 			let parsed = BelveStatusOSCParser.extract(from: statusScanBuffer + data)
 			statusScanBuffer = parsed.trailingData
+			if parsed.didExceedPendingCap {
+				// BEL 無しの偽プレフィックスを検出して保持を打ち切った (無限膨張の回避)。
+				// mid-OSC 切断 / replay 途中切れ等で稀に起きる。将来の検出のためログする。
+				NSLog("[Belve] belve-status OSC: pending cap exceeded (no BEL); flushed as literal output")
+			}
 
 			for statusMessage in parsed.messages {
 				handleBelveStatusMessage(statusMessage)
@@ -739,7 +744,7 @@ struct XTermTerminalView: NSViewRepresentable {
 			}
 		}
 
-		/// Extract belve-status OSC 9 sequences while preserving normal terminal output.
+		/// 抽出済み belve-status メッセージを UI 状態 (接続中表示) に反映する。
 		private func handleBelveStatusMessage(_ message: String) {
 			isShowingTransientStatus = true
 			postDisconnectedState(isDisconnected: false)
