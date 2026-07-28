@@ -335,11 +335,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 				}
 				return nil
 			case "f" where !shift:
-				// Code editor (CodeMirror) が focus 中なら Cmd+F を握り潰さず素通しして
-				// CodeMirror 標準の検索パネル (basicSetup の searchKeymap) を出す。
-				// それ以外 (markdown preview 等) は belveFindInPreview で find bar を出す。
-				if Self.isEditorWebViewFocused() { return event }
-				NotificationCenter.default.post(name: .belveFindInPreview, object: nil)
+				// フォーカス位置に関係なく belveFindInPreview を投げ、選択中 project の
+				// editor 検索パネル (CodeEditorView) / markdown find bar を開く。
+				// WKWebView の Cmd+F 素通しは環境依存で不安定なので、常に Swift 側で
+				// 捕まえて JS の openSearchPanel を明示的に呼ぶ方式に統一。
+				var findInfo: [String: Any] = [:]
+				if let pid = self.projectStore.selectedProject?.id { findInfo["projectId"] = pid }
+				NotificationCenter.default.post(name: .belveFindInPreview, object: nil, userInfo: findInfo)
 				return nil
 			case "," where !shift:
 				NotificationCenter.default.post(name: .belveOpenSettings, object: nil)

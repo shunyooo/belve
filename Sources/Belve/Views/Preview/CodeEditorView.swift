@@ -129,6 +129,8 @@ struct CodeEditorView: NSViewRepresentable {
 		let onDefinitionHoverRequest: (EditorDefinitionRequest, @escaping (Bool) -> Void) -> Void
 		var onHoverInfoRequest: ((EditorDefinitionRequest, Int, @escaping (String?) -> Void) -> Void)?
 
+		private var findObserver: Any?
+
 		init(
 			onContentChanged: @escaping (String) -> Void,
 			onDefinitionRequest: @escaping (EditorDefinitionRequest) -> Void,
@@ -137,6 +139,23 @@ struct CodeEditorView: NSViewRepresentable {
 			self.onContentChanged = onContentChanged
 			self.onDefinitionRequest = onDefinitionRequest
 			self.onDefinitionHoverRequest = onDefinitionHoverRequest
+			super.init()
+			// Cmd+F (アプリレベル横取り)。選択中 project のエディタだけ反応する。
+			findObserver = NotificationCenter.default.addObserver(
+				forName: .belveFindInPreview, object: nil, queue: .main
+			) { [weak self] notif in
+				guard let self, let webView = self.webView else { return }
+				if let selectedId = notif.userInfo?["projectId"] as? UUID,
+				   let myId = self.project?.id, selectedId != myId { return }
+				webView.window?.makeFirstResponder(webView)
+				webView.evaluateJavaScript("window.editorOpenSearch && window.editorOpenSearch()", completionHandler: nil)
+			}
+		}
+
+		deinit {
+			if let obs = findObserver {
+				NotificationCenter.default.removeObserver(obs)
+			}
 		}
 
 		func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
