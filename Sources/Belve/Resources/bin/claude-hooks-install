@@ -58,6 +58,16 @@ def is_belve_owned(matcher: dict) -> bool:
     return False
 
 
+def _backup_broken() -> None:
+    """パース不能 / 想定外の型の settings.json を退避する (原本を失わないため)。"""
+    backup = SETTINGS_FILE.with_suffix(".json.belve-broken")
+    try:
+        SETTINGS_FILE.replace(backup)
+        print(f"[claude-hooks-install] WARN: existing settings.json unusable, backed up to {backup}", file=sys.stderr)
+    except Exception:
+        pass
+
+
 def load_settings() -> dict:
     if not SETTINGS_FILE.exists():
         return {"hooks": {}}
@@ -66,15 +76,12 @@ def load_settings() -> dict:
             data = json.load(f)
     except Exception:
         # 既存ファイル壊れてる → backup して空でやり直し。
-        # (settings.json 全体を失わないよう、パース不能時のみ退避する)
-        backup = SETTINGS_FILE.with_suffix(".json.belve-broken")
-        try:
-            SETTINGS_FILE.replace(backup)
-            print(f"[claude-hooks-install] WARN: existing settings.json malformed, backed up to {backup}", file=sys.stderr)
-        except Exception:
-            pass
+        _backup_broken()
         return {"hooks": {}}
     if not isinstance(data, dict):
+        # 有効な JSON だが object でない (top-level array 等)。上書きで原本を失わない
+        # よう、壊れ扱いで退避してからやり直す。
+        _backup_broken()
         return {"hooks": {}}
     if "hooks" not in data or not isinstance(data["hooks"], dict):
         data["hooks"] = {}

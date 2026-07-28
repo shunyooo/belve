@@ -125,5 +125,6 @@ ensure_vm_broker
 # これで「Belve が起動した claude」だけでなく、生 SSH / モバイル attach / 手動
 # `claude --resume` 等 Belve 外で起動した claude も起動時にフックを読み、状態を
 # 報告する。idempotent (自分のエントリだけ入れ替え)。失敗しても broker は生かす
-# ので setup 全体は落とさない (|| true)。
-"$HOME/.belve/bin/claude-hooks-install" 2>/dev/null || true
+# ので setup 全体は落とさない (|| true)。installer 自身の WARN (settings.json
+# 退避通知等) は観測性のため潰さず流す。
+"$HOME/.belve/bin/claude-hooks-install" || true

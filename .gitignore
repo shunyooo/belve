@@ -39,3 +39,7 @@ ghostty/
 .env
 .haltr/
 HANDOFF.md
+
+# Python bytecode cache (py_compile 等の副産物)
+__pycache__/
+*.pyc
