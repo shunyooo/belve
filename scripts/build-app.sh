@@ -51,6 +51,7 @@ cp Sources/Belve/Resources/bin/belve Belve.app/Contents/Resources/bin/ 2>/dev/nu
 cp Sources/Belve/Resources/bin/claude Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp Sources/Belve/Resources/bin/codex Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp Sources/Belve/Resources/bin/codex-hooks-install Belve.app/Contents/Resources/bin/ 2>/dev/null || true
+cp Sources/Belve/Resources/bin/claude-hooks-install Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp Sources/Belve/Resources/bin/belve-setup Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 cp Sources/Belve/Resources/bin/session-bootstrap.sh Belve.app/Contents/Resources/bin/ 2>/dev/null || true
 # belve-connect was removed (tunnel migration); purge stale copy from previous builds

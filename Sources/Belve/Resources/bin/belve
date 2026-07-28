@@ -50,14 +50,17 @@ emit_event() {
     # ソース)。tmux 外なら空。sessionId は claude code hook の session_id で、
     # NotificationStore が「pane あたりの primary session」を識別し Stop hook で
     # spawn された別 claude からの通知を抑制するのに使う。
-    local sid="${SESSION_ID:-}"
-    osc=$(printf '\033]9;BELVE3:%s:%s:%s:%s:%s\007' "$PANE_ID" "$TMUX_SESSION" "$sid" "$status" "$message")
-    if [ -n "${BELVE_TTY:-}" ] && [ -w "$BELVE_TTY" ]; then
-        echo -n "$osc" > "$BELVE_TTY" 2>/dev/null
-    elif echo -n "$osc" > /dev/tty 2>/dev/null; then
-        :
-    else
-        echo -n "$osc" >&2 2>/dev/null || true
+    #
+    # OSC は Belve が provision した BELVE_TTY にだけ書く。フックをグローバル
+    # settings.json に移した結果、third-party ターミナル (iTerm2 / VS Code /
+    # モバイル SSH) で走る claude でも hook が発火するようになった。/dev/tty への
+    # fallback を残すと OSC 9 (= iTerm2 の通知シーケンス) がそれらのターミナルで
+    # 誤爆するので、BELVE_TTY が無い/書けない invocation では OSC を出さない。
+    # roster は @belve_state 経由 (上の tmux set-option) なので OSC 無しでも状態は拾える。
+    if [ -n "${BELVE_TTY:-}" ] && [ -w "${BELVE_TTY:-}" ]; then
+        local sid="${SESSION_ID:-}"
+        osc=$(printf '\033]9;BELVE3:%s:%s:%s:%s:%s\007' "$PANE_ID" "$TMUX_SESSION" "$sid" "$status" "$message")
+        echo -n "$osc" > "$BELVE_TTY" 2>/dev/null || true
     fi
 }
 
@@ -173,8 +176,18 @@ parse_json() {
 
 case "${1:-}" in
     claude-hook)
-        # Hook 内から spawn される子 claude が Belve hooks を inject しないように
-        # 環境変数をセット。子 claude は claude wrapper でこれを見て pass-through する。
+        # Early-exit guard: 既に belve hook context 内なら何も emit しない。
+        # フックをグローバル settings.json に移したため、wrapper の注入除外
+        # (「-p は付けない」「hook が spawn した子 claude には付けない」) が効かなく
+        # なった。代わりにここで一元的に抑制する:
+        #  - hook が spawn した子 claude: 親 hook が export した BELVE_HOOK_RUNNING を継承。
+        #  - `-p`/`--print`: claude wrapper が BELVE_HOOK_RUNNING=1 を立てる。
+        # stdin は drain してから抜ける (claude 側の EPIPE 回避)。
+        if [ -n "${BELVE_HOOK_RUNNING:-}" ]; then
+            cat > /dev/null 2>&1 || true
+            exit 0
+        fi
+        # 自分が spawn する子 claude に印を継承させる (ネスト発火の抑制)。
         export BELVE_HOOK_RUNNING=1
         # 全 hook subcommand 共通で stdin を一度だけ読み、session_id 抽出。
         read_payload

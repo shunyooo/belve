@@ -196,6 +196,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 		// Generate launcher script for terminal sessions
 		LauncherScriptGenerator.generate()
 
+		// ローカル claude セッションでも agent-watch を効かせる: hook をグローバル
+		// ~/.claude/settings.json に merge し、参照先 ~/.belve/bin を stage する
+		// (remote は belve-setup が担当)。ファイル IO + python3 実行なので起動を
+		// ブロックしないよう detached。
+		Task.detached(priority: .utility) {
+			LocalHooksInstaller.install()
+		}
+
 		// Invalidate cached setup state in mac-master so updated scripts
 		// (session-bootstrap.sh etc.) get re-deployed on next connection.
 		Task.detached {

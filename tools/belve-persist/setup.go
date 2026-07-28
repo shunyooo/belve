@@ -242,6 +242,7 @@ func deployBundle(host, binDir string) error {
 		{filepath.Join(binDir, "claude"), filepath.Join(staging, "bin", "claude")},
 		{filepath.Join(binDir, "codex"), filepath.Join(staging, "bin", "codex")},
 		{filepath.Join(binDir, "codex-hooks-install"), filepath.Join(staging, "bin", "codex-hooks-install")},
+		{filepath.Join(binDir, "claude-hooks-install"), filepath.Join(staging, "bin", "claude-hooks-install")},
 		{filepath.Join(binDir, "belve-setup"), filepath.Join(staging, "bin", "belve-setup")},
 		{filepath.Join(binDir, "belve-persist-linux-amd64"), filepath.Join(staging, "bin", "belve-persist-linux-amd64")},
 		{filepath.Join(binDir, "belve-persist-linux-arm64"), filepath.Join(staging, "bin", "belve-persist-linux-arm64")},

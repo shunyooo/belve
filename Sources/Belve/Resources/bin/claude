@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Belve claude wrapper - injects hooks that call `belve claude-hook`
+# Belve claude wrapper - thin passthrough to the real `claude`.
 #
-# Inside a Belve terminal (BELVE_SESSION=1), intercepts `claude` to inject
-# --settings with hook commands. Outside Belve, passes through unchanged.
+# 以前は BELVE_SESSION 時に --settings で belve hook を注入していたが、フックは
+# グローバル ~/.claude/settings.json に移した (claude-hooks-install)。これで起動
+# 経路に依らず全 claude がフックを読む。この wrapper の残った役目は 2 つだけ:
+#  (1) Claude Code v2.1.x SessionStart mkdir bug の workaround (下記)。
+#  (2) -p/--print 実行に BELVE_HOOK_RUNNING 印を付け、belve hook を抑制する。
 
 set -euo pipefail
 
@@ -36,48 +39,19 @@ find_real_claude() {
     return 1
 }
 
-# Pass through if not in Belve
-if [[ -z "${BELVE_SESSION:-}" ]]; then
-    REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
-    exec "$REAL_CLAUDE" "$@"
-fi
-
-# Non-interactive mode (-p / --print) or child of a hook: run without
-# Belve hooks to prevent polluting the parent's session bar / companion.
-for _arg in "$@"; do
-    case "$_arg" in
-        -p|--print) REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
-                    exec "$REAL_CLAUDE" "$@" ;;
-    esac
-done
-if [[ -n "${BELVE_HOOK_RUNNING:-}" ]]; then
-    REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
-    exec "$REAL_CLAUDE" "$@"
-fi
-
 REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
 
-# Pass through subcommands that don't support hooks
-case "${1:-}" in
-    mcp|config|api-key) exec "$REAL_CLAUDE" "$@" ;;
-esac
+# Belve の agent-watch フックは今やグローバル ~/.claude/settings.json に入っている
+# (claude-hooks-install が merge)。よってこの wrapper は --settings 注入をしない。
+# 唯一の残った役目は「belve event を出してはいけない invocation」に印を付けること:
+#  - `-p` / `--print`: one-shot 実行。親セッションの状態バーを汚さない。
+#  - hook が spawn した子 claude: 親 hook が既に BELVE_HOOK_RUNNING=1 を export して
+#    いるので env 継承で自動的に印が付く (ここで何もしなくてよい)。
+# 印が付いた invocation では belve hook (belve claude-hook) 側が early-exit する。
+for _arg in "$@"; do
+    case "$_arg" in
+        -p|--print) export BELVE_HOOK_RUNNING=1; break ;;
+    esac
+done
 
-# Find belve CLI (same directory as this wrapper)
-BELVE_BIN="$(cd "$(dirname "$0")" && pwd)/belve"
-H="\\\"${BELVE_BIN}\\\" claude-hook"
-
-# Always inject Belve's full hook set. Claude's --settings merges with the user's
-# settings.json, so if the user defines the same hook the two run side-by-side.
-# Belve wants to capture every event for the session bar — coexistence is the goal.
-HOOKS_JSON="{\"hooks\":{\
-\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} session-start\",\"timeout\":5}]}],\
-\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} prompt-submit\",\"timeout\":5}]}],\
-\"Notification\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} notification\",\"timeout\":5}]}],\
-\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} pre-tool-use\",\"timeout\":3}]}],\
-\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} post-tool-use\",\"timeout\":3}]}],\
-\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} stop\",\"timeout\":5}]}],\
-\"SubagentStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} subagent-start\",\"timeout\":3}]}],\
-\"SubagentStop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"${H} subagent-stop\",\"timeout\":3}]}]\
-}}"
-
-exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"
+exec "$REAL_CLAUDE" "$@"
