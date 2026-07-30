@@ -96,24 +96,35 @@ struct PreviewArea: View {
 	}
 
 	/// worktree 一覧を再取得し、選択中パスの存在確認とバッジ用 status を更新する。
-	/// 接続前 (provider 未 ready) は列挙できないので現状維持し、次回に委ねる
-	/// (FileTreeView.loadRoot と同じスタンス)。
-	private func refreshWorktrees() {
+	/// remote は接続 (RPC) 確立前だと列挙できないので、FileTreeView.loadRoot と同様に
+	/// ready になるまで再試行する (最大 ~15s)。
+	private func refreshWorktrees(retry: Int = 0) {
 		let provider = project.provider
 		let effective = project.effectivePath
 		let selected = layoutState.selectedWorktreePath
 		DispatchQueue.global(qos: .userInitiated).async {
-			guard provider.isReady else { return }
+			guard provider.isReady else {
+				if retry < 30 {
+					DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+						self.refreshWorktrees(retry: retry + 1)
+					}
+				}
+				return
+			}
 			let list = WorktreeService(runCommand: { provider.run($0) }).list(effectivePath: effective)
-			let stillExists = selected == nil || list.contains { $0.path == selected }
+			// git repo なら list は必ず main を含む (= 非空)。空 = 非 git / コマンド失敗。
+			// 選択の存在確認と revert は「列挙が成功した」時だけ行い、transient な空で
+			// 選択を奪わない。
+			let enumerated = !list.isEmpty
+			let stillExists = selected == nil || (enumerated && list.contains { $0.path == selected })
 			var wtStatus: [String: String] = [:]
-			if stillExists, let sel = selected {
+			if let sel = selected, stillExists {
 				wtStatus = ProjectStore.expandGitStatus(provider.gitStatus(sel))
 			}
 			DispatchQueue.main.async {
 				self.worktrees = list
 				self.worktreeGitStatus = wtStatus
-				if !stillExists {
+				if enumerated && !stillExists {
 					// 選択中 worktree が消えた → main に戻す。タブ/ツリーに即反映される
 					// (= silent path-switch ではない) が、記録のためログも残す。
 					NSLog("[Belve] selected worktree gone, reverting to main: %@", selected ?? "")
@@ -215,6 +226,11 @@ struct PreviewArea: View {
 			saveCurrentFile()
 			projectStore.refreshGitStatus()
 			changedFilesStore.refresh(for: project, rootPath: rootPath)
+			// worktree 選択中はツリーの git バッジ源が worktreeGitStatus なので、
+			// 保存後にそれも取り直す (projectStore.refreshGitStatus は main 基準)。
+			if layoutState.selectedWorktreePath != nil {
+				refreshWorktrees()
+			}
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveShowChanges)) { notif in
 			if let projectId = notif.userInfo?["projectId"] as? UUID {
@@ -289,7 +305,9 @@ struct PreviewArea: View {
 						store: changedFilesStore,
 						currentFilePath: openFile?.path ?? layoutState.lastOpenedFile,
 						onSelect: { path in
-							loadFile(at: path)
+							// 変更一覧の path は repo 相対。現在の root (worktree 追従) で
+							// 絶対化してから開く (ChangesView.openFileInEditor と同じ扱い)。
+							loadFile(at: rootPath == "." ? path : (rootPath as NSString).appendingPathComponent(path))
 						}
 					)
 				} else {
@@ -412,6 +430,7 @@ struct PreviewArea: View {
 								CodeEditorView(
 									projectId: project.id,
 									project: project,
+									rootPath: rootPath,
 									filename: file.path,
 									content: file.content,
 									line: file.line,
@@ -433,6 +452,7 @@ struct PreviewArea: View {
 						CodeEditorView(
 							projectId: project.id,
 							project: project,
+							rootPath: rootPath,
 							filename: file.path,
 							content: file.content,
 							line: file.line,

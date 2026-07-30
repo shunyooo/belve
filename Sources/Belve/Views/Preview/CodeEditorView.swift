@@ -49,6 +49,8 @@ final class EditorWebView: WKWebView {
 struct CodeEditorView: NSViewRepresentable {
 	let projectId: UUID
 	let project: Project
+	/// 実効 repo root (worktree 選択に追従)。diff gutter の git 相対パス計算に使う。
+	var rootPath: String
 	let filename: String
 	let content: String
 	let line: Int?
@@ -77,6 +79,7 @@ struct CodeEditorView: NSViewRepresentable {
 
 	func updateNSView(_ nsView: WKWebView, context: Context) {
 		context.coordinator.project = project
+		context.coordinator.rootPath = rootPath
 		context.coordinator.onHoverInfoRequest = onHoverInfoRequest
 		context.coordinator.openFile(filename: filename, content: content, line: line, column: column)
 	}
@@ -121,6 +124,8 @@ struct CodeEditorView: NSViewRepresentable {
 	class Coordinator: NSObject, WKScriptMessageHandler {
 		weak var webView: WKWebView?
 		var project: Project?
+		/// 実効 repo root (worktree 選択に追従)。diff gutter の相対パス計算に使う。
+		var rootPath: String = "."
 		var pendingFile: (filename: String, content: String, line: Int?, column: Int?)?
 		var isReady = false
 		private var lastOpenedFile: (filename: String, content: String, line: Int?, column: Int?)?
@@ -301,8 +306,8 @@ struct CodeEditorView: NSViewRepresentable {
 			// Load diff markers in background
 			if let project {
 				let filePath = filename
+				let rootPath = self.rootPath
 				DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-					let rootPath = project.effectivePath
 					let relativePath = filePath.hasPrefix(rootPath) ?
 						String(filePath.dropFirst(rootPath.count).drop(while: { $0 == "/" })) : filePath
 					let hunks = project.provider.gitDiffHunks(rootPath, file: relativePath)
