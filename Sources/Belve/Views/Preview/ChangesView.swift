@@ -358,6 +358,8 @@ fileprivate struct TimelineSidebar: View {
 
 struct ChangesView: View {
 	let project: Project
+	/// worktree 選択に応じた実効 repo root。全 git 操作はこれを基準にする。
+	var rootPath: String
 	@ObservedObject var layoutState: ProjectLayoutState
 	var onOpenFile: ((String) -> Void)? = nil
 	var onDismiss: (() -> Void)? = nil
@@ -609,7 +611,6 @@ struct ChangesView: View {
 
 	private func openFileInEditor(_ path: String) {
 		let fullPath: String
-		let rootPath = project.effectivePath
 		if rootPath == "." {
 			fullPath = path
 		} else {
@@ -667,7 +668,6 @@ struct ChangesView: View {
 
 	private func checkForChanges() {
 		let provider = project.provider
-		let rootPath = project.effectivePath
 		let currentSelection = selectedEntries
 		NSLog("[Belve][diff] checkForChanges selection=%@", currentSelection.map { "\($0)" }.joined(separator: ","))
 		DispatchQueue.global(qos: .utility).async {
@@ -706,7 +706,6 @@ struct ChangesView: View {
 
 	private func loadCommits() {
 		let provider = project.provider
-		let rootPath = project.effectivePath
 		DispatchQueue.global(qos: .utility).async {
 			let result = provider.gitLog(rootPath, maxCount: 50)
 			let branch = provider.gitBranch(rootPath) ?? ""
@@ -731,7 +730,6 @@ struct ChangesView: View {
 	private func loadDiffForSelection() {
 		isLoading = true
 		let provider = project.provider
-		let rootPath = project.effectivePath
 		let currentSelection = selectedEntries
 
 		let includeUnstaged = currentSelection.contains(.unstaged)

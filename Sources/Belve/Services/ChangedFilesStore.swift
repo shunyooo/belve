@@ -47,12 +47,13 @@ final class ChangedFilesStore: ObservableObject {
 	private var refreshToken = 0
 
 	/// 指定プロジェクトの変更ファイルを取得して recency 順に反映する。
-	func refresh(for project: Project) {
+	/// `rootPath` は worktree 選択に応じた実効 root (未指定なら project.effectivePath)。
+	func refresh(for project: Project, rootPath: String? = nil) {
 		refreshToken &+= 1
 		let token = refreshToken
 		isLoading = true
 		let provider = project.provider
-		let rootPath = project.effectivePath
+		let rootPath = rootPath ?? project.effectivePath
 
 		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
 			let changed = provider.gitChangedFiles(rootPath, args: [])

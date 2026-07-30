@@ -190,7 +190,7 @@ class FileTreeState: ObservableObject {
 		focusedPath = visible[idx + 1].path
 	}
 
-	func toggle(path: String, project: Project) {
+	func toggle(path: String, project: Project, rootPath: String) {
 		if expandedPaths.contains(path) {
 			// Collapse: also collapse any compact-expanded children
 			expandedPaths.remove(path)
@@ -203,7 +203,6 @@ class FileTreeState: ObservableObject {
 			expandedPaths.insert(path)
 			if childrenCache[path] == nil {
 				loadingDirectories.insert(path)
-				let rootPath = project.effectivePath
 				DispatchQueue.global().async {
 					var children = project.provider.listDirectory(path)
 					// Compact folders: if only child is a single directory, merge names
@@ -567,14 +566,14 @@ class FileTreeState: ObservableObject {
 		}
 	}
 
-	func expandOrMoveToChild(project: Project) {
+	func expandOrMoveToChild(project: Project, rootPath: String) {
 		guard let current = focusedPath else { return }
 		let visible = visibleItems()
 		guard let item = visible.first(where: { $0.path == current }) else { return }
 
 		if item.isDirectory {
 			if !expandedPaths.contains(current) {
-				toggle(path: current, project: project)
+				toggle(path: current, project: project, rootPath: rootPath)
 			} else {
 				// Already expanded — move to first child
 				if let children = childrenCache[current], let first = children.first {
@@ -784,7 +783,7 @@ struct FileTreeView: View {
 			}
 			.onKeyPress(.rightArrow) {
 				guard !isEditing else { return .ignored }
-				state.expandOrMoveToChild(project: project)
+				state.expandOrMoveToChild(project: project, rootPath: rootPath)
 				return .handled
 			}
 			.onKeyPress(.leftArrow) {
@@ -798,7 +797,7 @@ struct FileTreeView: View {
 					let visible = state.visibleItems()
 					if let item = visible.first(where: { $0.path == path }) {
 						if item.isDirectory {
-							state.toggle(path: path, project: project)
+							state.toggle(path: path, project: project, rootPath: rootPath)
 						} else {
 							onFileSelect(path)
 						}
@@ -873,6 +872,15 @@ struct FileTreeView: View {
 				} else if let path = currentFilePath, !path.isEmpty {
 					state.reveal(path: path, rootPath: rootPath, project: project)
 				}
+			}
+			.onChange(of: rootPath) {
+				// worktree タブ切替で root が変わったらツリーを組み直す。
+				// 別 worktree のパスは無効なので展開/キャッシュを全消しして再読込。
+				state.expandedPaths.removeAll()
+				state.childrenCache.removeAll()
+				state.ignoredPaths.removeAll()
+				state.items = []
+				state.loadRoot(project: project, rootPath: rootPath)
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .belveFocusFileTree)) { notif in
 				guard let projectId = notif.userInfo?["projectId"] as? UUID,
@@ -1171,7 +1179,7 @@ struct FileTreeRow: View {
 		cancelSpringExpand()
 		let work = DispatchWorkItem { [item, project, state] in
 			guard item.isDirectory, !state.expandedPaths.contains(item.path) else { return }
-			state.toggle(path: item.path, project: project)
+			state.toggle(path: item.path, project: project, rootPath: rootPath)
 		}
 		springExpandWork = work
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
@@ -1268,7 +1276,7 @@ struct FileTreeRow: View {
 				} else {
 					state.selectSingle(item.path)
 					if item.isDirectory {
-						state.toggle(path: item.path, project: project)
+						state.toggle(path: item.path, project: project, rootPath: rootPath)
 					} else {
 						onFileSelect(item.path)
 					}

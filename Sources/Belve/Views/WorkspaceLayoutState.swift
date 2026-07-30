@@ -77,6 +77,12 @@ final class ProjectLayoutState: ObservableObject, Codable {
 	@Published var diffFilterCommitted: Bool = false {
 		didSet { onChanged?() }
 	}
+	/// Preview 側で選択中の git worktree の絶対パス。nil = メイン作業ツリー
+	/// (= project.effectivePath の正規経路)。worktree はエフェメラルなので、
+	/// 復元時に存在確認して消えていれば nil に戻す (PreviewArea が担当)。
+	@Published var selectedWorktreePath: String? = nil {
+		didSet { onChanged?() }
+	}
 
 	var onChanged: (() -> Void)?
 
@@ -94,6 +100,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile, showChanges, previewMode, browserURL, browserOpen, browserThumbnail, browserFrame, browserViewport
 		case changesTreeWidth, diffFilterStaged, diffFilterUnstaged, diffFilterCommitted
 		case fileColumnShowsChanges
+		case selectedWorktreePath
 	}
 
 	required init(from decoder: Decoder) throws {
@@ -115,6 +122,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		diffFilterStaged = try container.decodeIfPresent(Bool.self, forKey: .diffFilterStaged) ?? true
 		diffFilterUnstaged = try container.decodeIfPresent(Bool.self, forKey: .diffFilterUnstaged) ?? true
 		diffFilterCommitted = try container.decodeIfPresent(Bool.self, forKey: .diffFilterCommitted) ?? false
+		selectedWorktreePath = try container.decodeIfPresent(String.self, forKey: .selectedWorktreePath)
 	}
 
 	func encode(to encoder: Encoder) throws {
@@ -136,6 +144,7 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		try container.encode(diffFilterStaged, forKey: .diffFilterStaged)
 		try container.encode(diffFilterUnstaged, forKey: .diffFilterUnstaged)
 		try container.encode(diffFilterCommitted, forKey: .diffFilterCommitted)
+		try container.encodeIfPresent(selectedWorktreePath, forKey: .selectedWorktreePath)
 	}
 }
 

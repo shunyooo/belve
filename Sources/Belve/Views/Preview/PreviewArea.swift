@@ -55,9 +55,18 @@ struct PreviewArea: View {
 	/// true = `CodeEditorView` (CodeMirror) で plain text 編集
 	@State private var markdownEditMode = false
 
+	/// Preview 側の実効 root。worktree 選択時はその絶対パス、未選択(main)なら
+	/// project.effectivePath。tree / editor / search / Changes が全部これを見る。
 	private var rootPath: String {
-		project.effectivePath
+		layoutState.selectedWorktreePath ?? project.effectivePath
 	}
+
+	/// 現在の project の git worktree 一覧 (main 含む)。appear / project 切替 /
+	/// 明示リフレッシュ時にだけ更新 (エフェメラルだが polling はしない)。
+	@State private var worktrees: [Worktree] = []
+	/// worktree 選択時のファイルツリー git バッジ用 status (rootPath 基準)。
+	/// main 選択時は使わず projectStore.gitFileStatus を使う。
+	@State private var worktreeGitStatus: [String: String] = [:]
 
 	/// Markdown ファイル時に右下に出る Preview ⇄ Edit toggle ボタン。
 	private var markdownEditToggleButton: some View {
@@ -86,6 +95,48 @@ struct PreviewArea: View {
 		.help(markdownEditMode ? "Switch to preview" : "Edit raw markdown")
 	}
 
+	/// worktree 一覧を再取得し、選択中パスの存在確認とバッジ用 status を更新する。
+	/// 接続前 (provider 未 ready) は列挙できないので現状維持し、次回に委ねる
+	/// (FileTreeView.loadRoot と同じスタンス)。
+	private func refreshWorktrees() {
+		let provider = project.provider
+		let effective = project.effectivePath
+		let selected = layoutState.selectedWorktreePath
+		DispatchQueue.global(qos: .userInitiated).async {
+			guard provider.isReady else { return }
+			let list = WorktreeService(runCommand: { provider.run($0) }).list(effectivePath: effective)
+			let stillExists = selected == nil || list.contains { $0.path == selected }
+			var wtStatus: [String: String] = [:]
+			if stillExists, let sel = selected {
+				wtStatus = ProjectStore.expandGitStatus(provider.gitStatus(sel))
+			}
+			DispatchQueue.main.async {
+				self.worktrees = list
+				self.worktreeGitStatus = wtStatus
+				if !stillExists {
+					// 選択中 worktree が消えた → main に戻す。タブ/ツリーに即反映される
+					// (= silent path-switch ではない) が、記録のためログも残す。
+					NSLog("[Belve] selected worktree gone, reverting to main: %@", selected ?? "")
+					self.layoutState.selectedWorktreePath = nil
+				}
+			}
+		}
+	}
+
+	/// タブ選択。main は nil を保存 (= 正規経路)。ツリーは rootPath の onChange で
+	/// 自動再構築されるので、ここでは開いていたファイルを閉じ、変更一覧とバッジ status
+	/// を新しい root で取り直す。
+	private func selectWorktree(_ wt: Worktree) {
+		let newValue = wt.isMain ? nil : wt.path
+		guard layoutState.selectedWorktreePath != newValue else { return }
+		layoutState.selectedWorktreePath = newValue
+		// 別 root の絶対パスを指したファイルを開いたままにしない。
+		openFile = nil
+		layoutState.lastOpenedFile = nil
+		changedFilesStore.refresh(for: project, rootPath: newValue ?? project.effectivePath)
+		refreshWorktrees()
+	}
+
 	var body: some View {
 		GeometryReader { geo in
 			HStack(spacing: 0) {
@@ -96,7 +147,7 @@ struct PreviewArea: View {
 				}
 
 				if layoutState.showChanges {
-					ChangesView(project: project, layoutState: layoutState, onOpenFile: { path in
+					ChangesView(project: project, rootPath: rootPath, layoutState: layoutState, onOpenFile: { path in
 						layoutState.showChanges = false
 						loadFile(at: path)
 					}, onDismiss: {
@@ -147,21 +198,23 @@ struct PreviewArea: View {
 				NSLog("[Belve][restore] project=%@ tries to restore file=%@", project.name, savedPath)
 				loadFile(at: savedPath)
 			}
-			changedFilesStore.refresh(for: project)
+			changedFilesStore.refresh(for: project, rootPath: rootPath)
+			refreshWorktrees()
 		}
 		.onChange(of: project.id) {
-			changedFilesStore.refresh(for: project)
+			changedFilesStore.refresh(for: project, rootPath: rootPath)
+			refreshWorktrees()
 		}
 		.onChange(of: layoutState.fileColumnShowsChanges) {
 			// 変更モードに切替えた瞬間に最新の変更ファイルを取り直す。
 			if layoutState.fileColumnShowsChanges {
-				changedFilesStore.refresh(for: project)
+				changedFilesStore.refresh(for: project, rootPath: rootPath)
 			}
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveFileSave)) { _ in
 			saveCurrentFile()
 			projectStore.refreshGitStatus()
-			changedFilesStore.refresh(for: project)
+			changedFilesStore.refresh(for: project, rootPath: rootPath)
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .belveShowChanges)) { notif in
 			if let projectId = notif.userInfo?["projectId"] as? UUID {
@@ -219,6 +272,13 @@ struct PreviewArea: View {
 			}
 
 			VStack(spacing: 0) {
+				WorktreeTabsView(
+					worktrees: worktrees,
+					selectedPath: layoutState.selectedWorktreePath,
+					onSelect: { selectWorktree($0) },
+					onRefresh: { refreshWorktrees() }
+				)
+
 				FileColumnModeToggle(showsChanges: $layoutState.fileColumnShowsChanges)
 
 				Theme.borderSubtle
@@ -240,7 +300,7 @@ struct PreviewArea: View {
 							loadFile(at: path)
 						},
 						state: fileTreeState,
-						gitFileStatus: projectStore.gitFileStatus,
+						gitFileStatus: layoutState.selectedWorktreePath == nil ? projectStore.gitFileStatus : worktreeGitStatus,
 						currentFilePath: openFile?.path ?? layoutState.lastOpenedFile
 					)
 				}

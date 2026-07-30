@@ -320,19 +320,7 @@ class ProjectStore: ObservableObject {
 			let branch = provider.gitBranch(path)
 			let rawStatus = provider.gitStatus(path)
 
-			var expanded: [String: String] = [:]
-			for (filePath, status) in rawStatus {
-				expanded[filePath] = status
-				var dir = (filePath as NSString).deletingLastPathComponent
-				while !dir.isEmpty && dir != "." {
-					if let existing = expanded[dir] {
-						expanded[dir] = Self.mergeGitStatus(existing, status)
-					} else {
-						expanded[dir] = status
-					}
-					dir = (dir as NSString).deletingLastPathComponent
-				}
-			}
+			let expanded = Self.expandGitStatus(rawStatus)
 
 			DispatchQueue.main.async {
 				// 値が変わってない時は @Published を触らない。
@@ -352,6 +340,26 @@ class ProjectStore: ObservableObject {
 	private static func mergeGitStatus(_ a: String, _ b: String) -> String {
 		let priority = ["M": 3, "D": 2, "A": 1, "??": 0]
 		return (priority[a] ?? 0) >= (priority[b] ?? 0) ? a : b
+	}
+
+	/// `gitStatus` の生 (relativePath → status) を、親ディレクトリにも status を
+	/// roll-up した map に展開する (ファイルツリーの各段にバッジを出すため)。
+	/// worktree 選択時に PreviewArea が別 root の status を作るのにも再利用する。
+	static func expandGitStatus(_ rawStatus: [String: String]) -> [String: String] {
+		var expanded: [String: String] = [:]
+		for (filePath, status) in rawStatus {
+			expanded[filePath] = status
+			var dir = (filePath as NSString).deletingLastPathComponent
+			while !dir.isEmpty && dir != "." {
+				if let existing = expanded[dir] {
+					expanded[dir] = mergeGitStatus(existing, status)
+				} else {
+					expanded[dir] = status
+				}
+				dir = (dir as NSString).deletingLastPathComponent
+			}
+		}
+		return expanded
 	}
 
 	/// Select project by index (for Cmd+1-9).
