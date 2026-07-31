@@ -32,6 +32,9 @@ final class RemoteFolderWatcher: RemoteFolderWatching {
 	private var desired: [UUID: Set<String>] = [:]
 	/// reconnect ハンドラ登録済みの client (client identity が変わったら張り直す)。
 	private var reconnectClient: [UUID: RemoteRPCClient] = [:]
+	/// projectId ごとの世代。reconnect / stopAll で++し、跨いだ in-flight add の
+	/// 結果 (旧接続の無効な watchId) が台帳に混入するのを防ぐ。
+	private var generation: [UUID: Int] = [:]
 
 	init(maxWatches: Int = 64, clientResolver: @escaping (UUID) -> RemoteRPCClient?) {
 		self.maxWatches = maxWatches
@@ -67,10 +70,8 @@ final class RemoteFolderWatcher: RemoteFolderWatching {
 
 		var current = watches[projectId] ?? [:]
 		let (toAdd, toRemove) = Self.plan(current: current, desired: desiredPaths, maxWatches: maxWatches)
-		// 台帳は .git 除外後の集合で持つ (再接続張り直し用)。
-		desired[projectId] = desiredPaths.filter { p in
-			!p.isEmpty && !p.contains("/.git/") && !p.hasSuffix("/.git") && p != ".git"
-		}
+		desired[projectId] = Self.gitFiltered(desiredPaths)
+		let gen = generation[projectId] ?? 0
 
 		for (path, id) in toRemove {
 			current[path] = nil
@@ -81,27 +82,14 @@ final class RemoteFolderWatcher: RemoteFolderWatching {
 		for path in toAdd {
 			// プレースホルダを先に入れ、連続 reconcile での二重登録を防ぐ。
 			current[path] = ""
-			Task { [weak self] in
-				let res = try? await client.send(op: "watch", params: ["path": path])
-				let id = res?.result?["watchId"] as? String
-				await MainActor.run {
-					guard let self else { return }
-					var m = self.watches[projectId] ?? [:]
-					// まだこの path を望んでいる時だけ確定。途中で collapse された場合は
-					// プレースホルダが消えているので、掴んだ watch は即解除する。
-					if m[path] == "" {
-						if let id { m[path] = id } else { m[path] = nil }
-						self.watches[projectId] = m
-					} else if let id {
-						Task { _ = try? await client.send(op: "unwatch", params: ["watchId": id]) }
-					}
-				}
-			}
+			addWatch(projectId: projectId, path: path, client: client, generation: gen)
 		}
 		watches[projectId] = current
 	}
 
 	func stopAll(projectId: UUID) {
+		// 世代を上げて in-flight の add 結果を無効化する。
+		generation[projectId, default: 0] += 1
 		guard let client = clientResolver(projectId) else {
 			watches[projectId] = nil
 			desired[projectId] = nil
@@ -114,30 +102,61 @@ final class RemoteFolderWatcher: RemoteFolderWatching {
 		desired[projectId] = nil
 	}
 
+	/// 1 件 watch を張り、結果を台帳へ反映する。`generation` は発行時点の世代で、
+	/// 完了時に世代が変わっていたら (reconnect / stopAll) 結果を破棄し、掴んだ watch は
+	/// 解放する (世代を跨いだ stale id の混入を防ぐ)。
+	private func addWatch(projectId: UUID, path: String, client: RemoteRPCClient, generation gen: Int) {
+		Task { [weak self] in
+			let res = try? await client.send(op: "watch", params: ["path": path])
+			let id = res?.result?["watchId"] as? String
+			await MainActor.run {
+				guard let self else { return }
+				guard self.generation[projectId] == gen else {
+					// 世代が変わった → この結果は無効。掴んだ watch を解放。
+					if let id { Task { _ = try? await client.send(op: "unwatch", params: ["watchId": id]) } }
+					return
+				}
+				var m = self.watches[projectId] ?? [:]
+				// まだこの path を望んでいる時だけ確定。途中で collapse された場合は
+				// プレースホルダが消えているので、掴んだ watch は即解除する。
+				if m[path] == "" {
+					if let id { m[path] = id } else { m[path] = nil }
+					self.watches[projectId] = m
+				} else if let id {
+					Task { _ = try? await client.send(op: "unwatch", params: ["watchId": id]) }
+				}
+			}
+		}
+	}
+
 	/// client ごとに一度だけ reconnect ハンドラを張る。再接続で broker 側 watch は
-	/// 消えるので、台帳をクリアして desired を張り直す (root watch の再登録と同じ思想)。
+	/// 消えるので、世代を上げて台帳をクリアし、desired を **上限内で** 張り直す
+	/// (root watch の再登録と同じ思想。cap を守るため plan を通す)。
 	private func ensureReconnectHandler(projectId: UUID, client: RemoteRPCClient) {
 		guard reconnectClient[projectId] !== client else { return }
 		reconnectClient[projectId] = client
 		client.subscribeReconnect { [weak self, weak client] in
 			guard let self, let client else { return }
 			DispatchQueue.main.async {
+				self.generation[projectId, default: 0] += 1
+				let gen = self.generation[projectId] ?? 0
 				let want = self.desired[projectId] ?? []
-				self.watches[projectId] = [:]
-				for path in want {
-					self.watches[projectId, default: [:]][path] = ""
-					Task { [weak self] in
-						let res = try? await client.send(op: "watch", params: ["path": path])
-						let id = res?.result?["watchId"] as? String
-						await MainActor.run {
-							guard let self else { return }
-							var m = self.watches[projectId] ?? [:]
-							if m[path] == "" { m[path] = id ?? nil }
-							self.watches[projectId] = m
-						}
-					}
+				// current を空にして張り直す = 上限も改めて効かせる。
+				let (toAdd, _) = Self.plan(current: [:], desired: want, maxWatches: self.maxWatches)
+				var m: [String: String] = [:]
+				for path in toAdd { m[path] = "" }
+				self.watches[projectId] = m
+				for path in toAdd {
+					self.addWatch(projectId: projectId, path: path, client: client, generation: gen)
 				}
 			}
+		}
+	}
+
+	/// `.git` / 空パスを除いた集合 (git status の書込みによる self-trigger loop 防止)。
+	private static func gitFiltered(_ paths: Set<String>) -> Set<String> {
+		paths.filter { p in
+			!p.isEmpty && !p.contains("/.git/") && !p.hasSuffix("/.git") && p != ".git"
 		}
 	}
 }
