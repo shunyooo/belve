@@ -148,6 +148,20 @@ struct PreviewArea: View {
 		refreshWorktrees()
 	}
 
+	/// remote: 現在ツリーで展開中のフォルダ (+ main と異なる worktree root) を
+	/// broker の fsnotify watch に追従させる。fsnotify 非再帰でサブディレクトリの
+	/// 変更がライブ反映されない穴を、可視範囲だけ埋める。root (effectivePath) は
+	/// ProjectStore が別途 watch しているので二重登録しない。冪等 diff なので
+	/// expandedPaths / worktree 変化のたびに呼んで問題ない。
+	private func reconcileRemoteWatches() {
+		guard project.isRemote else { return }
+		var desired = fileTreeState.expandedPaths
+		if rootPath != project.effectivePath {
+			desired.insert(rootPath)
+		}
+		projectStore.reconcileRemoteFolderWatches(projectId: project.id, desiredPaths: desired)
+	}
+
 	var body: some View {
 		GeometryReader { geo in
 			HStack(spacing: 0) {
@@ -215,6 +229,13 @@ struct PreviewArea: View {
 		.onChange(of: project.id) {
 			changedFilesStore.refresh(for: project, rootPath: rootPath)
 			refreshWorktrees()
+			reconcileRemoteWatches()
+		}
+		.onChange(of: fileTreeState.expandedPaths) {
+			reconcileRemoteWatches()
+		}
+		.onChange(of: layoutState.selectedWorktreePath) {
+			reconcileRemoteWatches()
 		}
 		.onChange(of: layoutState.fileColumnShowsChanges) {
 			// 変更モードに切替えた瞬間に最新の変更ファイルを取り直す。

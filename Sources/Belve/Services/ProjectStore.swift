@@ -84,6 +84,11 @@ class ProjectStore: ObservableObject {
 	/// Local project の selected 時に動かす FSEventStream watcher (local 専用)。
 	/// remote は RPC push 経由で別系統。selectedProject が変わるたびに rebind。
 	private let localFileWatcher = LocalFileWatcher()
+	/// remote: ツリー展開中フォルダを on-demand で fsnotify watch するサービス。
+	/// fsnotify 非再帰の穴 (サブディレクトリがライブ反映されない) を可視範囲だけ埋める。
+	private let remoteFolderWatcher: RemoteFolderWatching = RemoteFolderWatcher(
+		clientResolver: { RemoteRPCRegistry.shared.client(for: $0) }
+	)
 	/// fsevent push 購読済みの project ID。多重購読を防ぐ。
 	private var rpcSubscribed: Set<UUID> = []
 	private var rpcSubscribedClient: [UUID: RemoteRPCClient] = [:]
@@ -203,7 +208,12 @@ class ProjectStore: ObservableObject {
 	func select(_ project: Project?) {
 		if selectedProject?.id == project?.id { return }
 		let t0 = Date()
+		let previousId = selectedProject?.id
 		selectedProject = project
+		// 離れる project の remote 展開フォルダ watch は全解除 (watch を持ち越さない)。
+		if let previousId, previousId != project?.id {
+			remoteFolderWatcher.stopAll(projectId: previousId)
+		}
 		// 切替後にターミナルへ focus を戻す。SwiftUI が新 project の view を
 		// mount し終わる時間を見て短い delay 後に refocus する。
 		if project != nil {
@@ -265,6 +275,13 @@ class ProjectStore: ObservableObject {
 	/// commit / checkout / stage 後の状態変化は 30s の backstop polling で拾う。
 	/// `.git` 内の "本物の" 変更だけ抽出する path filter を入れれば watch を
 	/// 復活できるが、現状は安全側で disabled。
+	/// remote: ツリーで現在展開中のフォルダ集合を broker の watch に追従させる。
+	/// PreviewArea が expandedPaths 変化時に呼ぶ。root は subscribeRPCFsEvents が
+	/// 別途 watch しているので、ここでは渡された可視サブディレクトリ等を対象にする。
+	func reconcileRemoteFolderWatches(projectId: UUID, desiredPaths: Set<String>) {
+		remoteFolderWatcher.reconcile(projectId: projectId, desiredPaths: desiredPaths)
+	}
+
 	private func subscribeRPCFsEvents(projectId: UUID, rootPath: String) {
 		guard let client = RemoteRPCRegistry.shared.client(for: projectId) else { return }
 		guard !rpcSubscribed.contains(projectId) || rpcSubscribedClient[projectId] !== client else { return }
