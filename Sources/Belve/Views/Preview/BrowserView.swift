@@ -6,7 +6,8 @@ import WebKit
 /// Shares state with the project's `ProjectLayoutState` so the URL survives
 /// project switches and app restarts.
 struct BrowserView: View {
-	@ObservedObject var layoutState: ProjectLayoutState
+	/// この窓の永続状態 (url / frame / viewport / thumbnail / open)。窓ごとに独立。
+	@ObservedObject var windowState: BrowserWindowState
 	/// Active port forwards for this project — surfaces them in a "quick
 	/// open" button so the user doesn't retype `http://localhost:3000` by
 	/// hand every time.
@@ -19,6 +20,8 @@ struct BrowserView: View {
 	var onClose: (() -> Void)? = nil
 	/// Called when the user clicks the thumbnail to restore full size.
 	var onRestore: (() -> Void)? = nil
+	/// "+" ボタン: 兄弟となる新しいブラウザ窓を生成する。
+	var onNewWindow: (() -> Void)? = nil
 	/// True when the parent window has been shrunk to the thumbnail
 	/// (避難) size. Hides chrome and overlays a click-catcher to expand.
 	var isThumbnail: Bool = false
@@ -106,10 +109,10 @@ struct BrowserView: View {
 		.background(Theme.surface)
 		.onAppear {
 			if urlFieldText.isEmpty {
-				urlFieldText = layoutState.browserURL
+				urlFieldText = windowState.url
 			}
-			if !layoutState.browserURL.isEmpty, requestedURL == nil {
-				requestedURL = normaliseURL(layoutState.browserURL)
+			if !windowState.url.isEmpty, requestedURL == nil {
+				requestedURL = normaliseURL(windowState.url)
 				navigationState.pageCommitted = false
 			}
 		}
@@ -143,13 +146,13 @@ struct BrowserView: View {
 				// Touching it here causes SwiftUI re-renders mid-redirect that
 				// re-trigger the load (infinite-reload bug).
 				urlFieldText = committed.absoluteString
-				layoutState.browserURL = committed.absoluteString
+				windowState.url = committed.absoluteString
 			},
 			// Thumbnail uses page-zoom so the whole page composition (not just
 			// a tiny crop of the top-left) is visible at reduced size.
 			pageZoom: isThumbnail ? 0.3 : 1.0
 		)
-		if let virtual = layoutState.browserViewport?.size, !isThumbnail {
+		if let virtual = windowState.viewport?.size, !isThumbnail {
 			GeometryReader { geo in
 				let scale = min(geo.size.width / virtual.width, geo.size.height / virtual.height)
 				let scaledW = virtual.width * scale
@@ -186,7 +189,7 @@ struct BrowserView: View {
 	]
 
 	private var viewportLabel: String {
-		guard let v = layoutState.browserViewport?.size else { return "Native" }
+		guard let v = windowState.viewport?.size else { return "Native" }
 		return "\(Int(v.width))×\(Int(v.height))"
 	}
 
@@ -202,6 +205,9 @@ struct BrowserView: View {
 				}
 				trafficLight(color: Color(red: 0.95, green: 0.73, blue: 0.22), symbol: "minus", help: "Hide (thumbnail)") {
 					onHide?()
+				}
+				trafficLight(color: Color(red: 0.36, green: 0.78, blue: 0.42), symbol: "plus", help: "New browser window") {
+					onNewWindow?()
 				}
 				Button { navigationState.canGoBack ? navigate(.back) : () } label: {
 					Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
@@ -296,12 +302,12 @@ struct BrowserView: View {
 					ForEach(0..<Self.viewportPresets.count, id: \.self) { idx in
 						let preset = Self.viewportPresets[idx]
 						Button {
-							layoutState.browserViewport = preset.size.map { StoredViewport($0) }
+							windowState.viewport = preset.size.map { StoredViewport($0) }
 							// ウィンドウのアスペクト比も viewport に合わせて
 							// 即座に整形 (= レターボックスが出ない)。
 							onViewportChanged?(preset.size)
 						} label: {
-							let isCurrent = (preset.size.map { StoredViewport($0) }) == layoutState.browserViewport
+							let isCurrent = (preset.size.map { StoredViewport($0) }) == windowState.viewport
 							Label(preset.label, systemImage: isCurrent ? "checkmark" : "")
 						}
 					}
@@ -374,7 +380,7 @@ struct BrowserView: View {
 		requestedURL = u
 		navigationState.pageCommitted = false
 		urlFieldText = u.absoluteString
-		layoutState.browserURL = u.absoluteString
+		windowState.url = u.absoluteString
 		isURLFocused = false
 	}
 
@@ -469,6 +475,10 @@ private struct BrowserWebView: NSViewRepresentable {
 				forName: .belveBrowserNav, object: nil, queue: .main
 			) { [weak self] notif in
 				guard let self, let view = self.webView else { return }
+				// 複数ブラウザ窓が同じ通知を受けるので、自分がキーウィンドウ (フォーカス
+				// 中の窓) の時だけ反応する。in-view ボタンはクリックで自窓がキーになって
+				// いるし、Cmd+R も keyWindow を対象にしているので、これで正しい 1 窓に絞れる。
+				guard view.window?.isKeyWindow == true else { return }
 				switch notif.userInfo?["action"] as? BrowserView.NavAction {
 				case .back:
 					self.navigationState.pageCommitted = false

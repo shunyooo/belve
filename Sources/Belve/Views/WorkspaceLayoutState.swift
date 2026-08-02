@@ -35,32 +35,11 @@ final class ProjectLayoutState: ObservableObject, Codable {
 	@Published var previewMode: PreviewMode = .editor {
 		didSet { onChanged?() }
 	}
-	/// Persisted URL shown in the browser pane. Restored when the user
-	/// flips `previewMode` back to `.browser`.
-	@Published var browserURL: String = "" {
-		didSet { onChanged?() }
-	}
-	/// Whether the floating browser panel was open when this project was last
-	/// active. The window is auto-restored on project select.
-	@Published var browserOpen: Bool = false {
-		didSet { onChanged?() }
-	}
-	/// Whether the browser panel was in its shrunk (thumbnail) state.
-	@Published var browserThumbnail: Bool = false {
-		didSet { onChanged?() }
-	}
-	/// Last full-size frame of the browser panel (separate from thumbnail
-	/// dimensions so shrinking + restoring doesn't lose the user's preferred
-	/// size/position).
-	@Published var browserFrame: StoredFrame? = nil {
-		didSet { onChanged?() }
-	}
-	/// 仮想 viewport (width, height) — 設定されていれば WKWebView をその論理
-	/// サイズで描画し、ウィンドウサイズに合わせて scale で縮小する。
-	/// nil = ネイティブ (ウィンドウサイズそのまま)。media query を効かせた
-	/// まま小さいウィンドウで広い画面のレイアウトを確認するために使う。
-	@Published var browserViewport: StoredViewport? = nil {
-		didSet { onChanged?() }
+	/// このプロジェクトのフローティングブラウザ窓 (複数)。各窓が独立した
+	/// url / frame / viewport / thumbnail / open を持つ。永続化はこの配列が源泉。
+	/// 参照型要素なので manager と BrowserView が同一インスタンスを共有する。
+	@Published var browserWindows: [BrowserWindowState] = [] {
+		didSet { rewireBrowserWindows(); onChanged?() }
 	}
 	/// ChangesView の左 tree pane の幅。drag で調整可能、project 単位で永続化。
 	@Published var changesTreeWidth: CGFloat = 220 {
@@ -86,18 +65,28 @@ final class ProjectLayoutState: ObservableObject, Codable {
 
 	var onChanged: (() -> Void)?
 
-	init(commandAreaFraction: CGFloat = 0.65, showEditor: Bool = true, showFileTree: Bool = true, fileTreeWidth: CGFloat = 200, lastOpenedFile: String? = nil, previewMode: PreviewMode = .editor, browserURL: String = "") {
+	init(commandAreaFraction: CGFloat = 0.65, showEditor: Bool = true, showFileTree: Bool = true, fileTreeWidth: CGFloat = 200, lastOpenedFile: String? = nil, previewMode: PreviewMode = .editor) {
 		self.commandAreaFraction = commandAreaFraction
 		self.showEditor = showEditor
 		self.showFileTree = showFileTree
 		self.fileTreeWidth = fileTreeWidth
 		self.lastOpenedFile = lastOpenedFile
 		self.previewMode = previewMode
-		self.browserURL = browserURL
+	}
+
+	/// browserWindows 各要素の onChanged を親 (self.onChanged) へ転送する。
+	/// 配列の replace/append/remove のたびに呼び直して子の永続化配線を維持する。
+	private func rewireBrowserWindows() {
+		for w in browserWindows {
+			w.onChanged = { [weak self] in self?.onChanged?() }
+		}
 	}
 
 	enum CodingKeys: String, CodingKey {
-		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile, showChanges, previewMode, browserURL, browserOpen, browserThumbnail, browserFrame, browserViewport
+		case commandAreaFraction, showEditor, showFileTree, fileTreeWidth, lastOpenedFile, showChanges, previewMode
+		// 旧単一ブラウザのキー: decode-only (init(from:) で browserWindows へ 1 回だけ移行)。
+		case browserURL, browserOpen, browserThumbnail, browserFrame, browserViewport
+		case browserWindows
 		case changesTreeWidth, diffFilterStaged, diffFilterUnstaged, diffFilterCommitted
 		case fileColumnShowsChanges
 		case selectedWorktreePath
@@ -113,11 +102,25 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		showChanges = try container.decodeIfPresent(Bool.self, forKey: .showChanges) ?? false
 		fileColumnShowsChanges = try container.decodeIfPresent(Bool.self, forKey: .fileColumnShowsChanges) ?? false
 		previewMode = try container.decodeIfPresent(PreviewMode.self, forKey: .previewMode) ?? .editor
-		browserURL = try container.decodeIfPresent(String.self, forKey: .browserURL) ?? ""
-		browserOpen = try container.decodeIfPresent(Bool.self, forKey: .browserOpen) ?? false
-		browserThumbnail = try container.decodeIfPresent(Bool.self, forKey: .browserThumbnail) ?? false
-		browserFrame = try container.decodeIfPresent(StoredFrame.self, forKey: .browserFrame)
-		browserViewport = try container.decodeIfPresent(StoredViewport.self, forKey: .browserViewport)
+		// ブラウザ: 新形式 (配列) があればそれを、無ければ旧単一フィールドから 1 要素へ移行。
+		if let windows = try container.decodeIfPresent([BrowserWindowState].self, forKey: .browserWindows) {
+			browserWindows = windows
+		} else {
+			let legacyURL = try container.decodeIfPresent(String.self, forKey: .browserURL) ?? ""
+			let legacyOpen = try container.decodeIfPresent(Bool.self, forKey: .browserOpen) ?? false
+			let legacyThumb = try container.decodeIfPresent(Bool.self, forKey: .browserThumbnail) ?? false
+			let legacyFrame = try container.decodeIfPresent(StoredFrame.self, forKey: .browserFrame)
+			let legacyViewport = try container.decodeIfPresent(StoredViewport.self, forKey: .browserViewport)
+			if !legacyURL.isEmpty || legacyOpen || legacyFrame != nil || legacyViewport != nil {
+				browserWindows = [BrowserWindowState(
+					url: legacyURL, frame: legacyFrame, viewport: legacyViewport,
+					thumbnail: legacyThumb, open: legacyOpen
+				)]
+			} else {
+				browserWindows = []
+			}
+		}
+		rewireBrowserWindows()
 		changesTreeWidth = try container.decodeIfPresent(CGFloat.self, forKey: .changesTreeWidth) ?? 220
 		diffFilterStaged = try container.decodeIfPresent(Bool.self, forKey: .diffFilterStaged) ?? true
 		diffFilterUnstaged = try container.decodeIfPresent(Bool.self, forKey: .diffFilterUnstaged) ?? true
@@ -135,16 +138,65 @@ final class ProjectLayoutState: ObservableObject, Codable {
 		try container.encode(showChanges, forKey: .showChanges)
 		try container.encode(fileColumnShowsChanges, forKey: .fileColumnShowsChanges)
 		try container.encode(previewMode, forKey: .previewMode)
-		try container.encode(browserURL, forKey: .browserURL)
-		try container.encode(browserOpen, forKey: .browserOpen)
-		try container.encode(browserThumbnail, forKey: .browserThumbnail)
-		try container.encodeIfPresent(browserFrame, forKey: .browserFrame)
-		try container.encodeIfPresent(browserViewport, forKey: .browserViewport)
+		// 新形式のみ書き出す (旧 browser* キーは移行後に消える = dead field を残さない)。
+		try container.encode(browserWindows, forKey: .browserWindows)
 		try container.encode(changesTreeWidth, forKey: .changesTreeWidth)
 		try container.encode(diffFilterStaged, forKey: .diffFilterStaged)
 		try container.encode(diffFilterUnstaged, forKey: .diffFilterUnstaged)
 		try container.encode(diffFilterCommitted, forKey: .diffFilterCommitted)
 		try container.encodeIfPresent(selectedWorktreePath, forKey: .selectedWorktreePath)
+	}
+}
+
+/// 1 個のフローティングブラウザ窓の永続状態。`ProjectLayoutState.browserWindows`
+/// の要素。参照型にして BrowserWindowManager と BrowserView が同一インスタンスを
+/// 共有し、編集がそのまま永続化 + 閉じ/再開を跨いで残るようにする
+/// (ProjectLayoutState と同じ思想)。
+final class BrowserWindowState: ObservableObject, Codable, Identifiable {
+	let id: UUID
+	@Published var url: String { didSet { onChanged?() } }
+	/// フルサイズ時の frame (thumbnail 縮小で失わないよう別持ち)。
+	@Published var frame: StoredFrame? { didSet { onChanged?() } }
+	/// 仮想 viewport。nil = ネイティブ。
+	@Published var viewport: StoredViewport? { didSet { onChanged?() } }
+	/// thumbnail (右下に縮小退避) 状態か。
+	@Published var thumbnail: Bool { didSet { onChanged?() } }
+	/// 前回アクティブ時に画面に出ていたか (project 復帰時に再オープンする対象)。
+	@Published var open: Bool { didSet { onChanged?() } }
+
+	/// 親 ProjectLayoutState.onChanged へ転送する (永続化トリガ)。親が rewire で配線。
+	var onChanged: (() -> Void)?
+
+	init(id: UUID = UUID(), url: String = "", frame: StoredFrame? = nil,
+	     viewport: StoredViewport? = nil, thumbnail: Bool = false, open: Bool = true) {
+		self.id = id
+		self.url = url
+		self.frame = frame
+		self.viewport = viewport
+		self.thumbnail = thumbnail
+		self.open = open
+	}
+
+	enum CodingKeys: String, CodingKey { case id, url, frame, viewport, thumbnail, open }
+
+	required init(from decoder: Decoder) throws {
+		let c = try decoder.container(keyedBy: CodingKeys.self)
+		id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+		url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+		frame = try c.decodeIfPresent(StoredFrame.self, forKey: .frame)
+		viewport = try c.decodeIfPresent(StoredViewport.self, forKey: .viewport)
+		thumbnail = try c.decodeIfPresent(Bool.self, forKey: .thumbnail) ?? false
+		open = try c.decodeIfPresent(Bool.self, forKey: .open) ?? true
+	}
+
+	func encode(to encoder: Encoder) throws {
+		var c = encoder.container(keyedBy: CodingKeys.self)
+		try c.encode(id, forKey: .id)
+		try c.encode(url, forKey: .url)
+		try c.encodeIfPresent(frame, forKey: .frame)
+		try c.encodeIfPresent(viewport, forKey: .viewport)
+		try c.encode(thumbnail, forKey: .thumbnail)
+		try c.encode(open, forKey: .open)
 	}
 }
 

@@ -359,9 +359,7 @@ struct MainWindow: View {
 						}
 						if let project = projectStore.selectedProject {
 							let projectLayout = projectLayoutState(for: project)
-							if projectLayout.browserOpen {
-								BrowserWindowManager.shared.open(project: project, layoutState: projectLayout)
-							}
+							BrowserWindowManager.shared.restoreOpenWindows(project: project, layoutState: projectLayout)
 						}
 					}
 				}
@@ -661,8 +659,8 @@ struct MainWindow: View {
 		.onAppear {
 			// `.onChange(of: isSelected)` doesn't fire for the initial value,
 			// so handle browser restore for the first-loaded project here.
-			if isSelected, projectLayout.browserOpen {
-				BrowserWindowManager.shared.open(project: project, layoutState: projectLayout)
+			if isSelected {
+				BrowserWindowManager.shared.restoreOpenWindows(project: project, layoutState: projectLayout)
 			}
 		}
 		.onChange(of: isSelected) { _, nowSelected in
@@ -693,9 +691,7 @@ struct MainWindow: View {
 				// Hide other projects' browser panels and restore this
 				// project's if it was open last time.
 				BrowserWindowManager.shared.hideAllExcept(keepProjectId: project.id)
-				if projectLayout.browserOpen {
-					BrowserWindowManager.shared.open(project: project, layoutState: projectLayout)
-				}
+				BrowserWindowManager.shared.restoreOpenWindows(project: project, layoutState: projectLayout)
 			}
 		}
 	}
@@ -1197,6 +1193,11 @@ struct MainWindow: View {
 		cmds.append(PaletteCommand(title: "Recenter Browser Windows", icon: "rectangle.center.inset.filled") {
 			BrowserWindowManager.shared.recenterAllBrowserWindows()
 		})
+		if let project = projectStore.selectedProject {
+			cmds.append(PaletteCommand(title: "New Browser Window", icon: "macwindow.badge.plus") {
+				BrowserWindowManager.shared.newWindow(project: project, layoutState: projectLayoutState(for: project))
+			})
+		}
 		cmds.append(PaletteCommand(title: "New Project", icon: "plus") {
 			startNewProject()
 		})
