@@ -26,6 +26,14 @@ class PTYService {
 	private var pendingOutput = Data()
 	private let pendingLock = NSLock()
 	private var flushScheduled = false
+	/// main 1 hop で onData に渡す最大バイト数。giant chunk を一括処理して main を
+	/// 長時間ブロックする (= UI freeze) のを防ぐ。超過分は次の runloop tick に回す。
+	private static let maxFlushChunk = 256 * 1024
+	/// pending に貯める上限。再接続時の scrollback replay 等でデータが処理速度を
+	/// 恒常的に超えて流入する病的ケースで、古い側を捨てて total を有界に保つ
+	/// (freeze も OOM も防ぐ)。端末は最新画面が見えれば十分なので、古い出力の欠落は
+	/// 許容する (OSC/agent scan は read スレッドで生ストリームに対し済み → 影響なし)。
+	private static let maxPendingBytes = 8 * 1024 * 1024
 
 	private init(masterFd: Int32, pid: pid_t) {
 		self.masterFd = masterFd
@@ -174,24 +182,40 @@ class PTYService {
 		self.readSource = source
 	}
 
-	/// 読み取ったデータを pending に貯め、未スケジュールの時だけ main flush を 1 個
-	/// だけ投げる。これで main キューの滞留を「coalesce 済み 1 ブロック」に抑え、
-	/// flood 時の無限バックログ (数GB) を防ぐ。データはドロップしない (順序も維持)。
+	/// 読み取ったデータを pending に貯め、未スケジュールの時だけ main flush を予約する。
+	/// main へは 1 回につき最大 `maxFlushChunk` だけ渡し、残りは次 tick に回すことで
+	/// giant chunk による main ブロック (UI freeze) を防ぐ。さらに pending が
+	/// `maxPendingBytes` を超えたら古い側を捨てて total を有界化する (flood 時の
+	/// メモリ暴走を防ぐ)。通常負荷では pending は小さく、slice/drop は一切発動しない。
 	private func enqueueOutput(_ data: Data) {
 		pendingLock.lock()
 		pendingOutput.append(data)
+		if pendingOutput.count > Self.maxPendingBytes {
+			let drop = pendingOutput.count - Self.maxPendingBytes
+			pendingOutput.removeFirst(drop)
+			NSLog("[Belve] PTY flood: dropped %d stale bytes to cap backlog", drop)
+		}
 		let needSchedule = !flushScheduled
 		if needSchedule { flushScheduled = true }
 		pendingLock.unlock()
 		guard needSchedule else { return }
+		scheduleFlush()
+	}
+
+	/// pending から最大 `maxFlushChunk` を切り出して main で onData に渡す。まだ残って
+	/// いれば自分自身を再スケジュールして続きを流す (= 各 hop は短く UI に譲る)。
+	private func scheduleFlush() {
 		DispatchQueue.main.async { [weak self] in
 			guard let self else { return }
 			self.pendingLock.lock()
-			let chunk = self.pendingOutput
-			self.pendingOutput = Data()
-			self.flushScheduled = false
+			let take = min(self.pendingOutput.count, Self.maxFlushChunk)
+			let chunk = self.pendingOutput.prefix(take)
+			self.pendingOutput.removeFirst(take)
+			let more = !self.pendingOutput.isEmpty
+			self.flushScheduled = more
 			self.pendingLock.unlock()
-			if !chunk.isEmpty { self.onData?(chunk) }
+			if take > 0 { self.onData?(Data(chunk)) }
+			if more { self.scheduleFlush() }
 		}
 	}
 
