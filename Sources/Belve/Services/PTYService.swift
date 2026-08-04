@@ -16,6 +16,17 @@ class PTYService {
 	var agentTransport = OSCAgentTransport()
 	private var oscBuffer = ""
 
+	/// PTY 読み取り → main への受け渡しを coalesce するためのバッファ。
+	/// 背景の read ソースが `DispatchQueue.main.async` を read ごとに投げると、
+	/// 再接続時の scrollback replay 等でデータが main の処理速度を超えて流入した際、
+	/// main キューに `Data` を抱えたクロージャが無限に積まれ、数GB まで膨張する
+	/// (実測: 再接続 1 回で 237MB→8GB)。pending に貯めて「未処理の main flush が
+	/// 無い時だけ 1 個だけ」スケジュールすることで、main キューの滞留を常に 1 ブロック
+	/// (coalesce 済み) に抑える。
+	private var pendingOutput = Data()
+	private let pendingLock = NSLock()
+	private var flushScheduled = false
+
 	private init(masterFd: Int32, pid: pid_t) {
 		self.masterFd = masterFd
 		self.pid = pid
@@ -146,21 +157,42 @@ class PTYService {
 		let fd = masterFd
 		let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .global())
 		source.setEventHandler { [weak self] in
-			var buf = [UInt8](repeating: 0, count: 8192)
+			var buf = [UInt8](repeating: 0, count: 65536)
 			let n = read(fd, &buf, buf.count)
 			if n > 0 {
 				let data = Data(buf[0..<n])
+				// OSC / agent スキャンは read スレッドで生ストリームに対して行う
+				// (順序を保つ。coalesce の前段)。
 				self?.agentTransport.scan(data)
 				self?.scanForOSC(data)
-				DispatchQueue.main.async {
-					self?.onData?(data)
-				}
+				self?.enqueueOutput(data)
 			} else {
 				source.cancel()
 			}
 		}
 		source.resume()
 		self.readSource = source
+	}
+
+	/// 読み取ったデータを pending に貯め、未スケジュールの時だけ main flush を 1 個
+	/// だけ投げる。これで main キューの滞留を「coalesce 済み 1 ブロック」に抑え、
+	/// flood 時の無限バックログ (数GB) を防ぐ。データはドロップしない (順序も維持)。
+	private func enqueueOutput(_ data: Data) {
+		pendingLock.lock()
+		pendingOutput.append(data)
+		let needSchedule = !flushScheduled
+		if needSchedule { flushScheduled = true }
+		pendingLock.unlock()
+		guard needSchedule else { return }
+		DispatchQueue.main.async { [weak self] in
+			guard let self else { return }
+			self.pendingLock.lock()
+			let chunk = self.pendingOutput
+			self.pendingOutput = Data()
+			self.flushScheduled = false
+			self.pendingLock.unlock()
+			if !chunk.isEmpty { self.onData?(chunk) }
+		}
 	}
 
 	private func startMonitoringExit() {
