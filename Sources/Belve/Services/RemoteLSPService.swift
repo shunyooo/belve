@@ -3,9 +3,26 @@ import Foundation
 final class RemoteLSPService: LSPService {
 	private let projectId: UUID
 	private let language: String
+	/// lspId / openDocuments / isReady を守るロック。activate/deactivate が高速に
+	/// 重なる (再接続・プロジェクト切替) と stop() が同一インスタンスで並行実行され、
+	/// 保護なしの Set を並行 mutate して buffer を壊し、dealloc 時に SIGSEGV していた。
+	/// await を跨いで保持しない (短いクリティカルセクションのみ)。
+	private let stateLock = NSLock()
 	private var lspId: String?
 	private var openDocuments = Set<String>()
-	private(set) var isReady = false
+	private var _isReady = false
+	var isReady: Bool { stateLock.withLock { _isReady } }
+
+	/// uri を open 集合に原子的に追加。新規追加できたら true (= didOpen 通知を送る)。
+	private func claimOpen(_ uri: String) -> Bool {
+		stateLock.withLock { openDocuments.insert(uri).inserted }
+	}
+	private func releaseOpen(_ uri: String) {
+		stateLock.withLock { _ = openDocuments.remove(uri) }
+	}
+	private func currentLspId() -> String? {
+		stateLock.withLock { lspId }
+	}
 
 	init(projectId: UUID, language: String) {
 		self.projectId = projectId
@@ -23,19 +40,24 @@ final class RemoteLSPService: LSPService {
 		guard res.ok, let id = res.result?["lspId"] as? String else {
 			throw LSPError.initializeFailed
 		}
-		lspId = id
-		isReady = true
+		stateLock.withLock { lspId = id; _isReady = true }
 		NSLog("[Belve][LSP] Remote %@ server started (id=%@)", language, id)
 	}
 
 	func stop() async {
-		guard let id = lspId else { return }
-		isReady = false
+		// 状態のクリアはロック下で原子的に。既に停止済み (lspId==nil) なら no-op に
+		// して二重 stop を安全化。RPC (await) はロック解放後に行う。
+		let id: String? = stateLock.withLock {
+			guard let cur = lspId else { return nil }
+			lspId = nil
+			_isReady = false
+			openDocuments.removeAll()
+			return cur
+		}
+		guard let id else { return }
 		if let client = RemoteRPCRegistry.shared.client(for: projectId) {
 			_ = try? await client.send(op: "lspStop", params: ["lspId": id])
 		}
-		lspId = nil
-		openDocuments.removeAll()
 		NSLog("[Belve][LSP] Remote %@ server stopped", language)
 	}
 
@@ -90,8 +112,7 @@ final class RemoteLSPService: LSPService {
 
 	func didOpen(file: String, content: String, languageId: String) {
 		let uri = fileToUri(file)
-		guard !openDocuments.contains(uri) else { return }
-		openDocuments.insert(uri)
+		guard claimOpen(uri) else { return }
 		let params: [String: Any] = [
 			"textDocument": [
 				"uri": uri,
@@ -114,7 +135,7 @@ final class RemoteLSPService: LSPService {
 
 	func didClose(file: String) {
 		let uri = fileToUri(file)
-		openDocuments.remove(uri)
+		releaseOpen(uri)
 		let params: [String: Any] = ["textDocument": ["uri": uri]]
 		Task { await sendLspNotification("textDocument/didClose", params: params) }
 	}
@@ -123,8 +144,7 @@ final class RemoteLSPService: LSPService {
 
 	private func ensureDocumentOpen(_ file: String) {
 		let uri = fileToUri(file)
-		if !openDocuments.contains(uri) {
-			openDocuments.insert(uri)
+		if claimOpen(uri) {
 			let ext = (file as NSString).pathExtension.lowercased()
 			let langId: String
 			switch ext {
@@ -149,7 +169,7 @@ final class RemoteLSPService: LSPService {
 	}
 
 	private func sendLspRequest(_ method: String, params: [String: Any]) async -> [String: Any]? {
-		guard let id = lspId, let client = RemoteRPCRegistry.shared.client(for: projectId) else { return nil }
+		guard let id = currentLspId(), let client = RemoteRPCRegistry.shared.client(for: projectId) else { return nil }
 		let paramsJSON: String
 		if let data = try? JSONSerialization.data(withJSONObject: params),
 		   let str = String(data: data, encoding: .utf8) {
@@ -176,7 +196,7 @@ final class RemoteLSPService: LSPService {
 	}
 
 	private func sendLspNotification(_ method: String, params: [String: Any]) async {
-		guard let id = lspId, let client = RemoteRPCRegistry.shared.client(for: projectId) else { return }
+		guard let id = currentLspId(), let client = RemoteRPCRegistry.shared.client(for: projectId) else { return }
 		let paramsJSON: String
 		if let data = try? JSONSerialization.data(withJSONObject: params),
 		   let str = String(data: data, encoding: .utf8) {

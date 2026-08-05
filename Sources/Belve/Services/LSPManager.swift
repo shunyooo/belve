@@ -23,13 +23,17 @@ final class LSPManager: ObservableObject {
 	}
 
 	func deactivate() async {
-		for (_, service) in services {
-			await service.stop()
-		}
+		// 先に services を退避してクリア (@MainActor で原子的)。await service.stop() で
+		// suspend している間に別の deactivate が走っても、同じインスタンスを二重に
+		// stop しない (= 並行 stop による LSP state 破壊 → SIGSEGV を防ぐ)。
+		let toStop = services
 		services.removeAll()
 		activeProjectId = nil
 		activeRootPath = nil
-		await MainActor.run { activeLanguages = [] }
+		activeLanguages = []
+		for (_, service) in toStop {
+			await service.stop()
+		}
 	}
 
 	func hover(file: String, line: Int, column: Int, project: Project) async -> String? {
