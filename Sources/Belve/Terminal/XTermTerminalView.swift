@@ -290,6 +290,14 @@ struct XTermTerminalView: NSViewRepresentable {
 
 		/// Buffer PTY output and flush on a timer to avoid excessive JS calls
 		private var outputBuffer = Data()
+		/// 直近の terminalWrite (evaluateJavaScript) が未完了 = in-flight。true の間は
+		/// 次の flush を投げず outputBuffer に貯める。これで WKWebView の JS eval キューが
+		/// 無限に積まれる (= 大量 replay 時のメモリ暴走) のを防ぐ (backpressure)。
+		private var flushInFlight = false
+		/// outputBuffer に貯める上限。xterm.js の処理が追いつかない大量 replay 時に
+		/// 古い側を捨てて有界化する (端末は最新画面が見えれば十分。OSC/agent scan は
+		/// 上流で済んでいるので影響なし)。
+		private static let maxOutputBuffer = 4 * 1024 * 1024
 		private var statusScanBuffer = Data()
 		private var flushTimer: Timer?
 		private var isWaitingForInitialOutput = false
@@ -701,6 +709,12 @@ struct XTermTerminalView: NSViewRepresentable {
 			// 保持してるだけで実害なし (= 後段で参照されない)。
 			pendingAutoFocus = false
 			outputBuffer.append(cleanData)
+			// xterm.js の消化が追いつかない大量 replay 時、古い側を捨てて有界化する。
+			if outputBuffer.count > Self.maxOutputBuffer {
+				let drop = outputBuffer.count - Self.maxOutputBuffer
+				outputBuffer.removeFirst(drop)
+				NSLog("[Belve] terminal flood: dropped %d stale bytes from write buffer", drop)
+			}
 			if resizeHoldUntil != nil {
 				// Measure data arrival
 				if resizeFirstDataTime == nil, let start = resizeStartTime {
@@ -772,9 +786,18 @@ struct XTermTerminalView: NSViewRepresentable {
 				return
 			}
 
+			// backpressure: 直近の write が完了するまで次を投げない。完了時に残りを flush。
+			// これで xterm.js が遅い時に evaluateJavaScript が WKWebView へ無限に積まれる
+			// (= メモリ暴走) のを防ぐ。webView 未準備なら送らず貯めておく (次の tick で再試行)。
+			guard !flushInFlight, let webView else { return }
+			flushInFlight = true
 			let b64 = outputBuffer.base64EncodedString()
 			outputBuffer.removeAll(keepingCapacity: true)
-			webView?.evaluateJavaScript("terminalWrite('\(b64)')", completionHandler: nil)
+			webView.evaluateJavaScript("terminalWrite('\(b64)')") { [weak self] _, _ in
+				guard let self else { return }
+				self.flushInFlight = false
+				if !self.outputBuffer.isEmpty { self.flushOutput() }
+			}
 		}
 
 		private func focusTerminal() {
