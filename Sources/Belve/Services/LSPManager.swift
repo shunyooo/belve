@@ -17,9 +17,16 @@ final class LSPManager: ObservableObject {
 	func activate(project: Project) {
 		let projectId = project.id
 		if activeProjectId == projectId { return }
-		Task { await deactivate() }
-		activeProjectId = projectId
-		activeRootPath = project.effectivePath
+		let rootPath = project.effectivePath
+		// activeProjectId は deactivate 完了「後」に設定する。以前は同期設定していたため、
+		// fire-and-forget の deactivate が後から activeProjectId=nil で上書きし、dedup
+		// ガードが恒久的に無効化 → 同一プロジェクト再選択のたびに LSP を無駄に再起動
+		// (churn) していた。
+		Task {
+			await deactivate()
+			activeProjectId = projectId
+			activeRootPath = rootPath
+		}
 	}
 
 	func deactivate() async {
